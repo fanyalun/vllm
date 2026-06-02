@@ -54,10 +54,23 @@ class LoadedConditionData:
     step_finalize_ms: np.ndarray
     step_ffn_ms: np.ndarray
     captured_step_kinds: np.ndarray
+    global_barrier_ids: np.ndarray
+    barrier_first_ep_collective_seq_ids: np.ndarray
+    barrier_last_ep_collective_seq_ids: np.ndarray
+    barrier_num_ep_collectives: np.ndarray
+    rank_step_kinds: np.ndarray
+    rank_step_total_ms: np.ndarray
+    rank_step_draft_ms: np.ndarray
+    rank_layer_ffn_ms: np.ndarray
+    rank_layer_local_routed_tokens: np.ndarray
+    rank_layer_local_active_experts: np.ndarray
     global_step_indices: np.ndarray
     global_step_total_ms: np.ndarray
+    global_draft_ms: np.ndarray
     global_step_ffn_ms: np.ndarray
     global_step_sorted_rank_ffn_ms: np.ndarray
+    global_step_sorted_rank_local_routed_tokens: np.ndarray
+    global_step_sorted_rank_local_active_experts: np.ndarray
     global_step_ffn_max_mean_ratio: np.ndarray
     global_step_other_ms: np.ndarray
     global_step_kinds: np.ndarray
@@ -95,7 +108,7 @@ def ensure_analysis_dirs(output_dir: Path) -> dict[str, Path]:
     time_dir = plots_dir / "step_time_breakdown"
     expert_load_dir = plots_dir / "expert_load"
     rank_load_dir = plots_dir / "rank_load"
-    sorted_rank_ffn_dir = plots_dir / "rank_ffn_time_sorted"
+    sorted_rank_ffn_dir = plots_dir / "sorted_rank"
     rank_traces_dir = plots_dir / "rank_traces"
     for path in (
         tables_dir,
@@ -321,11 +334,38 @@ def load_condition_data(path: Path) -> LoadedConditionData:
             step_finalize_ms=np.asarray(npz["step_finalize_ms"]),
             step_ffn_ms=np.asarray(npz["step_ffn_ms"]),
             captured_step_kinds=np.asarray(npz["captured_step_kinds"]),
+            global_barrier_ids=np.asarray(npz["global_barrier_ids"]),
+            barrier_first_ep_collective_seq_ids=np.asarray(
+                npz["barrier_first_ep_collective_seq_ids"]
+            ),
+            barrier_last_ep_collective_seq_ids=np.asarray(
+                npz["barrier_last_ep_collective_seq_ids"]
+            ),
+            barrier_num_ep_collectives=np.asarray(
+                npz["barrier_num_ep_collectives"]
+            ),
+            rank_step_kinds=np.asarray(npz["rank_step_kinds"]),
+            rank_step_total_ms=np.asarray(npz["rank_step_total_ms"]),
+            rank_step_draft_ms=np.asarray(npz["rank_step_draft_ms"]),
+            rank_layer_ffn_ms=np.asarray(npz["rank_layer_ffn_ms"]),
+            rank_layer_local_routed_tokens=np.asarray(
+                npz["rank_layer_local_routed_tokens"]
+            ),
+            rank_layer_local_active_experts=np.asarray(
+                npz["rank_layer_local_active_experts"]
+            ),
             global_step_indices=np.asarray(npz["global_step_indices"]),
             global_step_total_ms=np.asarray(npz["global_step_total_ms"]),
+            global_draft_ms=np.asarray(npz["global_draft_ms"]),
             global_step_ffn_ms=np.asarray(npz["global_step_ffn_ms"]),
             global_step_sorted_rank_ffn_ms=np.asarray(
                 npz["global_step_sorted_rank_ffn_ms"]
+            ),
+            global_step_sorted_rank_local_routed_tokens=np.asarray(
+                npz["global_step_sorted_rank_local_routed_tokens"]
+            ),
+            global_step_sorted_rank_local_active_experts=np.asarray(
+                npz["global_step_sorted_rank_local_active_experts"]
             ),
             global_step_ffn_max_mean_ratio=np.asarray(
                 npz["global_step_ffn_max_mean_ratio"]
@@ -447,6 +487,9 @@ def synthesize_manifest(output_dir: Path) -> dict[str, Any]:
         "num_samples": int(run_metadata.get("num_samples", first_data.num_samples)),
         "max_tokens": int(run_metadata.get("max_tokens", 0)),
         "layers": run_metadata.get("layers", first_data.layers.tolist()),
+        "num_experts": int(
+            run_metadata.get("num_experts", first_data.avg_histograms.shape[1])
+        ),
         "warmup_rounds": int(run_metadata.get("warmup_rounds", 0)),
         "trace_steps_per_rank": int(run_metadata.get("trace_steps_per_rank", 0)),
         "mixed_step_policy": run_metadata.get(
@@ -640,6 +683,110 @@ def _finite_percentile(values: np.ndarray, percentile: float) -> float:
     return float(np.percentile(finite_values, percentile))
 
 
+def validate_barrier_shapes(
+    data: LoadedConditionData,
+    *,
+    batch_size: int,
+    draft_length: int,
+) -> None:
+    num_barriers = data.global_barrier_ids.shape[0]
+    num_ranks = data.data_parallel_size
+    num_layers = data.layers.shape[0]
+    expected_rank_shape = (num_barriers, num_ranks)
+    expected_layer_shape = (num_barriers, num_ranks, num_layers)
+    for name, array, expected_shape in (
+        ("rank_step_kinds", data.rank_step_kinds, expected_rank_shape),
+        ("rank_step_total_ms", data.rank_step_total_ms, expected_rank_shape),
+        ("rank_step_draft_ms", data.rank_step_draft_ms, expected_rank_shape),
+        ("rank_layer_ffn_ms", data.rank_layer_ffn_ms, expected_layer_shape),
+        (
+            "rank_layer_local_routed_tokens",
+            data.rank_layer_local_routed_tokens,
+            expected_layer_shape,
+        ),
+        (
+            "rank_layer_local_active_experts",
+            data.rank_layer_local_active_experts,
+            expected_layer_shape,
+        ),
+    ):
+        if array.shape != expected_shape:
+            raise ValueError(
+                f"{name} has shape {array.shape}; expected {expected_shape} "
+                f"for batch_size={batch_size}, draft_length={draft_length}."
+            )
+    np.testing.assert_array_equal(
+        data.global_barrier_ids,
+        np.arange(num_barriers, dtype=np.int64),
+    )
+
+
+def build_barrier_rank_layer_rows(
+    manifest: dict[str, Any],
+    results: dict[tuple[int, int], LoadedConditionData],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for batch_size in tuple(manifest["batch_sizes"]):
+        for draft_length in tuple(manifest["draft_lengths"]):
+            data = results[(batch_size, draft_length)]
+            validate_barrier_shapes(
+                data, batch_size=batch_size, draft_length=draft_length
+            )
+            for barrier_row, global_barrier_id in enumerate(data.global_barrier_ids):
+                for rank in range(data.data_parallel_size):
+                    for layer_row, layer in enumerate(data.layers):
+                        rows.append(
+                            {
+                                "batch_size": batch_size,
+                                "draft_length": draft_length,
+                                "global_barrier_id": int(global_barrier_id),
+                                "first_ep_collective_seq_id": int(
+                                    data.barrier_first_ep_collective_seq_ids[
+                                        barrier_row
+                                    ]
+                                ),
+                                "last_ep_collective_seq_id": int(
+                                    data.barrier_last_ep_collective_seq_ids[
+                                        barrier_row
+                                    ]
+                                ),
+                                "num_ep_collectives": int(
+                                    data.barrier_num_ep_collectives[barrier_row]
+                                ),
+                                "global_step_kind": str(
+                                    data.global_step_kinds[barrier_row]
+                                ),
+                                "rank": rank,
+                                "rank_step_kind": str(
+                                    data.rank_step_kinds[barrier_row, rank]
+                                ),
+                                "rank_step_total_ms": float(
+                                    data.rank_step_total_ms[barrier_row, rank]
+                                ),
+                                "rank_step_draft_ms": float(
+                                    data.rank_step_draft_ms[barrier_row, rank]
+                                ),
+                                "layer": int(layer),
+                                "rank_layer_ffn_ms": float(
+                                    data.rank_layer_ffn_ms[
+                                        barrier_row, rank, layer_row
+                                    ]
+                                ),
+                                "rank_layer_local_routed_tokens": int(
+                                    data.rank_layer_local_routed_tokens[
+                                        barrier_row, rank, layer_row
+                                    ]
+                                ),
+                                "rank_layer_local_active_experts": int(
+                                    data.rank_layer_local_active_experts[
+                                        barrier_row, rank, layer_row
+                                    ]
+                                ),
+                            }
+                        )
+    return rows
+
+
 def build_sorted_rank_ffn_time_rows(
     manifest: dict[str, Any],
     results: dict[tuple[int, int], LoadedConditionData],
@@ -739,6 +886,78 @@ def build_sorted_rank_ffn_time_rows(
             )
 
     return sorted_rank_rows, imbalance_rows
+
+
+def build_sorted_rank_summary_rows(
+    manifest: dict[str, Any],
+    results: dict[tuple[int, int], LoadedConditionData],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for batch_size in tuple(manifest["batch_sizes"]):
+        for draft_length in tuple(manifest["draft_lengths"]):
+            data = results[(batch_size, draft_length)]
+            validate_barrier_shapes(
+                data, batch_size=batch_size, draft_length=draft_length
+            )
+            if data.global_step_sorted_rank_ffn_ms.shape[0] == 0:
+                raise ValueError(
+                    "No sorted-rank barrier data for "
+                    f"batch_size={batch_size}, draft_length={draft_length}."
+                )
+            for position in range(data.data_parallel_size):
+                rows.append(
+                    {
+                        "batch_size": batch_size,
+                        "draft_length": draft_length,
+                        "sorted_rank_position": position,
+                        "avg_ffn_ms": float(
+                            np.mean(data.global_step_sorted_rank_ffn_ms[:, position])
+                        ),
+                        "avg_local_routed_tokens": float(
+                            np.mean(
+                                data.global_step_sorted_rank_local_routed_tokens[
+                                    :, position
+                                ]
+                            )
+                        ),
+                        "avg_local_active_experts": float(
+                            np.mean(
+                                data.global_step_sorted_rank_local_active_experts[
+                                    :, position
+                                ]
+                            )
+                        ),
+                        "num_global_barriers": int(data.global_barrier_ids.shape[0]),
+                    }
+                )
+    return rows
+
+
+def build_active_expert_ratio_rows(
+    manifest: dict[str, Any],
+    results: dict[tuple[int, int], LoadedConditionData],
+) -> list[dict[str, Any]]:
+    num_experts = int(manifest.get("num_experts", 256))
+    rows: list[dict[str, Any]] = []
+    for batch_size in tuple(manifest["batch_sizes"]):
+        for draft_length in tuple(manifest["draft_lengths"]):
+            data = results[(batch_size, draft_length)]
+            denominator = data.layers.shape[0] * num_experts
+            per_barrier_ratio = (
+                np.sum(data.rank_layer_local_active_experts, axis=(1, 2))
+                / denominator
+            )
+            rows.append(
+                {
+                    "batch_size": batch_size,
+                    "draft_length": draft_length,
+                    "num_layers": int(data.layers.shape[0]),
+                    "num_experts": num_experts,
+                    "num_global_barriers": int(data.global_barrier_ids.shape[0]),
+                    "active_expert_ratio": float(np.mean(per_barrier_ratio)),
+                }
+            )
+    return rows
 
 
 def plot_speedup_vs_draft_length(
@@ -1144,7 +1363,127 @@ def plot_sorted_rank_ffn_time(
     ax.set_xticks(positions)
     ax.grid(alpha=0.25)
     ax.legend()
-    path = plot_dir / f"batch_size_{batch_size:03d}_sorted_rank_ffn_time.png"
+    path = plot_dir / f"sorted_rank_ffn_batch_{batch_size:03d}.png"
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return path
+
+
+def plot_sorted_rank_metric_by_batch(
+    plot_dir: Path,
+    *,
+    batch_size: int,
+    draft_lengths: tuple[int, ...],
+    sorted_rank_rows: list[dict[str, Any]],
+    metric_key: str,
+    ylabel: str,
+    output_name: str,
+) -> Path:
+    plt = import_plot_module()
+    positions = sorted(
+        {
+            int(row["sorted_rank_position"])
+            for row in sorted_rank_rows
+            if row["batch_size"] == batch_size
+        }
+    )
+    colors = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759"]
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    for draft_idx, draft_length in enumerate(draft_lengths):
+        values = [
+            next(
+                float(row[metric_key])
+                for row in sorted_rank_rows
+                if row["batch_size"] == batch_size
+                and row["draft_length"] == draft_length
+                and row["sorted_rank_position"] == position
+            )
+            for position in positions
+        ]
+        ax.plot(
+            positions,
+            values,
+            marker="o",
+            color=colors[draft_idx % len(colors)],
+            label=f"d={draft_length}",
+        )
+    ax.set_title(f"batch_size={batch_size} sorted rank {ylabel}")
+    ax.set_xlabel("sorted rank position (0 = heaviest per layer)")
+    ax.set_ylabel(ylabel)
+    ax.set_xticks(positions)
+    ax.grid(alpha=0.25)
+    ax.legend()
+    path = plot_dir / output_name.format(batch_size=batch_size)
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return path
+
+
+def plot_sorted_rank0_ffn_vs_batch_size(
+    plot_dir: Path,
+    sorted_rank_rows: list[dict[str, Any]],
+    batch_sizes: tuple[int, ...],
+    draft_lengths: tuple[int, ...],
+) -> Path:
+    plt = import_plot_module()
+    x = np.arange(len(batch_sizes))
+    width = 0.8 / max(len(draft_lengths), 1)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for draft_idx, draft_length in enumerate(draft_lengths):
+        values = [
+            next(
+                float(row["avg_ffn_ms"])
+                for row in sorted_rank_rows
+                if row["batch_size"] == batch_size
+                and row["draft_length"] == draft_length
+                and row["sorted_rank_position"] == 0
+            )
+            for batch_size in batch_sizes
+        ]
+        offset = (draft_idx - (len(draft_lengths) - 1) / 2.0) * width
+        ax.bar(x + offset, values, width=width, label=f"d={draft_length}")
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(batch_size) for batch_size in batch_sizes])
+    ax.set_xlabel("batch_size")
+    ax.set_ylabel("avg sorted-rank0 FFN time (ms)")
+    ax.set_title("Sorted-rank0 FFN vs Global Batch Size")
+    ax.grid(axis="y", alpha=0.25)
+    ax.legend()
+    path = plot_dir / "sorted_rank0_ffn_vs_batch_size.png"
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return path
+
+
+def plot_active_expert_ratio_vs_batch_size(
+    plot_dir: Path,
+    active_ratio_rows: list[dict[str, Any]],
+    batch_sizes: tuple[int, ...],
+    draft_lengths: tuple[int, ...],
+) -> Path:
+    plt = import_plot_module()
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for draft_length in draft_lengths:
+        values = [
+            next(
+                float(row["active_expert_ratio"])
+                for row in active_ratio_rows
+                if row["batch_size"] == batch_size
+                and row["draft_length"] == draft_length
+            )
+            for batch_size in batch_sizes
+        ]
+        ax.plot(batch_sizes, values, marker="o", linewidth=2, label=f"d={draft_length}")
+    ax.set_xlabel("batch_size")
+    ax.set_ylabel("active expert ratio")
+    ax.set_title("Active Expert Ratio vs Global Batch Size")
+    ax.set_ylim(bottom=0.0, top=1.0)
+    ax.grid(alpha=0.25)
+    ax.legend()
+    path = plot_dir / "active_expert_ratio_vs_batch_size.png"
     fig.tight_layout()
     fig.savefig(path, dpi=200)
     plt.close(fig)
@@ -1298,8 +1637,20 @@ def analyze_experiment(
         sorted_rank_ffn_rows,
         rank_ffn_imbalance_rows,
     ) = build_sorted_rank_ffn_time_rows(manifest, results)
+    barrier_rank_layer_rows = build_barrier_rank_layer_rows(manifest, results)
+    sorted_rank_summary_rows = build_sorted_rank_summary_rows(manifest, results)
+    active_expert_ratio_rows = build_active_expert_ratio_rows(manifest, results)
 
     save_csv(dirs["tables"] / "speedup_metrics.csv", speedup_rows)
+    save_csv(
+        dirs["tables"] / "barrier_rank_layer_metrics.csv",
+        barrier_rank_layer_rows,
+    )
+    save_csv(dirs["tables"] / "sorted_rank_summary.csv", sorted_rank_summary_rows)
+    save_csv(
+        dirs["tables"] / "active_expert_ratio.csv",
+        active_expert_ratio_rows,
+    )
     save_csv(dirs["tables"] / "step_time_breakdown.csv", step_rows)
     save_csv(dirs["tables"] / "load_balance_metrics.csv", load_metric_rows)
     save_csv(
@@ -1371,12 +1722,36 @@ def analyze_experiment(
                 draft_lengths,
                 rank_load_rows,
             )
-            plot_sorted_rank_ffn_time(
+            plot_sorted_rank_metric_by_batch(
                 dirs["rank_ffn_time_sorted"],
-                batch_size,
-                draft_lengths,
-                sorted_rank_ffn_rows,
+                batch_size=batch_size,
+                draft_lengths=draft_lengths,
+                sorted_rank_rows=sorted_rank_summary_rows,
+                metric_key="avg_ffn_ms",
+                ylabel="avg FFN time after per-layer sort (ms)",
+                output_name="sorted_rank_ffn_batch_{batch_size:03d}.png",
             )
+            plot_sorted_rank_metric_by_batch(
+                dirs["rank_ffn_time_sorted"],
+                batch_size=batch_size,
+                draft_lengths=draft_lengths,
+                sorted_rank_rows=sorted_rank_summary_rows,
+                metric_key="avg_local_routed_tokens",
+                ylabel="avg local routed tokens after per-layer sort",
+                output_name="sorted_rank_tokens_batch_{batch_size:03d}.png",
+            )
+        plot_sorted_rank0_ffn_vs_batch_size(
+            dirs["rank_ffn_time_sorted"],
+            sorted_rank_summary_rows,
+            batch_sizes,
+            draft_lengths,
+        )
+        plot_active_expert_ratio_vs_batch_size(
+            dirs["rank_ffn_time_sorted"],
+            active_expert_ratio_rows,
+            batch_sizes,
+            draft_lengths,
+        )
 
     if not skip_report:
         report = build_report(

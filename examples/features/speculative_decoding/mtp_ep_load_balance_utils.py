@@ -9,19 +9,20 @@ from typing import Any
 
 import numpy as np
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 DEFAULT_MODEL = "Qwen/Qwen3.6-35B-A3B"
 DEFAULT_DATASET = "likaixin/InstructCoder"
 DEFAULT_DATASET_CONFIG = None
 DEFAULT_DATASET_SPLIT = "train"
-DEFAULT_BATCH_SIZES = (32, 64, 128, 256, 512)
+DEFAULT_BATCH_SIZES = (8, 16, 32, 64, 128, 256)
 DEFAULT_DRAFT_LENGTHS = (0, 2, 4, 6)
-DEFAULT_LAYERS = (0, 9, 19, 29, 39)
+DEFAULT_LAYERS = tuple(range(40))
 DEFAULT_NUM_EXPERTS = 256
 DEFAULT_MAX_TOKENS = 128
 DEFAULT_MAX_MODEL_LEN = 4096
 DEFAULT_NUM_SAMPLES = 512
+DEFAULT_MAX_NUM_BATCHED_TOKENS = 8192
 TPOT_DEFINITION = (
     "tpot_ms = built_in_decode_time_total_ms / "
     "sum(max(num_generation_tokens - 1, 0))"
@@ -73,10 +74,23 @@ class StepTiming:
 
 @dataclass(frozen=True)
 class GlobalStepTimingAggregation:
+    global_barrier_ids: np.ndarray
     global_step_indices: np.ndarray
+    barrier_first_ep_collective_seq_ids: np.ndarray
+    barrier_last_ep_collective_seq_ids: np.ndarray
+    barrier_num_ep_collectives: np.ndarray
+    rank_step_kinds: np.ndarray
+    rank_step_total_ms: np.ndarray
+    rank_step_draft_ms: np.ndarray
+    rank_layer_ffn_ms: np.ndarray
+    rank_layer_local_routed_tokens: np.ndarray
+    rank_layer_local_active_experts: np.ndarray
     global_step_total_ms: np.ndarray
+    global_draft_ms: np.ndarray
     global_step_ffn_ms: np.ndarray
     global_step_sorted_rank_ffn_ms: np.ndarray
+    global_step_sorted_rank_local_routed_tokens: np.ndarray
+    global_step_sorted_rank_local_active_experts: np.ndarray
     global_step_ffn_max_mean_ratio: np.ndarray
     global_step_other_ms: np.ndarray
     global_step_kinds: np.ndarray
@@ -478,7 +492,6 @@ def aggregate_global_step_time_components(
     rank_step_data: list[dict[str, np.ndarray]],
     *,
     data_parallel_size: int,
-    expected_step_kind: str,
     layers: tuple[int, ...],
     num_experts: int,
     tol_ms: float = 1e-3,
@@ -491,25 +504,44 @@ def aggregate_global_step_time_components(
             f"{len(rank_step_data)} vs {data_parallel_size}."
         )
 
-    per_step_records: dict[int, list[dict[str, Any]]] = {}
+    per_step_records: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
     for rank_idx, rank_data in enumerate(rank_step_data):
-        step_indices = np.asarray(
+        first_seq_ids = np.asarray(
             rank_data["candidate_first_ep_collective_seq_ids"], dtype=np.int64
+        )
+        last_seq_ids = np.asarray(
+            rank_data["candidate_last_ep_collective_seq_ids"], dtype=np.int64
+        )
+        num_ep_collectives = np.asarray(
+            rank_data["candidate_num_ep_collectives"], dtype=np.int64
         )
         step_kinds = np.asarray(rank_data["candidate_step_kinds"], dtype=np.str_)
         step_total_ms = np.asarray(
             rank_data["candidate_step_total_ms"], dtype=np.float64
         )
-        step_ffn_ms = np.asarray(rank_data["candidate_step_ffn_ms"], dtype=np.float64)
+        step_draft_ms = np.asarray(
+            rank_data["candidate_step_draft_ms"], dtype=np.float64
+        )
         step_total_tokens = np.asarray(
             rank_data["candidate_step_total_tokens"], dtype=np.int64
         )
         step_histograms = np.asarray(rank_data["candidate_step_histograms"])
-        size = step_indices.shape[0]
+        layer_ffn_ms = np.asarray(
+            rank_data["candidate_layer_ffn_ms"], dtype=np.float64
+        )
+        layer_local_routed_tokens = np.asarray(
+            rank_data["candidate_layer_local_routed_tokens"], dtype=np.int64
+        )
+        layer_local_active_experts = np.asarray(
+            rank_data["candidate_layer_local_active_experts"], dtype=np.int64
+        )
+        size = first_seq_ids.shape[0]
         for array_name, array in (
+            ("candidate_last_ep_collective_seq_ids", last_seq_ids),
+            ("candidate_num_ep_collectives", num_ep_collectives),
             ("candidate_step_kinds", step_kinds),
             ("candidate_step_total_ms", step_total_ms),
-            ("candidate_step_ffn_ms", step_ffn_ms),
+            ("candidate_step_draft_ms", step_draft_ms),
             ("candidate_step_total_tokens", step_total_tokens),
         ):
             if array.shape[0] != size:
@@ -523,33 +555,71 @@ def aggregate_global_step_time_components(
                 f"{step_histograms.shape}; expected "
                 f"{(size, len(layers), num_experts)}."
             )
-
-        seen_step_indices: set[int] = set()
-        for idx in range(size):
-            step_index = int(step_indices[idx])
-            if step_index < 0:
-                continue
-            if step_index in seen_step_indices:
+        for array_name, array in (
+            ("candidate_layer_ffn_ms", layer_ffn_ms),
+            ("candidate_layer_local_routed_tokens", layer_local_routed_tokens),
+            ("candidate_layer_local_active_experts", layer_local_active_experts),
+        ):
+            if array.shape != (size, len(layers)):
                 raise ValueError(
-                    f"Rank {rank_idx} produced duplicate first_ep_collective_seq_id="
-                    f"{step_index}."
+                    f"Rank {rank_idx} {array_name} has shape {array.shape}; "
+                    f"expected {(size, len(layers))}."
                 )
-            seen_step_indices.add(step_index)
+
+        seen_spans: set[tuple[int, int, int]] = set()
+        for idx in range(size):
+            first_seq_id = int(first_seq_ids[idx])
+            last_seq_id = int(last_seq_ids[idx])
+            collective_count = int(num_ep_collectives[idx])
+            span = (first_seq_id, last_seq_id, collective_count)
+            if first_seq_id < 0 or last_seq_id < 0 or collective_count <= 0:
+                raise ValueError(
+                    f"Rank {rank_idx} produced an invalid EP collective span "
+                    f"{span} at local barrier index {idx}."
+                )
+            expected_count = last_seq_id - first_seq_id + 1
+            if collective_count != expected_count:
+                raise ValueError(
+                    f"Rank {rank_idx} produced inconsistent EP span {span}: "
+                    f"count should be {expected_count}."
+                )
+            if span in seen_spans:
+                raise ValueError(
+                    f"Rank {rank_idx} produced duplicate EP collective span "
+                    f"{span}."
+                )
+            seen_spans.add(span)
 
             record = {
                 "rank_idx": rank_idx,
                 "step_kind": str(step_kinds[idx]),
                 "step_total_ms": float(step_total_ms[idx]),
-                "step_ffn_ms": float(step_ffn_ms[idx]),
+                "step_draft_ms": float(step_draft_ms[idx]),
                 "step_total_tokens": int(step_total_tokens[idx]),
                 "step_histograms": step_histograms[idx],
+                "layer_ffn_ms": layer_ffn_ms[idx],
+                "layer_local_routed_tokens": layer_local_routed_tokens[idx],
+                "layer_local_active_experts": layer_local_active_experts[idx],
             }
-            per_step_records.setdefault(step_index, []).append(record)
+            per_step_records.setdefault(span, []).append(record)
 
+    global_barrier_ids: list[int] = []
     global_step_indices: list[int] = []
+    barrier_first_seq_ids: list[int] = []
+    barrier_last_seq_ids: list[int] = []
+    barrier_num_collectives: list[int] = []
+    rank_step_kinds: list[np.ndarray] = []
+    rank_step_total_ms: list[np.ndarray] = []
+    rank_step_draft_ms: list[np.ndarray] = []
+    rank_layer_ffn_ms: list[np.ndarray] = []
+    rank_layer_local_routed_tokens: list[np.ndarray] = []
+    rank_layer_local_active_experts: list[np.ndarray] = []
     global_step_total_ms: list[float] = []
+    global_draft_ms: list[float] = []
     global_step_ffn_ms: list[float] = []
     global_step_sorted_rank_ffn_ms: list[np.ndarray] = []
+    global_step_sorted_rank_local_routed_tokens: list[np.ndarray] = []
+    global_step_sorted_rank_local_active_experts: list[np.ndarray] = []
     global_step_ffn_max_mean_ratio: list[float] = []
     global_step_other_ms: list[float] = []
     global_step_kinds: list[str] = []
@@ -559,41 +629,76 @@ def aggregate_global_step_time_components(
     num_global_mixed_dropped_steps = 0
     num_global_non_target_dropped_steps = 0
 
-    for step_index in sorted(per_step_records):
-        records = per_step_records[step_index]
+    for barrier_id, span in enumerate(sorted(per_step_records)):
+        records = per_step_records[span]
         if len(records) != data_parallel_size:
-            num_global_non_target_dropped_steps += 1
-            continue
+            raise ValueError(
+                f"EP collective span {span} is not present on all ranks: "
+                f"{len(records)} vs {data_parallel_size}."
+            )
+        if len({int(record["rank_idx"]) for record in records}) != data_parallel_size:
+            raise ValueError(f"EP collective span {span} has duplicate rank records.")
+        records = sorted(records, key=lambda record: int(record["rank_idx"]))
 
-        step_kinds = {str(record["step_kind"]) for record in records}
-        if "prefill" in step_kinds:
-            num_global_prefill_dropped_steps += 1
-            continue
-        if "mixed" in step_kinds:
-            num_global_mixed_dropped_steps += 1
-            continue
-        if step_kinds != {expected_step_kind}:
-            num_global_non_target_dropped_steps += 1
-            continue
-
-        sorted_records = sorted(
-            records,
-            key=lambda record: (
-                -float(record["step_ffn_ms"]),
-                int(record["rank_idx"]),
-            ),
+        step_kind_set = {str(record["step_kind"]) for record in records}
+        global_step_kind = (
+            next(iter(step_kind_set)) if len(step_kind_set) == 1 else "mixed_rank"
         )
-        sorted_rank_ffn_ms = np.asarray(
-            [float(record["step_ffn_ms"]) for record in sorted_records],
+        if "prefill" in step_kind_set:
+            num_global_prefill_dropped_steps += 1
+        if "mixed" in step_kind_set or global_step_kind == "mixed_rank":
+            num_global_mixed_dropped_steps += 1
+        if global_step_kind not in {
+            "decode_only",
+            "verification_only",
+            "prefill",
+            "mixed",
+            "mixed_rank",
+        }:
+            num_global_non_target_dropped_steps += 1
+
+        per_rank_total_ms = np.asarray(
+            [float(record["step_total_ms"]) for record in records],
             dtype=np.float64,
         )
-        total_ms = max(float(record["step_total_ms"]) for record in records)
-        ffn_ms = float(sorted_rank_ffn_ms[0])
+        per_rank_draft_ms = np.asarray(
+            [float(record["step_draft_ms"]) for record in records],
+            dtype=np.float64,
+        )
+        per_rank_layer_ffn_ms = np.stack(
+            [record["layer_ffn_ms"] for record in records], axis=0
+        ).astype(np.float64)
+        per_rank_layer_tokens = np.stack(
+            [record["layer_local_routed_tokens"] for record in records], axis=0
+        ).astype(np.int64)
+        per_rank_layer_active = np.stack(
+            [record["layer_local_active_experts"] for record in records], axis=0
+        ).astype(np.int64)
+        sorted_rank_ffn = []
+        sorted_rank_tokens = []
+        sorted_rank_active = []
+        for layer_idx in range(len(layers)):
+            order = np.argsort(
+                -per_rank_layer_ffn_ms[:, layer_idx], kind="stable"
+            )
+            sorted_rank_ffn.append(per_rank_layer_ffn_ms[order, layer_idx])
+            sorted_rank_tokens.append(per_rank_layer_tokens[order, layer_idx])
+            sorted_rank_active.append(per_rank_layer_active[order, layer_idx])
+        sorted_rank_ffn_ms = np.sum(np.stack(sorted_rank_ffn, axis=0), axis=0)
+        sorted_rank_routed_tokens = np.sum(
+            np.stack(sorted_rank_tokens, axis=0), axis=0
+        )
+        sorted_rank_active_experts = np.sum(
+            np.stack(sorted_rank_active, axis=0), axis=0
+        )
+        total_ms = float(np.max(per_rank_total_ms))
+        draft_ms = float(np.max(per_rank_draft_ms))
+        ffn_ms = float(sorted_rank_ffn_ms[0]) if sorted_rank_ffn_ms.size else 0.0
         other_ms = total_ms - ffn_ms
         if ffn_ms < 0:
             raise ValueError(
-                f"Captured first_ep_collective_seq_id={step_index} produced "
-                f"negative FFN time: {ffn_ms:.6f} ms."
+                f"Captured EP collective span {span} produced negative FFN time: "
+                f"{ffn_ms:.6f} ms."
             )
         mean_rank_ffn_ms = float(np.mean(sorted_rank_ffn_ms))
         ffn_max_mean_ratio = (
@@ -603,17 +708,33 @@ def aggregate_global_step_time_components(
         )
         if other_ms < -tol_ms:
             raise ValueError(
-                "Captured first_ep_collective_seq_id="
-                f"{step_index} produced negative Other time: {other_ms:.6f} ms."
+                f"Captured EP collective span {span} produced negative Other time: "
+                f"{other_ms:.6f} ms."
             )
+        other_ms = max(other_ms, 0.0)
 
-        global_step_indices.append(step_index)
+        global_barrier_ids.append(barrier_id)
+        global_step_indices.append(int(span[0]))
+        barrier_first_seq_ids.append(int(span[0]))
+        barrier_last_seq_ids.append(int(span[1]))
+        barrier_num_collectives.append(int(span[2]))
+        rank_step_kinds.append(
+            np.asarray([str(record["step_kind"]) for record in records], dtype=np.str_)
+        )
+        rank_step_total_ms.append(per_rank_total_ms)
+        rank_step_draft_ms.append(per_rank_draft_ms)
+        rank_layer_ffn_ms.append(per_rank_layer_ffn_ms)
+        rank_layer_local_routed_tokens.append(per_rank_layer_tokens)
+        rank_layer_local_active_experts.append(per_rank_layer_active)
         global_step_total_ms.append(total_ms)
+        global_draft_ms.append(draft_ms)
         global_step_ffn_ms.append(ffn_ms)
         global_step_sorted_rank_ffn_ms.append(sorted_rank_ffn_ms)
+        global_step_sorted_rank_local_routed_tokens.append(sorted_rank_routed_tokens)
+        global_step_sorted_rank_local_active_experts.append(sorted_rank_active_experts)
         global_step_ffn_max_mean_ratio.append(ffn_max_mean_ratio)
         global_step_other_ms.append(other_ms)
-        global_step_kinds.append(expected_step_kind)
+        global_step_kinds.append(global_step_kind)
         global_step_histograms.append(
             np.sum([record["step_histograms"] for record in records], axis=0)
         )
@@ -630,16 +751,71 @@ def aggregate_global_step_time_components(
         sorted_rank_ffn_array = np.stack(
             global_step_sorted_rank_ffn_ms, axis=0
         ).astype(np.float64)
+        sorted_rank_tokens_array = np.stack(
+            global_step_sorted_rank_local_routed_tokens, axis=0
+        ).astype(np.int64)
+        sorted_rank_active_array = np.stack(
+            global_step_sorted_rank_local_active_experts, axis=0
+        ).astype(np.int64)
     else:
         sorted_rank_ffn_array = np.empty(
             (0, data_parallel_size), dtype=np.float64
         )
+        sorted_rank_tokens_array = np.empty(
+            (0, data_parallel_size), dtype=np.int64
+        )
+        sorted_rank_active_array = np.empty(
+            (0, data_parallel_size), dtype=np.int64
+        )
 
     return GlobalStepTimingAggregation(
+        global_barrier_ids=np.asarray(global_barrier_ids, dtype=np.int64),
         global_step_indices=np.asarray(global_step_indices, dtype=np.int64),
+        barrier_first_ep_collective_seq_ids=np.asarray(
+            barrier_first_seq_ids, dtype=np.int64
+        ),
+        barrier_last_ep_collective_seq_ids=np.asarray(
+            barrier_last_seq_ids, dtype=np.int64
+        ),
+        barrier_num_ep_collectives=np.asarray(
+            barrier_num_collectives, dtype=np.int64
+        ),
+        rank_step_kinds=(
+            np.stack(rank_step_kinds, axis=0).astype(np.str_)
+            if rank_step_kinds
+            else np.empty((0, data_parallel_size), dtype=np.str_)
+        ),
+        rank_step_total_ms=(
+            np.stack(rank_step_total_ms, axis=0).astype(np.float64)
+            if rank_step_total_ms
+            else np.empty((0, data_parallel_size), dtype=np.float64)
+        ),
+        rank_step_draft_ms=(
+            np.stack(rank_step_draft_ms, axis=0).astype(np.float64)
+            if rank_step_draft_ms
+            else np.empty((0, data_parallel_size), dtype=np.float64)
+        ),
+        rank_layer_ffn_ms=(
+            np.stack(rank_layer_ffn_ms, axis=0).astype(np.float64)
+            if rank_layer_ffn_ms
+            else np.empty((0, data_parallel_size, len(layers)), dtype=np.float64)
+        ),
+        rank_layer_local_routed_tokens=(
+            np.stack(rank_layer_local_routed_tokens, axis=0).astype(np.int64)
+            if rank_layer_local_routed_tokens
+            else np.empty((0, data_parallel_size, len(layers)), dtype=np.int64)
+        ),
+        rank_layer_local_active_experts=(
+            np.stack(rank_layer_local_active_experts, axis=0).astype(np.int64)
+            if rank_layer_local_active_experts
+            else np.empty((0, data_parallel_size, len(layers)), dtype=np.int64)
+        ),
         global_step_total_ms=np.asarray(global_step_total_ms, dtype=np.float64),
+        global_draft_ms=np.asarray(global_draft_ms, dtype=np.float64),
         global_step_ffn_ms=np.asarray(global_step_ffn_ms, dtype=np.float64),
         global_step_sorted_rank_ffn_ms=sorted_rank_ffn_array,
+        global_step_sorted_rank_local_routed_tokens=sorted_rank_tokens_array,
+        global_step_sorted_rank_local_active_experts=sorted_rank_active_array,
         global_step_ffn_max_mean_ratio=np.asarray(
             global_step_ffn_max_mean_ratio, dtype=np.float64
         ),

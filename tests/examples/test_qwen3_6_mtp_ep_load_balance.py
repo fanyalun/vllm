@@ -229,18 +229,62 @@ def test_aggregate_worker_step_timings_uses_max_per_component():
     assert timing.unattributed_ms == 0.25
 
 
-def _rank_candidate_data(seq_ids, kinds, total_ms, ffn_ms, hist_values=None):
+def _rank_candidate_data(
+    seq_ids,
+    kinds,
+    total_ms,
+    ffn_ms,
+    hist_values=None,
+    *,
+    last_seq_ids=None,
+    num_ep_collectives=None,
+    draft_ms=None,
+    layer_ffn_ms=None,
+    layer_local_routed_tokens=None,
+    layer_local_active_experts=None,
+    num_layers=1,
+):
     size = len(seq_ids)
+    if last_seq_ids is None:
+        last_seq_ids = seq_ids
+    if num_ep_collectives is None:
+        num_ep_collectives = [
+            int(last_seq_ids[idx]) - int(seq_ids[idx]) + 1 for idx in range(size)
+        ]
+    if draft_ms is None:
+        draft_ms = [0.0] * size
     histograms = np.zeros((size, 1, 4), dtype=np.int64)
     if hist_values is not None:
         histograms[:, 0, :] = np.asarray(hist_values, dtype=np.int64)
+    if num_layers != 1:
+        histograms = np.zeros((size, num_layers, 4), dtype=np.int64)
+    if layer_ffn_ms is None:
+        layer_ffn_ms = np.asarray(ffn_ms, dtype=np.float64).reshape(size, 1)
+    if layer_local_routed_tokens is None:
+        layer_local_routed_tokens = np.full((size, num_layers), 2, dtype=np.int64)
+    if layer_local_active_experts is None:
+        layer_local_active_experts = np.ones((size, num_layers), dtype=np.int64)
     return {
         "candidate_first_ep_collective_seq_ids": np.asarray(seq_ids, dtype=np.int64),
+        "candidate_last_ep_collective_seq_ids": np.asarray(
+            last_seq_ids, dtype=np.int64
+        ),
+        "candidate_num_ep_collectives": np.asarray(
+            num_ep_collectives, dtype=np.int64
+        ),
         "candidate_step_kinds": np.asarray(kinds, dtype=np.str_),
         "candidate_step_total_ms": np.asarray(total_ms, dtype=np.float64),
+        "candidate_step_draft_ms": np.asarray(draft_ms, dtype=np.float64),
         "candidate_step_ffn_ms": np.asarray(ffn_ms, dtype=np.float64),
         "candidate_step_total_tokens": np.full((size,), 2, dtype=np.int64),
         "candidate_step_histograms": histograms,
+        "candidate_layer_ffn_ms": np.asarray(layer_ffn_ms, dtype=np.float64),
+        "candidate_layer_local_routed_tokens": np.asarray(
+            layer_local_routed_tokens, dtype=np.int64
+        ),
+        "candidate_layer_local_active_experts": np.asarray(
+            layer_local_active_experts, dtype=np.int64
+        ),
     }
 
 
@@ -263,10 +307,10 @@ def test_global_step_time_aggregation_keeps_strict_ep_seq_intersection():
             ),
         ],
         data_parallel_size=2,
-        expected_step_kind="verification_only",
         layers=(0,),
         num_experts=4,
     )
+    np.testing.assert_array_equal(result.global_barrier_ids, np.array([0]))
     np.testing.assert_array_equal(result.global_step_indices, np.array([7]))
     np.testing.assert_array_equal(
         result.global_step_kinds,
@@ -308,7 +352,6 @@ def test_global_step_time_aggregation_sorts_rank_ffn_times_per_barrier():
             ),
         ],
         data_parallel_size=2,
-        expected_step_kind="decode_only",
         layers=(0,),
         num_experts=4,
     )
@@ -328,49 +371,184 @@ def test_global_step_time_aggregation_sorts_rank_ffn_times_per_barrier():
     )
 
 
-def test_global_step_time_aggregation_drops_prefill_global_step():
+def test_global_step_time_aggregation_rejects_duplicate_span():
+    try:
+        helper.aggregate_global_step_time_components(
+            [
+                _rank_candidate_data(
+                    [7, 7],
+                    ["decode_only", "decode_only"],
+                    [1, 2],
+                    [1, 2],
+                ),
+                _rank_candidate_data([7], ["decode_only"], [1], [1]),
+            ],
+            data_parallel_size=2,
+            layers=(0,),
+            num_experts=4,
+        )
+    except ValueError as exc:
+        assert "duplicate EP collective span" in str(exc)
+    else:
+        raise AssertionError("Expected duplicate span to fail.")
+
+
+def test_global_step_time_aggregation_rejects_span_count_mismatch():
+    try:
+        helper.aggregate_global_step_time_components(
+            [
+                _rank_candidate_data(
+                    [7],
+                    ["decode_only"],
+                    [1],
+                    [1],
+                    last_seq_ids=[8],
+                    num_ep_collectives=[1],
+                ),
+                _rank_candidate_data([7], ["decode_only"], [1], [1]),
+            ],
+            data_parallel_size=2,
+            layers=(0,),
+            num_experts=4,
+        )
+    except ValueError as exc:
+        assert "inconsistent EP span" in str(exc)
+    else:
+        raise AssertionError("Expected span count mismatch to fail.")
+
+
+def test_global_step_time_aggregation_rejects_missing_rank_span():
+    try:
+        helper.aggregate_global_step_time_components(
+            [
+                _rank_candidate_data([7], ["decode_only"], [1], [1]),
+                _rank_candidate_data([8], ["decode_only"], [1], [1]),
+            ],
+            data_parallel_size=2,
+            layers=(0,),
+            num_experts=4,
+        )
+    except ValueError as exc:
+        assert "not present on all ranks" in str(exc)
+    else:
+        raise AssertionError("Expected missing rank span to fail.")
+
+
+def test_per_layer_sorted_rank_reorders_tokens_and_active_with_ffn():
+    result = helper.aggregate_global_step_time_components(
+        [
+            _rank_candidate_data(
+                [7],
+                ["decode_only"],
+                [20.0],
+                [0.0],
+                num_layers=2,
+                layer_ffn_ms=[[10.0, 1.0]],
+                layer_local_routed_tokens=[[100, 10]],
+                layer_local_active_experts=[[4, 1]],
+            ),
+            _rank_candidate_data(
+                [7],
+                ["decode_only"],
+                [18.0],
+                [0.0],
+                num_layers=2,
+                layer_ffn_ms=[[2.0, 8.0]],
+                layer_local_routed_tokens=[[20, 80]],
+                layer_local_active_experts=[[2, 3]],
+            ),
+        ],
+        data_parallel_size=2,
+        layers=(0, 1),
+        num_experts=4,
+    )
+    np.testing.assert_allclose(
+        result.global_step_sorted_rank_ffn_ms,
+        np.array([[18.0, 3.0]]),
+    )
+    np.testing.assert_array_equal(
+        result.global_step_sorted_rank_local_routed_tokens,
+        np.array([[180, 30]]),
+    )
+    np.testing.assert_array_equal(
+        result.global_step_sorted_rank_local_active_experts,
+        np.array([[7, 3]]),
+    )
+
+
+def test_draft_timing_uses_rank_max_and_baseline_zero():
+    baseline = helper.aggregate_global_step_time_components(
+        [
+            _rank_candidate_data([7], ["decode_only"], [10.0], [4.0]),
+            _rank_candidate_data([7], ["decode_only"], [9.0], [3.0]),
+        ],
+        data_parallel_size=2,
+        layers=(0,),
+        num_experts=4,
+    )
+    np.testing.assert_allclose(baseline.global_draft_ms, np.array([0.0]))
+
+    drafted = helper.aggregate_global_step_time_components(
+        [
+            _rank_candidate_data(
+                [7], ["verification_only"], [10.0], [4.0], draft_ms=[1.5]
+            ),
+            _rank_candidate_data(
+                [7], ["verification_only"], [9.0], [3.0], draft_ms=[2.5]
+            ),
+        ],
+        data_parallel_size=2,
+        layers=(0,),
+        num_experts=4,
+    )
+    np.testing.assert_allclose(drafted.global_draft_ms, np.array([2.5]))
+
+
+def test_global_step_time_aggregation_keeps_prefill_global_step():
     result = helper.aggregate_global_step_time_components(
         [
             _rank_candidate_data([7], ["decode_only"], [10.0], [4.0]),
             _rank_candidate_data([7], ["prefill"], [11.0], [5.0]),
         ],
         data_parallel_size=2,
-        expected_step_kind="decode_only",
         layers=(0,),
         num_experts=4,
     )
-    assert result.global_step_indices.size == 0
+    np.testing.assert_array_equal(result.global_step_indices, np.array([7]))
+    np.testing.assert_array_equal(result.global_step_kinds, np.array(["mixed_rank"]))
     assert result.num_global_prefill_dropped_steps == 1
 
 
-def test_global_step_time_aggregation_drops_mixed_global_step():
+def test_global_step_time_aggregation_keeps_mixed_global_step():
     result = helper.aggregate_global_step_time_components(
         [
             _rank_candidate_data([7], ["verification_only"], [10.0], [4.0]),
             _rank_candidate_data([7], ["mixed"], [11.0], [5.0]),
         ],
         data_parallel_size=2,
-        expected_step_kind="verification_only",
         layers=(0,),
         num_experts=4,
     )
-    assert result.global_step_indices.size == 0
+    np.testing.assert_array_equal(result.global_step_indices, np.array([7]))
+    np.testing.assert_array_equal(result.global_step_kinds, np.array(["mixed_rank"]))
     assert result.num_global_mixed_dropped_steps == 1
 
 
-def test_global_step_time_aggregation_drops_missing_join_key():
-    result = helper.aggregate_global_step_time_components(
-        [
-            _rank_candidate_data([7], ["decode_only"], [10.0], [4.0]),
-            _rank_candidate_data([-1], ["decode_only"], [11.0], [5.0]),
-        ],
-        data_parallel_size=2,
-        expected_step_kind="decode_only",
-        layers=(0,),
-        num_experts=4,
-    )
-    assert result.global_step_indices.size == 0
-    assert result.num_global_non_target_dropped_steps == 1
+def test_global_step_time_aggregation_rejects_missing_join_key():
+    try:
+        helper.aggregate_global_step_time_components(
+            [
+                _rank_candidate_data([7], ["decode_only"], [10.0], [4.0]),
+                _rank_candidate_data([-1], ["decode_only"], [11.0], [5.0]),
+            ],
+            data_parallel_size=2,
+            layers=(0,),
+            num_experts=4,
+        )
+    except ValueError as exc:
+        assert "invalid EP collective span" in str(exc)
+    else:
+        raise AssertionError("Expected missing EP span to fail.")
 
 
 def test_global_step_time_aggregation_rejects_negative_other_time():
@@ -381,7 +559,6 @@ def test_global_step_time_aggregation_rejects_negative_other_time():
                 _rank_candidate_data([7], ["decode_only"], [4.0], [3.0]),
             ],
             data_parallel_size=2,
-            expected_step_kind="decode_only",
             layers=(0,),
             num_experts=4,
         )
@@ -445,6 +622,64 @@ def test_sorted_rank_ffn_time_rows_average_by_sorted_position():
     assert imbalance_rows[0]["avg_step_ffn_max_mean_ratio"] == (
         (7.0 / 5.0 + 6.0 / 4.0) / 2.0
     )
+
+
+def test_sorted_rank_summary_rows_average_ffn_tokens_and_active():
+    condition = SimpleNamespace(
+        data_parallel_size=2,
+        layers=np.array([0, 1], dtype=np.int64),
+        global_barrier_ids=np.array([0, 1], dtype=np.int64),
+        rank_step_kinds=np.array(
+            [["decode_only", "decode_only"], ["decode_only", "decode_only"]]
+        ),
+        rank_step_total_ms=np.ones((2, 2), dtype=np.float64),
+        rank_step_draft_ms=np.zeros((2, 2), dtype=np.float64),
+        rank_layer_ffn_ms=np.ones((2, 2, 2), dtype=np.float64),
+        rank_layer_local_routed_tokens=np.ones((2, 2, 2), dtype=np.int64),
+        rank_layer_local_active_experts=np.ones((2, 2, 2), dtype=np.int64),
+        global_step_sorted_rank_ffn_ms=np.array(
+            [[18.0, 3.0], [10.0, 6.0]], dtype=np.float64
+        ),
+        global_step_sorted_rank_local_routed_tokens=np.array(
+            [[180, 30], [100, 60]], dtype=np.int64
+        ),
+        global_step_sorted_rank_local_active_experts=np.array(
+            [[7, 3], [5, 4]], dtype=np.int64
+        ),
+    )
+    rows = analysis.build_sorted_rank_summary_rows(
+        {"batch_sizes": (32,), "draft_lengths": (0,)},
+        {(32, 0): condition},
+    )
+    assert rows[0]["sorted_rank_position"] == 0
+    assert rows[0]["avg_ffn_ms"] == 14.0
+    assert rows[0]["avg_local_routed_tokens"] == 140.0
+    assert rows[0]["avg_local_active_experts"] == 6.0
+    assert rows[1]["avg_ffn_ms"] == 4.5
+
+
+def test_active_expert_ratio_uses_all_ranks_layers_over_model_experts():
+    condition = SimpleNamespace(
+        layers=np.array([0, 1], dtype=np.int64),
+        global_barrier_ids=np.array([0, 1], dtype=np.int64),
+        rank_layer_local_active_experts=np.array(
+            [
+                [[2, 1], [1, 0]],
+                [[4, 2], [2, 0]],
+            ],
+            dtype=np.int64,
+        ),
+    )
+    rows = analysis.build_active_expert_ratio_rows(
+        {
+            "batch_sizes": (32,),
+            "draft_lengths": (0,),
+            "num_experts": 8,
+        },
+        {(32, 0): condition},
+    )
+    # barrier ratios: 4 / (2 * 8), 8 / (2 * 8)
+    assert rows[0]["active_expert_ratio"] == 0.375
 
 
 def test_close_ffn_component_folds_small_residual_into_ffn():
@@ -584,7 +819,7 @@ def test_scheduler_capacity_helpers_use_local_batch_budget():
             draft_length=6,
             max_num_batched_tokens_override=None,
         )
-        == 4096
+        == helper.DEFAULT_MAX_NUM_BATCHED_TOKENS
     )
     assert (
         runtime.get_configured_max_num_batched_tokens(
@@ -605,7 +840,7 @@ def test_scheduler_capacity_helpers_use_local_batch_budget():
             local_max_num_seqs,
             draft_length=6,
         )
-        == 6656
+        == helper.DEFAULT_MAX_NUM_BATCHED_TOKENS
     )
 
 

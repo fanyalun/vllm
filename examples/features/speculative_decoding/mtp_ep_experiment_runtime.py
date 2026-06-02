@@ -24,6 +24,7 @@ from mtp_ep_load_balance_utils import (
     DEFAULT_DATASET,
     DEFAULT_DATASET_CONFIG,
     DEFAULT_DATASET_SPLIT,
+    DEFAULT_MAX_NUM_BATCHED_TOKENS,
     FinishedRequestStatTotals,
     SCHEMA_VERSION,
     StepTiming,
@@ -154,10 +155,23 @@ class ConditionRawData:
     step_finalize_ms: np.ndarray
     step_ffn_ms: np.ndarray
     captured_step_kinds: np.ndarray
+    global_barrier_ids: np.ndarray
+    barrier_first_ep_collective_seq_ids: np.ndarray
+    barrier_last_ep_collective_seq_ids: np.ndarray
+    barrier_num_ep_collectives: np.ndarray
+    rank_step_kinds: np.ndarray
+    rank_step_total_ms: np.ndarray
+    rank_step_draft_ms: np.ndarray
+    rank_layer_ffn_ms: np.ndarray
+    rank_layer_local_routed_tokens: np.ndarray
+    rank_layer_local_active_experts: np.ndarray
     global_step_indices: np.ndarray
     global_step_total_ms: np.ndarray
+    global_draft_ms: np.ndarray
     global_step_ffn_ms: np.ndarray
     global_step_sorted_rank_ffn_ms: np.ndarray
+    global_step_sorted_rank_local_routed_tokens: np.ndarray
+    global_step_sorted_rank_local_active_experts: np.ndarray
     global_step_ffn_max_mean_ratio: np.ndarray
     global_step_other_ms: np.ndarray
     global_step_kinds: np.ndarray
@@ -243,11 +257,37 @@ class ConditionRawData:
             "step_all2all_ms": step_all2all_ms,
             "step_ffn_ms": self.step_ffn_ms,
             "captured_step_kinds": self.captured_step_kinds,
+            "global_barrier_id": self.global_barrier_ids,
+            "global_barrier_ids": self.global_barrier_ids,
+            "barrier_first_ep_collective_seq_ids": (
+                self.barrier_first_ep_collective_seq_ids
+            ),
+            "barrier_last_ep_collective_seq_ids": (
+                self.barrier_last_ep_collective_seq_ids
+            ),
+            "barrier_num_ep_collectives": self.barrier_num_ep_collectives,
+            "rank_step_kinds": self.rank_step_kinds,
+            "rank_step_total_ms": self.rank_step_total_ms,
+            "rank_step_draft_ms": self.rank_step_draft_ms,
+            "rank_layer_ffn_ms": self.rank_layer_ffn_ms,
+            "rank_layer_local_routed_tokens": (
+                self.rank_layer_local_routed_tokens
+            ),
+            "rank_layer_local_active_experts": (
+                self.rank_layer_local_active_experts
+            ),
             "global_step_indices": self.global_step_indices,
             "global_step_total_ms": self.global_step_total_ms,
+            "global_draft_ms": self.global_draft_ms,
             "global_step_ffn_ms": self.global_step_ffn_ms,
             "global_step_ffn_phase_ms": self.global_step_ffn_ms,
             "global_step_sorted_rank_ffn_ms": self.global_step_sorted_rank_ffn_ms,
+            "global_step_sorted_rank_local_routed_tokens": (
+                self.global_step_sorted_rank_local_routed_tokens
+            ),
+            "global_step_sorted_rank_local_active_experts": (
+                self.global_step_sorted_rank_local_active_experts
+            ),
             "global_step_ffn_max_mean_ratio": self.global_step_ffn_max_mean_ratio,
             "global_step_other_ms": self.global_step_other_ms,
             "global_step_kinds": self.global_step_kinds,
@@ -337,12 +377,18 @@ class RankConditionData:
     captured_prepare_start_time_ms: np.ndarray
     captured_finalize_end_time_ms: np.ndarray
     candidate_first_ep_collective_seq_ids: np.ndarray
+    candidate_last_ep_collective_seq_ids: np.ndarray
+    candidate_num_ep_collectives: np.ndarray
     candidate_step_kinds: np.ndarray
     candidate_drop_reasons: np.ndarray
     candidate_step_total_tokens: np.ndarray
     candidate_step_total_ms: np.ndarray
+    candidate_step_draft_ms: np.ndarray
     candidate_step_ffn_ms: np.ndarray
     candidate_step_histograms: np.ndarray
+    candidate_layer_ffn_ms: np.ndarray
+    candidate_layer_local_routed_tokens: np.ndarray
+    candidate_layer_local_active_experts: np.ndarray
     expert_to_ep_rank: np.ndarray
     condition_latency_ms: float
     decode_time_total_ms: float
@@ -383,12 +429,24 @@ class RankConditionData:
             "candidate_first_ep_collective_seq_ids": (
                 self.candidate_first_ep_collective_seq_ids
             ),
+            "candidate_last_ep_collective_seq_ids": (
+                self.candidate_last_ep_collective_seq_ids
+            ),
+            "candidate_num_ep_collectives": self.candidate_num_ep_collectives,
             "candidate_step_kinds": self.candidate_step_kinds,
             "candidate_drop_reasons": self.candidate_drop_reasons,
             "candidate_step_total_tokens": self.candidate_step_total_tokens,
             "candidate_step_total_ms": self.candidate_step_total_ms,
+            "candidate_step_draft_ms": self.candidate_step_draft_ms,
             "candidate_step_ffn_ms": self.candidate_step_ffn_ms,
             "candidate_step_histograms": self.candidate_step_histograms,
+            "candidate_layer_ffn_ms": self.candidate_layer_ffn_ms,
+            "candidate_layer_local_routed_tokens": (
+                self.candidate_layer_local_routed_tokens
+            ),
+            "candidate_layer_local_active_experts": (
+                self.candidate_layer_local_active_experts
+            ),
             "expert_to_ep_rank": self.expert_to_ep_rank,
             "condition_latency_ms": np.asarray(
                 [self.condition_latency_ms], dtype=np.float64
@@ -443,11 +501,16 @@ class RankConditionData:
 class StepAccumulator:
     step_start_time_ms: float = 0.0
     first_ep_collective_seq_id: int | None = None
+    last_ep_collective_seq_id: int | None = None
+    num_ep_collectives: int = 0
     attention_ms: float = 0.0
     routing_ms: float = 0.0
     prepare_ms: float = 0.0
     finalize_ms: float = 0.0
     ffn_ms: float = 0.0
+    draft_ms: float = 0.0
+    layer_ffn_ms: dict[int, float] = field(default_factory=dict)
+    layer_stack: list[int] = field(default_factory=list)
     events: list[dict[str, float | str]] = field(default_factory=list)
 
 
@@ -467,12 +530,14 @@ _ORIGINAL_WORKER_EXECUTE_MODEL = None
 _ORIGINAL_ROUTER_SELECT_EXPERTS = None
 _ORIGINAL_QWEN2_MLP_FORWARD = None
 _ORIGINAL_QWEN3_MLP_FORWARD = None
+_ORIGINAL_QWEN3_SPARSE_MOE_FORWARD = None
 _ORIGINAL_QWEN3_NEXT_ATTN_FORWARD = None
 _ORIGINAL_QWEN_GDN_FORWARD = None
 _ORIGINAL_MODULAR_PREPARE = None
 _ORIGINAL_MODULAR_FUSED_EXPERTS = None
 _ORIGINAL_MODULAR_FINALIZE = None
 _ORIGINAL_MONOLITHIC_APPLY = None
+_ORIGINAL_GPU_MODEL_RUNNER_PROPOSE_DRAFT = None
 
 
 def condition_name(batch_size: int, draft_length: int) -> str:
@@ -517,7 +582,8 @@ def save_run_metadata(output_dir: Path, args: Any) -> None:
         "enforce_eager": args.enforce_eager,
         "warmup_rounds": args.warmup_rounds,
         "trace_steps_per_rank": args.trace_steps_per_rank,
-        "mixed_step_policy": "drop_step",
+        "enable_chunked_prefill": True,
+        "mixed_step_policy": "include_all_global_barriers",
         "tpot_definition": TPOT_DEFINITION,
         "vllm_enable_v1_multiprocessing": os.environ.get(
             "VLLM_ENABLE_V1_MULTIPROCESSING"
@@ -546,9 +612,11 @@ def save_collect_manifest(
         "num_samples": args.num_samples,
         "max_tokens": args.max_tokens,
         "layers": list(args.layers),
+        "num_experts": args.num_experts,
         "warmup_rounds": args.warmup_rounds,
         "trace_steps_per_rank": args.trace_steps_per_rank,
-        "mixed_step_policy": "drop_step",
+        "enable_chunked_prefill": True,
+        "mixed_step_policy": "include_all_global_barriers",
         "tpot_definition": TPOT_DEFINITION,
         "conditions": [
             {
@@ -769,7 +837,7 @@ def get_configured_max_num_batched_tokens(
         if max_num_batched_tokens_override <= 0:
             raise ValueError("max_num_batched_tokens override must be positive.")
         return max_num_batched_tokens_override
-    return max(4096, local_max_num_seqs * (2 * draft_length + 1))
+    return DEFAULT_MAX_NUM_BATCHED_TOKENS
 
 
 def _get_int_config_attr(config: Any | None, name: str) -> int:
@@ -840,6 +908,7 @@ def create_llm(args: Namespace, batch_size: int, draft_length: int):
         enable_expert_parallel=True,
         enable_return_routed_experts=True,
         enable_eplb=False,
+        enable_chunked_prefill=True,
         max_model_len=args.max_model_len,
         max_num_seqs=local_max_num_seqs,
         max_num_batched_tokens=configured_max_num_batched_tokens,
@@ -902,7 +971,13 @@ def _synchronize_device() -> None:
         synchronize()
 
 
-def _measure_worker_section(label: str, fn: Callable, *args: Any, **kwargs: Any):
+def _measure_worker_section(
+    label: str,
+    fn: Callable,
+    *args: Any,
+    add_to_step_ffn: bool = True,
+    **kwargs: Any,
+):
     current_step = _WORKER_STATE.current_step
     if not _WORKER_STATE.enabled or current_step is None:
         return fn(*args, **kwargs)
@@ -913,6 +988,8 @@ def _measure_worker_section(label: str, fn: Callable, *args: Any, **kwargs: Any)
         _WORKER_STATE.next_ep_collective_seq_id += 1
         if current_step.first_ep_collective_seq_id is None:
             current_step.first_ep_collective_seq_id = ep_collective_seq_id
+        current_step.last_ep_collective_seq_id = ep_collective_seq_id
+        current_step.num_ep_collectives += 1
 
     _synchronize_device()
     start = time.perf_counter()
@@ -940,10 +1017,50 @@ def _measure_worker_section(label: str, fn: Callable, *args: Any, **kwargs: Any)
     elif label == "routing":
         current_step.routing_ms += elapsed_ms
     elif label == "ffn":
-        current_step.ffn_ms += elapsed_ms
+        if add_to_step_ffn:
+            current_step.ffn_ms += elapsed_ms
+        if current_step.layer_stack:
+            layer_idx = current_step.layer_stack[-1]
+            current_step.layer_ffn_ms[layer_idx] = (
+                current_step.layer_ffn_ms.get(layer_idx, 0.0) + elapsed_ms
+            )
+    elif label == "draft":
+        current_step.draft_ms += elapsed_ms
     else:
         raise ValueError(f"Unknown measured label: {label}")
     return result
+
+
+def _extract_layer_index_from_module(module: Any) -> int | None:
+    layer_idx = getattr(module, "layer_idx", None)
+    if layer_idx is not None:
+        return int(layer_idx)
+    layer_name = getattr(module, "layer_name", None)
+    if layer_name is None:
+        experts = getattr(module, "experts", None)
+        layer_name = getattr(experts, "layer_name", None)
+    if not layer_name:
+        return None
+    from vllm.model_executor.models.utils import extract_layer_index
+
+    try:
+        return int(extract_layer_index(str(layer_name)))
+    except AssertionError:
+        return None
+
+
+def _push_current_layer(layer_idx: int | None) -> bool:
+    current_step = _WORKER_STATE.current_step
+    if not _WORKER_STATE.enabled or current_step is None or layer_idx is None:
+        return False
+    current_step.layer_stack.append(layer_idx)
+    return True
+
+
+def _pop_current_layer(pushed: bool) -> None:
+    current_step = _WORKER_STATE.current_step
+    if pushed and current_step is not None:
+        current_step.layer_stack.pop()
 
 
 def _extract_input_batch_metadata(input_batch: Any) -> dict[str, Any]:
@@ -990,12 +1107,14 @@ def _install_worker_hooks() -> None:
     global _ORIGINAL_ROUTER_SELECT_EXPERTS
     global _ORIGINAL_QWEN2_MLP_FORWARD
     global _ORIGINAL_QWEN3_MLP_FORWARD
+    global _ORIGINAL_QWEN3_SPARSE_MOE_FORWARD
     global _ORIGINAL_QWEN3_NEXT_ATTN_FORWARD
     global _ORIGINAL_QWEN_GDN_FORWARD
     global _ORIGINAL_MODULAR_PREPARE
     global _ORIGINAL_MODULAR_FUSED_EXPERTS
     global _ORIGINAL_MODULAR_FINALIZE
     global _ORIGINAL_MONOLITHIC_APPLY
+    global _ORIGINAL_GPU_MODEL_RUNNER_PROPOSE_DRAFT
 
     if _ORIGINAL_WORKER_EXECUTE_MODEL is not None:
         return
@@ -1009,20 +1128,26 @@ def _install_worker_hooks() -> None:
         FusedMoEKernelMonolithicImpl,
     )
     from vllm.model_executor.models.qwen2_moe import Qwen2MoeMLP
-    from vllm.model_executor.models.qwen3_moe import Qwen3MoeMLP
+    from vllm.model_executor.models.qwen3_moe import (
+        Qwen3MoeMLP,
+        Qwen3MoeSparseMoeBlock,
+    )
     from vllm.model_executor.models.qwen3_next import Qwen3NextAttention
+    from vllm.v1.worker.gpu_model_runner import GPUModelRunner
     from vllm.v1.worker.gpu_worker import Worker
 
     _ORIGINAL_WORKER_EXECUTE_MODEL = Worker.execute_model
     _ORIGINAL_ROUTER_SELECT_EXPERTS = BaseRouter.select_experts
     _ORIGINAL_QWEN2_MLP_FORWARD = Qwen2MoeMLP.forward
     _ORIGINAL_QWEN3_MLP_FORWARD = Qwen3MoeMLP.forward
+    _ORIGINAL_QWEN3_SPARSE_MOE_FORWARD = Qwen3MoeSparseMoeBlock.forward
     _ORIGINAL_QWEN3_NEXT_ATTN_FORWARD = Qwen3NextAttention.forward
     _ORIGINAL_QWEN_GDN_FORWARD = QwenGatedDeltaNetAttention.forward
     _ORIGINAL_MODULAR_PREPARE = FusedMoEKernelModularImpl._prepare
     _ORIGINAL_MODULAR_FUSED_EXPERTS = FusedMoEKernelModularImpl._fused_experts
     _ORIGINAL_MODULAR_FINALIZE = FusedMoEKernelModularImpl._finalize
     _ORIGINAL_MONOLITHIC_APPLY = FusedMoEKernelMonolithicImpl.apply
+    _ORIGINAL_GPU_MODEL_RUNNER_PROPOSE_DRAFT = GPUModelRunner.propose_draft_token_ids
 
     def patched_worker_execute_model(self, scheduler_output):
         if (
@@ -1060,6 +1185,7 @@ def _install_worker_hooks() -> None:
                         "prepare_ms": _WORKER_STATE.current_step.prepare_ms,
                         "finalize_ms": _WORKER_STATE.current_step.finalize_ms,
                         "ffn_ms": _WORKER_STATE.current_step.ffn_ms,
+                        "draft_ms": _WORKER_STATE.current_step.draft_ms,
                     },
                     "metadata": _extract_worker_step_metadata(self),
                     "trace": {
@@ -1067,11 +1193,18 @@ def _install_worker_hooks() -> None:
                         "first_ep_collective_seq_id": (
                             _WORKER_STATE.current_step.first_ep_collective_seq_id
                         ),
+                        "last_ep_collective_seq_id": (
+                            _WORKER_STATE.current_step.last_ep_collective_seq_id
+                        ),
+                        "num_ep_collectives": (
+                            _WORKER_STATE.current_step.num_ep_collectives
+                        ),
                         "step_start_time_ms": (
                             _WORKER_STATE.current_step.step_start_time_ms
                         ),
                         "step_end_time_ms": end * 1000.0,
                         "events": list(_WORKER_STATE.current_step.events),
+                        "layer_ffn_ms": dict(_WORKER_STATE.current_step.layer_ffn_ms),
                     },
                 }
             )
@@ -1084,7 +1217,8 @@ def _install_worker_hooks() -> None:
                     f"routing_ms={_WORKER_STATE.current_step.routing_ms:.3f} "
                     f"prepare_ms={_WORKER_STATE.current_step.prepare_ms:.3f} "
                     f"finalize_ms={_WORKER_STATE.current_step.finalize_ms:.3f} "
-                    f"ffn_ms={_WORKER_STATE.current_step.ffn_ms:.3f}",
+                    f"ffn_ms={_WORKER_STATE.current_step.ffn_ms:.3f} "
+                    f"draft_ms={_WORKER_STATE.current_step.draft_ms:.3f}",
                     flush=True,
                 )
                 _WORKER_STATE.queued_step_logs += 1
@@ -1116,8 +1250,16 @@ def _install_worker_hooks() -> None:
             _ORIGINAL_QWEN3_MLP_FORWARD,
             self,
             *args,
+            add_to_step_ffn=False,
             **kwargs,
         )
+
+    def patched_qwen3_sparse_moe_forward(self, *args, **kwargs):
+        pushed = _push_current_layer(_extract_layer_index_from_module(self))
+        try:
+            return _ORIGINAL_QWEN3_SPARSE_MOE_FORWARD(self, *args, **kwargs)
+        finally:
+            _pop_current_layer(pushed)
 
     def patched_qwen3_next_attention_forward(self, *args, **kwargs):
         return _measure_worker_section(
@@ -1227,16 +1369,27 @@ def _install_worker_hooks() -> None:
             fused_out,
         )
 
+    def patched_propose_draft_token_ids(self, *args, **kwargs):
+        return _measure_worker_section(
+            "draft",
+            _ORIGINAL_GPU_MODEL_RUNNER_PROPOSE_DRAFT,
+            self,
+            *args,
+            **kwargs,
+        )
+
     Worker.execute_model = patched_worker_execute_model
     BaseRouter.select_experts = patched_router_select_experts
     Qwen2MoeMLP.forward = patched_qwen2_mlp_forward
     Qwen3MoeMLP.forward = patched_qwen3_mlp_forward
+    Qwen3MoeSparseMoeBlock.forward = patched_qwen3_sparse_moe_forward
     Qwen3NextAttention.forward = patched_qwen3_next_attention_forward
     QwenGatedDeltaNetAttention.forward = patched_qwen_gdn_forward
     FusedMoEKernelModularImpl._prepare = patched_modular_prepare
     FusedMoEKernelModularImpl._fused_experts = patched_modular_fused_experts
     FusedMoEKernelModularImpl._finalize = patched_modular_finalize
     FusedMoEKernelMonolithicImpl.apply = patched_monolithic_apply
+    GPUModelRunner.propose_draft_token_ids = patched_propose_draft_token_ids
 
 
 def install_experiment_hooks_worker(worker: Any) -> bool:
@@ -1350,6 +1503,8 @@ class SchedulerStepRecorder:
         use_spec_decode: bool,
         layers: tuple[int, ...],
         num_experts: int,
+        expert_to_ep_rank: np.ndarray,
+        local_ep_rank: int,
         trace_steps_limit: int = 0,
     ) -> None:
         self.scheduler = scheduler
@@ -1357,6 +1512,8 @@ class SchedulerStepRecorder:
         self.use_spec_decode = use_spec_decode
         self.layers = layers
         self.num_experts = num_experts
+        self.expert_to_ep_rank = np.asarray(expert_to_ep_rank, dtype=np.int64)
+        self.local_ep_rank = local_ep_rank
         self._original_update = None
         self.step_histograms: list[np.ndarray] = []
         self.step_total_tokens: list[int] = []
@@ -1373,12 +1530,18 @@ class SchedulerStepRecorder:
         self.prepare_start_time_ms: list[float] = []
         self.finalize_end_time_ms: list[float] = []
         self.candidate_first_ep_collective_seq_ids: list[int] = []
+        self.candidate_last_ep_collective_seq_ids: list[int] = []
+        self.candidate_num_ep_collectives: list[int] = []
         self.candidate_step_kinds: list[str] = []
         self.candidate_drop_reasons: list[str] = []
         self.candidate_step_total_tokens: list[int] = []
         self.candidate_step_total_ms: list[float] = []
+        self.candidate_step_draft_ms: list[float] = []
         self.candidate_step_ffn_ms: list[float] = []
         self.candidate_step_histograms: list[np.ndarray] = []
+        self.candidate_layer_ffn_ms: list[np.ndarray] = []
+        self.candidate_layer_local_routed_tokens: list[np.ndarray] = []
+        self.candidate_layer_local_active_experts: list[np.ndarray] = []
         self.num_forward_steps_total = 0
         self.num_dropped_steps = 0
         self.num_prefill_dropped_steps = 0
@@ -1386,6 +1549,61 @@ class SchedulerStepRecorder:
         self.debug_update_logs = 0
         self.trace_steps_limit = trace_steps_limit
         self.trace_samples: list[dict[str, Any]] = []
+
+    def _build_layer_ffn_ms(self, worker_records: list[dict[str, Any] | None]):
+        values = np.zeros((len(self.layers),), dtype=np.float64)
+        layer_to_row = {layer: row for row, layer in enumerate(self.layers)}
+        for record in worker_records:
+            if record is None:
+                continue
+            trace = record.get("trace")
+            if not trace:
+                continue
+            for raw_layer, elapsed_ms in trace.get("layer_ffn_ms", {}).items():
+                layer = int(raw_layer)
+                row = layer_to_row.get(layer)
+                if row is not None:
+                    values[row] = max(values[row], float(elapsed_ms))
+        return values
+
+    def _build_candidate_histogram(
+        self,
+        model_runner_output: Any,
+    ) -> tuple[np.ndarray, int]:
+        routed_experts = getattr(model_runner_output, "routed_experts", None)
+        if routed_experts is None:
+            return (
+                np.zeros((len(self.layers), self.num_experts), dtype=np.int64),
+                0,
+            )
+        routing_data = np.asarray(routed_experts.routing_data)
+        if routing_data.size == 0:
+            return (
+                np.zeros((len(self.layers), self.num_experts), dtype=np.int64),
+                0,
+            )
+        histograms = count_layer_expert_histograms(
+            routing_data,
+            layers=self.layers,
+            num_experts=self.num_experts,
+        )
+        return histograms, int(routing_data.shape[0])
+
+    def _build_local_routed_stats(
+        self,
+        histograms: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if self.expert_to_ep_rank.shape != (self.num_experts,):
+            raise ValueError(
+                "expert_to_ep_rank must be shaped as "
+                f"{(self.num_experts,)}; got {self.expert_to_ep_rank.shape}."
+            )
+        local_mask = self.expert_to_ep_rank == self.local_ep_rank
+        local_counts = histograms[:, local_mask]
+        return (
+            np.sum(local_counts, axis=1).astype(np.int64),
+            np.count_nonzero(local_counts > 0, axis=1).astype(np.int64),
+        )
 
     def __enter__(self) -> "SchedulerStepRecorder":
         self._original_update = self.scheduler.update_from_output
@@ -1412,6 +1630,15 @@ class SchedulerStepRecorder:
                     for record in worker_records
                 ]
             )
+            draft_ms = max(
+                (
+                    float(record["timing"].get("draft_ms", 0.0))
+                    for record in worker_records
+                    if record is not None
+                ),
+                default=0.0,
+            )
+            layer_ffn_ms = self._build_layer_ffn_ms(worker_records)
             worker_metadata = next(
                 (
                     record["metadata"]
@@ -1437,34 +1664,46 @@ class SchedulerStepRecorder:
                 use_spec_decode=self.use_spec_decode,
             )
             captured_step = capture_decision.captured_step
-            ffn_ms = _close_ffn_component(step_timing)
+            ffn_ms = float(np.sum(layer_ffn_ms))
+            if ffn_ms <= 0.0:
+                ffn_ms = _close_ffn_component(step_timing)
             first_ep_collective_seq_id = -1
+            last_ep_collective_seq_id = -1
+            num_ep_collectives = 0
             if worker_trace is not None:
                 raw_ep_seq = worker_trace.get("first_ep_collective_seq_id")
                 first_ep_collective_seq_id = (
                     -1 if raw_ep_seq is None else int(raw_ep_seq)
                 )
-            candidate_histogram = np.zeros(
-                (len(self.layers), self.num_experts), dtype=np.int64
-            )
-            candidate_total_tokens = 0
-            if captured_step is not None:
-                candidate_histogram = count_layer_expert_histograms(
-                    captured_step.routing_data,
-                    layers=self.layers,
-                    num_experts=self.num_experts,
+                raw_last_ep_seq = worker_trace.get("last_ep_collective_seq_id")
+                last_ep_collective_seq_id = (
+                    -1 if raw_last_ep_seq is None else int(raw_last_ep_seq)
                 )
-                candidate_total_tokens = captured_step.total_scheduled_tokens
+                num_ep_collectives = int(worker_trace.get("num_ep_collectives", 0))
+            candidate_histogram, candidate_total_tokens = (
+                self._build_candidate_histogram(model_runner_output)
+            )
+            local_routed_tokens, local_active_experts = (
+                self._build_local_routed_stats(candidate_histogram)
+            )
 
             self.candidate_first_ep_collective_seq_ids.append(
                 first_ep_collective_seq_id
             )
+            self.candidate_last_ep_collective_seq_ids.append(
+                last_ep_collective_seq_id
+            )
+            self.candidate_num_ep_collectives.append(num_ep_collectives)
             self.candidate_step_kinds.append(capture_decision.local_step_kind)
             self.candidate_drop_reasons.append(capture_decision.drop_reason or "")
             self.candidate_step_total_tokens.append(candidate_total_tokens)
             self.candidate_step_total_ms.append(step_timing.total_ms)
+            self.candidate_step_draft_ms.append(draft_ms)
             self.candidate_step_ffn_ms.append(ffn_ms)
             self.candidate_step_histograms.append(candidate_histogram)
+            self.candidate_layer_ffn_ms.append(layer_ffn_ms)
+            self.candidate_layer_local_routed_tokens.append(local_routed_tokens)
+            self.candidate_layer_local_active_experts.append(local_active_experts)
 
             if captured_step is None:
                 self.num_dropped_steps += 1
@@ -1515,6 +1754,7 @@ class SchedulerStepRecorder:
                             "step_start_time_ms": step_start_time_ms,
                             "step_end_time_ms": step_end_time_ms,
                             "step_total_ms": float(step_timing.total_ms),
+                            "draft_ms": float(draft_ms),
                             "step_kind": captured_step.step_kind,
                             "total_scheduled_tokens": int(
                                 captured_step.total_scheduled_tokens
@@ -1540,6 +1780,7 @@ class SchedulerStepRecorder:
                                 "prepare": float(step_timing.prepare_ms),
                                 "finalize": float(step_timing.finalize_ms),
                                 "ffn": float(ffn_ms),
+                                "draft": float(draft_ms),
                             },
                         }
                     )
@@ -1629,6 +1870,8 @@ def _run_recorded_round(
     use_spec_decode: bool,
     layers: tuple[int, ...],
     num_experts: int,
+    expert_to_ep_rank: np.ndarray,
+    local_ep_rank: int,
     trace_steps_limit: int,
 ) -> tuple[Any, SchedulerStepRecorder, float]:
     model_executor.collective_rpc(start_condition_collection_worker, timeout=30)
@@ -1639,6 +1882,8 @@ def _run_recorded_round(
             use_spec_decode=use_spec_decode,
             layers=layers,
             num_experts=num_experts,
+            expert_to_ep_rank=expert_to_ep_rank,
+            local_ep_rank=local_ep_rank,
             trace_steps_limit=trace_steps_limit,
         ) as recorder:
             start = time.perf_counter()
@@ -1767,12 +2012,18 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
     prepare_start_time_ms_parts: list[np.ndarray] = []
     finalize_end_time_ms_parts: list[np.ndarray] = []
     candidate_first_ep_collective_seq_id_parts: list[np.ndarray] = []
+    candidate_last_ep_collective_seq_id_parts: list[np.ndarray] = []
+    candidate_num_ep_collective_parts: list[np.ndarray] = []
     candidate_step_kind_parts: list[np.ndarray] = []
     candidate_drop_reason_parts: list[np.ndarray] = []
     candidate_step_total_tokens_parts: list[np.ndarray] = []
     candidate_step_total_ms_parts: list[np.ndarray] = []
+    candidate_step_draft_ms_parts: list[np.ndarray] = []
     candidate_step_ffn_ms_parts: list[np.ndarray] = []
     candidate_step_histogram_parts: list[np.ndarray] = []
+    candidate_layer_ffn_ms_parts: list[np.ndarray] = []
+    candidate_layer_local_routed_tokens_parts: list[np.ndarray] = []
+    candidate_layer_local_active_experts_parts: list[np.ndarray] = []
     trace_samples: list[dict[str, Any]] = []
     condition_latency_ms = 0.0
     num_forward_steps_total = 0
@@ -1811,6 +2062,8 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
                     use_spec_decode=use_spec_decode,
                     layers=tuple(args.layers),
                     num_experts=args.num_experts,
+                    expert_to_ep_rank=expert_to_ep_rank,
+                    local_ep_rank=dp_rank,
                     trace_steps_limit=args.trace_steps_per_rank,
                 )
             else:
@@ -1846,6 +2099,15 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
                     dtype=np.int64,
                 )
             )
+            candidate_last_ep_collective_seq_id_parts.append(
+                np.asarray(
+                    recorder.candidate_last_ep_collective_seq_ids,
+                    dtype=np.int64,
+                )
+            )
+            candidate_num_ep_collective_parts.append(
+                np.asarray(recorder.candidate_num_ep_collectives, dtype=np.int64)
+            )
             candidate_step_kind_parts.append(
                 np.asarray(recorder.candidate_step_kinds, dtype=np.str_)
             )
@@ -1858,6 +2120,9 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
             candidate_step_total_ms_parts.append(
                 np.asarray(recorder.candidate_step_total_ms, dtype=np.float64)
             )
+            candidate_step_draft_ms_parts.append(
+                np.asarray(recorder.candidate_step_draft_ms, dtype=np.float64)
+            )
             candidate_step_ffn_ms_parts.append(
                 np.asarray(recorder.candidate_step_ffn_ms, dtype=np.float64)
             )
@@ -1866,6 +2131,22 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
                     np.stack(recorder.candidate_step_histograms, axis=0).astype(
                         np.int64
                     )
+                )
+            if recorder.candidate_layer_ffn_ms:
+                candidate_layer_ffn_ms_parts.append(
+                    np.stack(recorder.candidate_layer_ffn_ms, axis=0).astype(
+                        np.float64
+                    )
+                )
+                candidate_layer_local_routed_tokens_parts.append(
+                    np.stack(
+                        recorder.candidate_layer_local_routed_tokens, axis=0
+                    ).astype(np.int64)
+                )
+                candidate_layer_local_active_experts_parts.append(
+                    np.stack(
+                        recorder.candidate_layer_local_active_experts, axis=0
+                    ).astype(np.int64)
                 )
             if recorder.step_histograms:
                 step_histograms_parts.append(
@@ -1931,6 +2212,16 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         if candidate_first_ep_collective_seq_id_parts
         else _empty_int_array()
     )
+    candidate_last_ep_collective_seq_ids = (
+        np.concatenate(candidate_last_ep_collective_seq_id_parts, axis=0)
+        if candidate_last_ep_collective_seq_id_parts
+        else _empty_int_array()
+    )
+    candidate_num_ep_collectives = (
+        np.concatenate(candidate_num_ep_collective_parts, axis=0)
+        if candidate_num_ep_collective_parts
+        else _empty_int_array()
+    )
     candidate_step_kinds = (
         np.concatenate(candidate_step_kind_parts, axis=0)
         if candidate_step_kind_parts
@@ -1951,6 +2242,11 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         if candidate_step_total_ms_parts
         else _empty_float_array()
     )
+    candidate_step_draft_ms = (
+        np.concatenate(candidate_step_draft_ms_parts, axis=0)
+        if candidate_step_draft_ms_parts
+        else _empty_float_array()
+    )
     candidate_step_ffn_ms = (
         np.concatenate(candidate_step_ffn_ms_parts, axis=0)
         if candidate_step_ffn_ms_parts
@@ -1960,6 +2256,21 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         np.concatenate(candidate_step_histogram_parts, axis=0)
         if candidate_step_histogram_parts
         else _empty_candidate_histograms(args)
+    )
+    candidate_layer_ffn_ms = (
+        np.concatenate(candidate_layer_ffn_ms_parts, axis=0)
+        if candidate_layer_ffn_ms_parts
+        else np.empty((0, len(args.layers)), dtype=np.float64)
+    )
+    candidate_layer_local_routed_tokens = (
+        np.concatenate(candidate_layer_local_routed_tokens_parts, axis=0)
+        if candidate_layer_local_routed_tokens_parts
+        else np.empty((0, len(args.layers)), dtype=np.int64)
+    )
+    candidate_layer_local_active_experts = (
+        np.concatenate(candidate_layer_local_active_experts_parts, axis=0)
+        if candidate_layer_local_active_experts_parts
+        else np.empty((0, len(args.layers)), dtype=np.int64)
     )
 
     if not step_histograms_parts:
@@ -1990,12 +2301,22 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
             candidate_first_ep_collective_seq_ids=(
                 candidate_first_ep_collective_seq_ids
             ),
+            candidate_last_ep_collective_seq_ids=(
+                candidate_last_ep_collective_seq_ids
+            ),
+            candidate_num_ep_collectives=candidate_num_ep_collectives,
             candidate_step_kinds=candidate_step_kinds,
             candidate_drop_reasons=candidate_drop_reasons,
             candidate_step_total_tokens=candidate_step_total_tokens,
             candidate_step_total_ms=candidate_step_total_ms,
+            candidate_step_draft_ms=candidate_step_draft_ms,
             candidate_step_ffn_ms=candidate_step_ffn_ms,
             candidate_step_histograms=candidate_step_histograms,
+            candidate_layer_ffn_ms=candidate_layer_ffn_ms,
+            candidate_layer_local_routed_tokens=candidate_layer_local_routed_tokens,
+            candidate_layer_local_active_experts=(
+                candidate_layer_local_active_experts
+            ),
             expert_to_ep_rank=expert_to_ep_rank,
             condition_latency_ms=condition_latency_ms,
             decode_time_total_ms=finished_stats.decode_time_total_ms,
@@ -2052,12 +2373,18 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
             finalize_end_time_ms_parts, axis=0
         ),
         candidate_first_ep_collective_seq_ids=candidate_first_ep_collective_seq_ids,
+        candidate_last_ep_collective_seq_ids=candidate_last_ep_collective_seq_ids,
+        candidate_num_ep_collectives=candidate_num_ep_collectives,
         candidate_step_kinds=candidate_step_kinds,
         candidate_drop_reasons=candidate_drop_reasons,
         candidate_step_total_tokens=candidate_step_total_tokens,
         candidate_step_total_ms=candidate_step_total_ms,
+        candidate_step_draft_ms=candidate_step_draft_ms,
         candidate_step_ffn_ms=candidate_step_ffn_ms,
         candidate_step_histograms=candidate_step_histograms,
+        candidate_layer_ffn_ms=candidate_layer_ffn_ms,
+        candidate_layer_local_routed_tokens=candidate_layer_local_routed_tokens,
+        candidate_layer_local_active_experts=candidate_layer_local_active_experts,
         expert_to_ep_rank=expert_to_ep_rank,
         condition_latency_ms=condition_latency_ms,
         decode_time_total_ms=finished_stats.decode_time_total_ms,
@@ -2145,14 +2472,28 @@ def load_rank_condition_data(path: Path) -> RankConditionData:
             candidate_first_ep_collective_seq_ids=np.asarray(
                 data["candidate_first_ep_collective_seq_ids"]
             ),
+            candidate_last_ep_collective_seq_ids=np.asarray(
+                data["candidate_last_ep_collective_seq_ids"]
+            ),
+            candidate_num_ep_collectives=np.asarray(
+                data["candidate_num_ep_collectives"]
+            ),
             candidate_step_kinds=np.asarray(data["candidate_step_kinds"]),
             candidate_drop_reasons=np.asarray(data["candidate_drop_reasons"]),
             candidate_step_total_tokens=np.asarray(
                 data["candidate_step_total_tokens"]
             ),
             candidate_step_total_ms=np.asarray(data["candidate_step_total_ms"]),
+            candidate_step_draft_ms=np.asarray(data["candidate_step_draft_ms"]),
             candidate_step_ffn_ms=np.asarray(data["candidate_step_ffn_ms"]),
             candidate_step_histograms=np.asarray(data["candidate_step_histograms"]),
+            candidate_layer_ffn_ms=np.asarray(data["candidate_layer_ffn_ms"]),
+            candidate_layer_local_routed_tokens=np.asarray(
+                data["candidate_layer_local_routed_tokens"]
+            ),
+            candidate_layer_local_active_experts=np.asarray(
+                data["candidate_layer_local_active_experts"]
+            ),
             expert_to_ep_rank=np.asarray(data["expert_to_ep_rank"]),
             condition_latency_ms=float(data["condition_latency_ms"][0]),
             decode_time_total_ms=float(data["decode_time_total_ms"][0]),
@@ -2259,31 +2600,43 @@ def _aggregate_rank_condition_data(
         num_experts=args.num_experts,
         ep_size=args.data_parallel_size,
     )
-    expected_step_kind = "verification_only" if args.draft_length > 0 else "decode_only"
     global_steps = aggregate_global_step_time_components(
         [
             {
                 "candidate_first_ep_collective_seq_ids": (
                     partial.candidate_first_ep_collective_seq_ids
                 ),
+                "candidate_last_ep_collective_seq_ids": (
+                    partial.candidate_last_ep_collective_seq_ids
+                ),
+                "candidate_num_ep_collectives": (
+                    partial.candidate_num_ep_collectives
+                ),
                 "candidate_step_kinds": partial.candidate_step_kinds,
                 "candidate_step_total_ms": partial.candidate_step_total_ms,
+                "candidate_step_draft_ms": partial.candidate_step_draft_ms,
                 "candidate_step_ffn_ms": partial.candidate_step_ffn_ms,
                 "candidate_step_total_tokens": partial.candidate_step_total_tokens,
                 "candidate_step_histograms": partial.candidate_step_histograms,
+                "candidate_layer_ffn_ms": partial.candidate_layer_ffn_ms,
+                "candidate_layer_local_routed_tokens": (
+                    partial.candidate_layer_local_routed_tokens
+                ),
+                "candidate_layer_local_active_experts": (
+                    partial.candidate_layer_local_active_experts
+                ),
             }
             for partial in partials
         ],
         data_parallel_size=args.data_parallel_size,
-        expected_step_kind=expected_step_kind,
         layers=tuple(args.layers),
         num_experts=args.num_experts,
     )
     if global_steps.global_step_indices.size == 0:
         raise RuntimeError(
-            "No globally aligned captured steps survived strict DP intersection for "
+            "No globally aligned barriers were collected for "
             f"batch_size={args.batch_size}, draft_length={args.draft_length}. "
-            "Re-run collect and inspect per-rank capture coverage."
+            "Re-run collect and inspect per-rank barrier span coverage."
         )
 
     decode_time_total_ms = sum(partial.decode_time_total_ms for partial in partials)
@@ -2327,7 +2680,7 @@ def _aggregate_rank_condition_data(
         speculative_max_num_new_slots_for_drafting=(
             scheduler_capacity_config.speculative_max_num_new_slots_for_drafting
         ),
-        mixed_step_policy="drop_step",
+        mixed_step_policy="include_all_global_barriers",
         tpot_definition=TPOT_DEFINITION,
         selected_dataset_indices=selected_indices,
         prompt_lengths=prompt_lengths,
@@ -2348,11 +2701,36 @@ def _aggregate_rank_condition_data(
         step_finalize_ms=np.empty((0,), dtype=np.float64),
         step_ffn_ms=global_steps.global_step_ffn_ms,
         captured_step_kinds=global_steps.global_step_kinds,
+        global_barrier_ids=global_steps.global_barrier_ids,
+        barrier_first_ep_collective_seq_ids=(
+            global_steps.barrier_first_ep_collective_seq_ids
+        ),
+        barrier_last_ep_collective_seq_ids=(
+            global_steps.barrier_last_ep_collective_seq_ids
+        ),
+        barrier_num_ep_collectives=global_steps.barrier_num_ep_collectives,
+        rank_step_kinds=global_steps.rank_step_kinds,
+        rank_step_total_ms=global_steps.rank_step_total_ms,
+        rank_step_draft_ms=global_steps.rank_step_draft_ms,
+        rank_layer_ffn_ms=global_steps.rank_layer_ffn_ms,
+        rank_layer_local_routed_tokens=(
+            global_steps.rank_layer_local_routed_tokens
+        ),
+        rank_layer_local_active_experts=(
+            global_steps.rank_layer_local_active_experts
+        ),
         global_step_indices=global_steps.global_step_indices,
         global_step_total_ms=global_steps.global_step_total_ms,
+        global_draft_ms=global_steps.global_draft_ms,
         global_step_ffn_ms=global_steps.global_step_ffn_ms,
         global_step_sorted_rank_ffn_ms=(
             global_steps.global_step_sorted_rank_ffn_ms
+        ),
+        global_step_sorted_rank_local_routed_tokens=(
+            global_steps.global_step_sorted_rank_local_routed_tokens
+        ),
+        global_step_sorted_rank_local_active_experts=(
+            global_steps.global_step_sorted_rank_local_active_experts
         ),
         global_step_ffn_max_mean_ratio=(
             global_steps.global_step_ffn_max_mean_ratio
