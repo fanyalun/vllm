@@ -763,7 +763,12 @@ def get_local_max_num_seqs(batch_size: int, data_parallel_size: int) -> int:
 def get_configured_max_num_batched_tokens(
     local_max_num_seqs: int,
     draft_length: int,
+    max_num_batched_tokens_override: int | None = None,
 ) -> int:
+    if max_num_batched_tokens_override is not None:
+        if max_num_batched_tokens_override <= 0:
+            raise ValueError("max_num_batched_tokens override must be positive.")
+        return max_num_batched_tokens_override
     return max(4096, local_max_num_seqs * (2 * draft_length + 1))
 
 
@@ -817,6 +822,7 @@ def create_llm(args: Namespace, batch_size: int, draft_length: int):
     configured_max_num_batched_tokens = get_configured_max_num_batched_tokens(
         local_max_num_seqs,
         draft_length,
+        getattr(args, "max_num_batched_tokens", None),
     )
     speculative_config = None
     if draft_length > 0:
@@ -2486,6 +2492,11 @@ def _build_collect_one_command(
         str(getattr(args, "trace_steps_per_rank", 0)),
     ]
     _append_optional_arg(command, "--dataset-config", args.dataset_config)
+    _append_optional_arg(
+        command,
+        "--max-num-batched-tokens",
+        getattr(args, "max_num_batched_tokens", None),
+    )
     command.extend(["--layers", *(str(layer) for layer in args.layers)])
     command.append("--enforce-eager" if args.enforce_eager else "--no-enforce-eager")
     return command

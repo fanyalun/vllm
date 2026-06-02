@@ -47,6 +47,15 @@ def add_common_runtime_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     parser.add_argument("--max-model-len", type=int, default=DEFAULT_MAX_MODEL_LEN)
+    parser.add_argument(
+        "--max-num-batched-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Override vLLM max_num_batched_tokens. By default the experiment "
+            "uses its local batch and draft-length heuristic."
+        ),
+    )
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--data-parallel-size", type=int, default=2)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
@@ -122,6 +131,7 @@ def parse_args() -> argparse.Namespace:
     collect_one_parser.add_argument(
         "--max-model-len", type=int, default=DEFAULT_MAX_MODEL_LEN
     )
+    collect_one_parser.add_argument("--max-num-batched-tokens", type=int, default=None)
     collect_one_parser.add_argument("--tensor-parallel-size", type=int, default=1)
     collect_one_parser.add_argument("--data-parallel-size", type=int, default=2)
     collect_one_parser.add_argument(
@@ -183,6 +193,11 @@ def parse_args() -> argparse.Namespace:
     )
     collect_one_rank_parser.add_argument(
         "--max-model-len", type=int, default=DEFAULT_MAX_MODEL_LEN
+    )
+    collect_one_rank_parser.add_argument(
+        "--max-num-batched-tokens",
+        type=int,
+        default=None,
     )
     collect_one_rank_parser.add_argument("--tensor-parallel-size", type=int, default=1)
     collect_one_rank_parser.add_argument("--data-parallel-size", type=int, default=2)

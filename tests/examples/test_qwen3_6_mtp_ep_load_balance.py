@@ -553,6 +553,7 @@ def test_collect_one_command_includes_prompt_cache_and_warmup(tmp_path):
         layers=(0, 9),
         enforce_eager=True,
         warmup_rounds=1,
+        max_num_batched_tokens=49152,
     )
     command = runtime._build_collect_one_command(
         args,
@@ -568,6 +569,7 @@ def test_collect_one_command_includes_prompt_cache_and_warmup(tmp_path):
     assert command[command.index("--warmup-rounds") + 1] == "1"
     assert command[command.index("--data-parallel-size") + 1] == "4"
     assert command[command.index("--num-samples") + 1] == "1024"
+    assert command[command.index("--max-num-batched-tokens") + 1] == "49152"
 
 
 def test_scheduler_capacity_helpers_use_local_batch_budget():
@@ -580,8 +582,17 @@ def test_scheduler_capacity_helpers_use_local_batch_budget():
         runtime.get_configured_max_num_batched_tokens(
             local_max_num_seqs,
             draft_length=6,
+            max_num_batched_tokens_override=None,
         )
         == 4096
+    )
+    assert (
+        runtime.get_configured_max_num_batched_tokens(
+            local_max_num_seqs,
+            draft_length=6,
+            max_num_batched_tokens_override=49152,
+        )
+        == 49152
     )
 
     local_max_num_seqs = runtime.get_local_max_num_seqs(
