@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -88,6 +89,35 @@ class FinishedRequestStatsLogger(StatLoggerBase):
 
 
 _FINISHED_REQUEST_STATS_LOGGER_ATTR = "_mtp_ep_finished_request_stats_logger"
+_SCHEDULER_CAPACITY_CONFIG_ATTR = "_mtp_ep_scheduler_capacity_config"
+
+
+@dataclass(frozen=True)
+class SchedulerCapacityConfig:
+    local_max_num_seqs: int
+    configured_max_num_batched_tokens: int
+    scheduler_max_num_seqs: int
+    scheduler_max_num_batched_tokens: int
+    scheduler_max_num_scheduled_tokens: int
+    speculative_max_num_new_slots_for_drafting: int
+
+    def to_log_dict(self) -> dict[str, int]:
+        return {
+            "local_max_num_seqs": self.local_max_num_seqs,
+            "configured_max_num_batched_tokens": (
+                self.configured_max_num_batched_tokens
+            ),
+            "scheduler_max_num_seqs": self.scheduler_max_num_seqs,
+            "scheduler_max_num_batched_tokens": (
+                self.scheduler_max_num_batched_tokens
+            ),
+            "scheduler_max_num_scheduled_tokens": (
+                self.scheduler_max_num_scheduled_tokens
+            ),
+            "speculative_max_num_new_slots_for_drafting": (
+                self.speculative_max_num_new_slots_for_drafting
+            ),
+        }
 
 
 @dataclass
@@ -97,6 +127,12 @@ class ConditionRawData:
     data_parallel_size: int
     num_samples: int
     batch_size_scope: str
+    local_max_num_seqs: int
+    configured_max_num_batched_tokens: int
+    scheduler_max_num_seqs: int
+    scheduler_max_num_batched_tokens: int
+    scheduler_max_num_scheduled_tokens: int
+    speculative_max_num_new_slots_for_drafting: int
     mixed_step_policy: str
     tpot_definition: str
     selected_dataset_indices: np.ndarray
@@ -148,6 +184,25 @@ class ConditionRawData:
             "data_parallel_size": np.asarray([self.data_parallel_size], dtype=np.int64),
             "num_samples": np.asarray([self.num_samples], dtype=np.int64),
             "batch_size_scope": np.asarray([self.batch_size_scope]),
+            "local_max_num_seqs": np.asarray(
+                [self.local_max_num_seqs], dtype=np.int64
+            ),
+            "configured_max_num_batched_tokens": np.asarray(
+                [self.configured_max_num_batched_tokens], dtype=np.int64
+            ),
+            "scheduler_max_num_seqs": np.asarray(
+                [self.scheduler_max_num_seqs], dtype=np.int64
+            ),
+            "scheduler_max_num_batched_tokens": np.asarray(
+                [self.scheduler_max_num_batched_tokens], dtype=np.int64
+            ),
+            "scheduler_max_num_scheduled_tokens": np.asarray(
+                [self.scheduler_max_num_scheduled_tokens], dtype=np.int64
+            ),
+            "speculative_max_num_new_slots_for_drafting": np.asarray(
+                [self.speculative_max_num_new_slots_for_drafting],
+                dtype=np.int64,
+            ),
             "mixed_step_policy": np.asarray([self.mixed_step_policy]),
             "tpot_definition": np.asarray([self.tpot_definition]),
             "selected_dataset_indices": self.selected_dataset_indices,
@@ -237,6 +292,12 @@ class CollectedConditionSummary:
     batch_size: int
     draft_length: int
     raw_path: str
+    local_max_num_seqs: int
+    configured_max_num_batched_tokens: int
+    scheduler_max_num_seqs: int
+    scheduler_max_num_batched_tokens: int
+    scheduler_max_num_scheduled_tokens: int
+    speculative_max_num_new_slots_for_drafting: int
     condition_latency_ms: float
     decode_time_total_ms: float
     num_output_tokens_total: int
@@ -292,6 +353,12 @@ class RankConditionData:
     num_dropped_steps: int
     num_prefill_dropped_steps: int
     num_mixed_dropped_steps: int
+    local_max_num_seqs: int
+    configured_max_num_batched_tokens: int
+    scheduler_max_num_seqs: int
+    scheduler_max_num_batched_tokens: int
+    scheduler_max_num_scheduled_tokens: int
+    speculative_max_num_new_slots_for_drafting: int
     trace_samples: list[dict[str, Any]] = field(default_factory=list)
 
     def to_npz_payload(self) -> dict[str, np.ndarray]:
@@ -349,6 +416,25 @@ class RankConditionData:
             ),
             "num_mixed_dropped_steps": np.asarray(
                 [self.num_mixed_dropped_steps], dtype=np.int64
+            ),
+            "local_max_num_seqs": np.asarray(
+                [self.local_max_num_seqs], dtype=np.int64
+            ),
+            "configured_max_num_batched_tokens": np.asarray(
+                [self.configured_max_num_batched_tokens], dtype=np.int64
+            ),
+            "scheduler_max_num_seqs": np.asarray(
+                [self.scheduler_max_num_seqs], dtype=np.int64
+            ),
+            "scheduler_max_num_batched_tokens": np.asarray(
+                [self.scheduler_max_num_batched_tokens], dtype=np.int64
+            ),
+            "scheduler_max_num_scheduled_tokens": np.asarray(
+                [self.scheduler_max_num_scheduled_tokens], dtype=np.int64
+            ),
+            "speculative_max_num_new_slots_for_drafting": np.asarray(
+                [self.speculative_max_num_new_slots_for_drafting],
+                dtype=np.int64,
             ),
         }
 
@@ -469,6 +555,20 @@ def save_collect_manifest(
                 "batch_size": summary.batch_size,
                 "draft_length": summary.draft_length,
                 "raw_path": summary.raw_path,
+                "local_max_num_seqs": summary.local_max_num_seqs,
+                "configured_max_num_batched_tokens": (
+                    summary.configured_max_num_batched_tokens
+                ),
+                "scheduler_max_num_seqs": summary.scheduler_max_num_seqs,
+                "scheduler_max_num_batched_tokens": (
+                    summary.scheduler_max_num_batched_tokens
+                ),
+                "scheduler_max_num_scheduled_tokens": (
+                    summary.scheduler_max_num_scheduled_tokens
+                ),
+                "speculative_max_num_new_slots_for_drafting": (
+                    summary.speculative_max_num_new_slots_for_drafting
+                ),
                 "condition_latency_ms": summary.condition_latency_ms,
                 "decode_time_total_ms": summary.decode_time_total_ms,
                 "num_output_tokens_total": summary.num_output_tokens_total,
@@ -506,8 +606,27 @@ def save_collect_manifest(
 
 def load_condition_summary(raw_path: Path) -> CollectedConditionSummary:
     with np.load(raw_path, allow_pickle=False) as data:
+        def read_optional_int(name: str) -> int:
+            if name not in data:
+                return -1
+            return int(data[name][0])
+
         batch_size = int(data["batch_size"][0])
         draft_length = int(data["draft_length"][0])
+        local_max_num_seqs = read_optional_int("local_max_num_seqs")
+        configured_max_num_batched_tokens = read_optional_int(
+            "configured_max_num_batched_tokens"
+        )
+        scheduler_max_num_seqs = read_optional_int("scheduler_max_num_seqs")
+        scheduler_max_num_batched_tokens = read_optional_int(
+            "scheduler_max_num_batched_tokens"
+        )
+        scheduler_max_num_scheduled_tokens = read_optional_int(
+            "scheduler_max_num_scheduled_tokens"
+        )
+        speculative_max_num_new_slots_for_drafting = read_optional_int(
+            "speculative_max_num_new_slots_for_drafting"
+        )
         condition_latency_ms = float(data["condition_latency_ms"][0])
         decode_time_total_ms = float(data["decode_time_total_ms"][0])
         num_output_tokens_total = int(data["num_output_tokens_total"][0])
@@ -537,6 +656,14 @@ def load_condition_summary(raw_path: Path) -> CollectedConditionSummary:
         batch_size=batch_size,
         draft_length=draft_length,
         raw_path=str(raw_path.relative_to(raw_path.parent.parent)),
+        local_max_num_seqs=local_max_num_seqs,
+        configured_max_num_batched_tokens=configured_max_num_batched_tokens,
+        scheduler_max_num_seqs=scheduler_max_num_seqs,
+        scheduler_max_num_batched_tokens=scheduler_max_num_batched_tokens,
+        scheduler_max_num_scheduled_tokens=scheduler_max_num_scheduled_tokens,
+        speculative_max_num_new_slots_for_drafting=(
+            speculative_max_num_new_slots_for_drafting
+        ),
         condition_latency_ms=condition_latency_ms,
         decode_time_total_ms=decode_time_total_ms,
         num_output_tokens_total=num_output_tokens_total,
@@ -629,9 +756,68 @@ def validate_parallel_config(args: Namespace) -> None:
         raise ValueError("data_parallel_size must be >= 1.")
 
 
+def get_local_max_num_seqs(batch_size: int, data_parallel_size: int) -> int:
+    return math.ceil(batch_size / data_parallel_size)
+
+
+def get_configured_max_num_batched_tokens(
+    local_max_num_seqs: int,
+    draft_length: int,
+) -> int:
+    return max(4096, local_max_num_seqs * (2 * draft_length + 1))
+
+
+def _get_int_config_attr(config: Any | None, name: str) -> int:
+    if config is None:
+        return -1
+    value = getattr(config, name, -1)
+    if value is None:
+        return -1
+    return int(value)
+
+
+def _snapshot_scheduler_capacity_config(
+    llm: Any,
+    *,
+    local_max_num_seqs: int,
+    configured_max_num_batched_tokens: int,
+) -> SchedulerCapacityConfig:
+    vllm_config = llm.llm_engine.vllm_config
+    scheduler_config = vllm_config.scheduler_config
+    speculative_config = vllm_config.speculative_config
+    return SchedulerCapacityConfig(
+        local_max_num_seqs=local_max_num_seqs,
+        configured_max_num_batched_tokens=configured_max_num_batched_tokens,
+        scheduler_max_num_seqs=_get_int_config_attr(
+            scheduler_config,
+            "max_num_seqs",
+        ),
+        scheduler_max_num_batched_tokens=_get_int_config_attr(
+            scheduler_config,
+            "max_num_batched_tokens",
+        ),
+        scheduler_max_num_scheduled_tokens=_get_int_config_attr(
+            scheduler_config,
+            "max_num_scheduled_tokens",
+        ),
+        speculative_max_num_new_slots_for_drafting=_get_int_config_attr(
+            speculative_config,
+            "max_num_new_slots_for_drafting",
+        ),
+    )
+
+
 def create_llm(args: Namespace, batch_size: int, draft_length: int):
     from vllm import LLM
 
+    local_max_num_seqs = get_local_max_num_seqs(
+        batch_size,
+        args.data_parallel_size,
+    )
+    configured_max_num_batched_tokens = get_configured_max_num_batched_tokens(
+        local_max_num_seqs,
+        draft_length,
+    )
     speculative_config = None
     if draft_length > 0:
         speculative_config = {
@@ -649,16 +835,39 @@ def create_llm(args: Namespace, batch_size: int, draft_length: int):
         enable_return_routed_experts=True,
         enable_eplb=False,
         max_model_len=args.max_model_len,
-        max_num_seqs=batch_size,
+        max_num_seqs=local_max_num_seqs,
+        max_num_batched_tokens=configured_max_num_batched_tokens,
         gpu_memory_utilization=args.gpu_memory_utilization,
         speculative_config=speculative_config,
         enforce_eager=args.enforce_eager,
         disable_log_stats=False,
     )
+    scheduler_capacity_config = _snapshot_scheduler_capacity_config(
+        llm,
+        local_max_num_seqs=local_max_num_seqs,
+        configured_max_num_batched_tokens=configured_max_num_batched_tokens,
+    )
+    print(
+        "[collect-rank] scheduler_capacity_config="
+        f"{json.dumps(scheduler_capacity_config.to_log_dict(), sort_keys=True)}",
+        flush=True,
+    )
+    setattr(
+        llm,
+        _SCHEDULER_CAPACITY_CONFIG_ATTR,
+        scheduler_capacity_config,
+    )
     logger = FinishedRequestStatsLogger(llm.llm_engine.vllm_config)
     llm.llm_engine.logger_manager.stat_loggers.append(logger)
     setattr(llm, _FINISHED_REQUEST_STATS_LOGGER_ATTR, logger)
     return llm
+
+
+def get_scheduler_capacity_config(llm: Any) -> SchedulerCapacityConfig:
+    config = getattr(llm, _SCHEDULER_CAPACITY_CONFIG_ATTR, None)
+    if config is None:
+        raise RuntimeError("Scheduler capacity config was not attached to LLM.")
+    return config
 
 
 def get_finished_request_stats_logger(llm: Any) -> FinishedRequestStatsLogger:
@@ -1473,6 +1682,7 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
     os.environ["VLLM_DP_MASTER_PORT"] = str(args.dp_master_port)
 
     llm = create_llm(args, args.batch_size, args.draft_length)
+    scheduler_capacity_config = get_scheduler_capacity_config(llm)
     scheduler, model_executor = get_inproc_handles(llm)
     model_executor.collective_rpc(install_experiment_hooks_worker, timeout=30)
 
@@ -1794,6 +2004,22 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
             num_dropped_steps=num_dropped_steps,
             num_prefill_dropped_steps=num_prefill_dropped_steps,
             num_mixed_dropped_steps=num_mixed_dropped_steps,
+            local_max_num_seqs=scheduler_capacity_config.local_max_num_seqs,
+            configured_max_num_batched_tokens=(
+                scheduler_capacity_config.configured_max_num_batched_tokens
+            ),
+            scheduler_max_num_seqs=(
+                scheduler_capacity_config.scheduler_max_num_seqs
+            ),
+            scheduler_max_num_batched_tokens=(
+                scheduler_capacity_config.scheduler_max_num_batched_tokens
+            ),
+            scheduler_max_num_scheduled_tokens=(
+                scheduler_capacity_config.scheduler_max_num_scheduled_tokens
+            ),
+            speculative_max_num_new_slots_for_drafting=(
+                scheduler_capacity_config.speculative_max_num_new_slots_for_drafting
+            ),
             trace_samples=trace_samples,
         )
 
@@ -1838,6 +2064,20 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         num_dropped_steps=num_dropped_steps,
         num_prefill_dropped_steps=num_prefill_dropped_steps,
         num_mixed_dropped_steps=num_mixed_dropped_steps,
+        local_max_num_seqs=scheduler_capacity_config.local_max_num_seqs,
+        configured_max_num_batched_tokens=(
+            scheduler_capacity_config.configured_max_num_batched_tokens
+        ),
+        scheduler_max_num_seqs=scheduler_capacity_config.scheduler_max_num_seqs,
+        scheduler_max_num_batched_tokens=(
+            scheduler_capacity_config.scheduler_max_num_batched_tokens
+        ),
+        scheduler_max_num_scheduled_tokens=(
+            scheduler_capacity_config.scheduler_max_num_scheduled_tokens
+        ),
+        speculative_max_num_new_slots_for_drafting=(
+            scheduler_capacity_config.speculative_max_num_new_slots_for_drafting
+        ),
         trace_samples=trace_samples,
     )
 
@@ -1867,6 +2107,11 @@ def save_rank_trace_samples(path: Path, args: Any, data: RankConditionData) -> N
 
 def load_rank_condition_data(path: Path) -> RankConditionData:
     with np.load(path, allow_pickle=False) as data:
+        def read_optional_int(name: str) -> int:
+            if name not in data:
+                return -1
+            return int(data[name][0])
+
         return RankConditionData(
             selected_dataset_indices=np.asarray(data["selected_dataset_indices"]),
             prompt_lengths=np.asarray(data["prompt_lengths"]),
@@ -1914,6 +2159,20 @@ def load_rank_condition_data(path: Path) -> RankConditionData:
             num_dropped_steps=int(data["num_dropped_steps"][0]),
             num_prefill_dropped_steps=int(data["num_prefill_dropped_steps"][0]),
             num_mixed_dropped_steps=int(data["num_mixed_dropped_steps"][0]),
+            local_max_num_seqs=read_optional_int("local_max_num_seqs"),
+            configured_max_num_batched_tokens=read_optional_int(
+                "configured_max_num_batched_tokens"
+            ),
+            scheduler_max_num_seqs=read_optional_int("scheduler_max_num_seqs"),
+            scheduler_max_num_batched_tokens=read_optional_int(
+                "scheduler_max_num_batched_tokens"
+            ),
+            scheduler_max_num_scheduled_tokens=read_optional_int(
+                "scheduler_max_num_scheduled_tokens"
+            ),
+            speculative_max_num_new_slots_for_drafting=read_optional_int(
+                "speculative_max_num_new_slots_for_drafting"
+            ),
             trace_samples=[],
         )
 
@@ -1941,6 +2200,44 @@ def _aggregate_rank_condition_data(
         expected_indices,
     ):
         raise RuntimeError("DP shard aggregation dropped or duplicated dataset items.")
+
+    scheduler_capacity_config = SchedulerCapacityConfig(
+        local_max_num_seqs=partials[0].local_max_num_seqs,
+        configured_max_num_batched_tokens=(
+            partials[0].configured_max_num_batched_tokens
+        ),
+        scheduler_max_num_seqs=partials[0].scheduler_max_num_seqs,
+        scheduler_max_num_batched_tokens=(
+            partials[0].scheduler_max_num_batched_tokens
+        ),
+        scheduler_max_num_scheduled_tokens=(
+            partials[0].scheduler_max_num_scheduled_tokens
+        ),
+        speculative_max_num_new_slots_for_drafting=(
+            partials[0].speculative_max_num_new_slots_for_drafting
+        ),
+    )
+    for partial in partials[1:]:
+        other_config = SchedulerCapacityConfig(
+            local_max_num_seqs=partial.local_max_num_seqs,
+            configured_max_num_batched_tokens=(
+                partial.configured_max_num_batched_tokens
+            ),
+            scheduler_max_num_seqs=partial.scheduler_max_num_seqs,
+            scheduler_max_num_batched_tokens=partial.scheduler_max_num_batched_tokens,
+            scheduler_max_num_scheduled_tokens=(
+                partial.scheduler_max_num_scheduled_tokens
+            ),
+            speculative_max_num_new_slots_for_drafting=(
+                partial.speculative_max_num_new_slots_for_drafting
+            ),
+        )
+        if other_config != scheduler_capacity_config:
+            raise RuntimeError(
+                "DP ranks used different scheduler capacity configs: "
+                f"{scheduler_capacity_config.to_log_dict()} vs "
+                f"{other_config.to_log_dict()}."
+            )
 
     order = np.argsort(selected_indices, kind="stable")
     selected_indices = selected_indices[order]
@@ -2010,6 +2307,20 @@ def _aggregate_rank_condition_data(
         data_parallel_size=args.data_parallel_size,
         num_samples=args.num_samples,
         batch_size_scope="global",
+        local_max_num_seqs=scheduler_capacity_config.local_max_num_seqs,
+        configured_max_num_batched_tokens=(
+            scheduler_capacity_config.configured_max_num_batched_tokens
+        ),
+        scheduler_max_num_seqs=scheduler_capacity_config.scheduler_max_num_seqs,
+        scheduler_max_num_batched_tokens=(
+            scheduler_capacity_config.scheduler_max_num_batched_tokens
+        ),
+        scheduler_max_num_scheduled_tokens=(
+            scheduler_capacity_config.scheduler_max_num_scheduled_tokens
+        ),
+        speculative_max_num_new_slots_for_drafting=(
+            scheduler_capacity_config.speculative_max_num_new_slots_for_drafting
+        ),
         mixed_step_policy="drop_step",
         tpot_definition=TPOT_DEFINITION,
         selected_dataset_indices=selected_indices,

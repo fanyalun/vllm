@@ -570,6 +570,66 @@ def test_collect_one_command_includes_prompt_cache_and_warmup(tmp_path):
     assert command[command.index("--num-samples") + 1] == "1024"
 
 
+def test_scheduler_capacity_helpers_use_local_batch_budget():
+    local_max_num_seqs = runtime.get_local_max_num_seqs(
+        batch_size=512,
+        data_parallel_size=2,
+    )
+    assert local_max_num_seqs == 256
+    assert (
+        runtime.get_configured_max_num_batched_tokens(
+            local_max_num_seqs,
+            draft_length=6,
+        )
+        == 4096
+    )
+
+    local_max_num_seqs = runtime.get_local_max_num_seqs(
+        batch_size=1024,
+        data_parallel_size=2,
+    )
+    assert local_max_num_seqs == 512
+    assert (
+        runtime.get_configured_max_num_batched_tokens(
+            local_max_num_seqs,
+            draft_length=6,
+        )
+        == 6656
+    )
+
+
+def test_scheduler_capacity_snapshot_reads_actual_vllm_config():
+    llm = SimpleNamespace(
+        llm_engine=SimpleNamespace(
+            vllm_config=SimpleNamespace(
+                scheduler_config=SimpleNamespace(
+                    max_num_seqs=256,
+                    max_num_batched_tokens=4096,
+                    max_num_scheduled_tokens=2560,
+                ),
+                speculative_config=SimpleNamespace(
+                    max_num_new_slots_for_drafting=6,
+                ),
+            )
+        )
+    )
+
+    config = runtime._snapshot_scheduler_capacity_config(
+        llm,
+        local_max_num_seqs=256,
+        configured_max_num_batched_tokens=4096,
+    )
+
+    assert config.to_log_dict() == {
+        "local_max_num_seqs": 256,
+        "configured_max_num_batched_tokens": 4096,
+        "scheduler_max_num_seqs": 256,
+        "scheduler_max_num_batched_tokens": 4096,
+        "scheduler_max_num_scheduled_tokens": 2560,
+        "speculative_max_num_new_slots_for_drafting": 6,
+    }
+
+
 def test_dp_sharding_covers_all_samples_without_overlap():
     shards = [
         helper.shard_global_batch_indices(
