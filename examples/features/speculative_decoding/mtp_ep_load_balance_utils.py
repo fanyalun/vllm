@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 DEFAULT_MODEL = "Qwen/Qwen3.6-35B-A3B"
 DEFAULT_DATASET = "likaixin/InstructCoder"
@@ -76,6 +76,8 @@ class GlobalStepTimingAggregation:
     global_step_indices: np.ndarray
     global_step_total_ms: np.ndarray
     global_step_ffn_ms: np.ndarray
+    global_step_sorted_rank_ffn_ms: np.ndarray
+    global_step_ffn_max_mean_ratio: np.ndarray
     global_step_other_ms: np.ndarray
     global_step_kinds: np.ndarray
     global_step_histograms: np.ndarray
@@ -547,6 +549,8 @@ def aggregate_global_step_time_components(
     global_step_indices: list[int] = []
     global_step_total_ms: list[float] = []
     global_step_ffn_ms: list[float] = []
+    global_step_sorted_rank_ffn_ms: list[np.ndarray] = []
+    global_step_ffn_max_mean_ratio: list[float] = []
     global_step_other_ms: list[float] = []
     global_step_kinds: list[str] = []
     global_step_histograms: list[np.ndarray] = []
@@ -572,14 +576,31 @@ def aggregate_global_step_time_components(
             num_global_non_target_dropped_steps += 1
             continue
 
+        sorted_records = sorted(
+            records,
+            key=lambda record: (
+                -float(record["step_ffn_ms"]),
+                int(record["rank_idx"]),
+            ),
+        )
+        sorted_rank_ffn_ms = np.asarray(
+            [float(record["step_ffn_ms"]) for record in sorted_records],
+            dtype=np.float64,
+        )
         total_ms = max(float(record["step_total_ms"]) for record in records)
-        ffn_ms = max(float(record["step_ffn_ms"]) for record in records)
+        ffn_ms = float(sorted_rank_ffn_ms[0])
         other_ms = total_ms - ffn_ms
         if ffn_ms < 0:
             raise ValueError(
                 f"Captured first_ep_collective_seq_id={step_index} produced "
                 f"negative FFN time: {ffn_ms:.6f} ms."
             )
+        mean_rank_ffn_ms = float(np.mean(sorted_rank_ffn_ms))
+        ffn_max_mean_ratio = (
+            ffn_ms / mean_rank_ffn_ms
+            if mean_rank_ffn_ms > 0
+            else float("nan")
+        )
         if other_ms < -tol_ms:
             raise ValueError(
                 "Captured first_ep_collective_seq_id="
@@ -589,6 +610,8 @@ def aggregate_global_step_time_components(
         global_step_indices.append(step_index)
         global_step_total_ms.append(total_ms)
         global_step_ffn_ms.append(ffn_ms)
+        global_step_sorted_rank_ffn_ms.append(sorted_rank_ffn_ms)
+        global_step_ffn_max_mean_ratio.append(ffn_max_mean_ratio)
         global_step_other_ms.append(other_ms)
         global_step_kinds.append(expected_step_kind)
         global_step_histograms.append(
@@ -603,10 +626,23 @@ def aggregate_global_step_time_components(
     else:
         histogram_array = np.empty((0, len(layers), num_experts), dtype=np.int64)
 
+    if global_step_sorted_rank_ffn_ms:
+        sorted_rank_ffn_array = np.stack(
+            global_step_sorted_rank_ffn_ms, axis=0
+        ).astype(np.float64)
+    else:
+        sorted_rank_ffn_array = np.empty(
+            (0, data_parallel_size), dtype=np.float64
+        )
+
     return GlobalStepTimingAggregation(
         global_step_indices=np.asarray(global_step_indices, dtype=np.int64),
         global_step_total_ms=np.asarray(global_step_total_ms, dtype=np.float64),
         global_step_ffn_ms=np.asarray(global_step_ffn_ms, dtype=np.float64),
+        global_step_sorted_rank_ffn_ms=sorted_rank_ffn_array,
+        global_step_ffn_max_mean_ratio=np.asarray(
+            global_step_ffn_max_mean_ratio, dtype=np.float64
+        ),
         global_step_other_ms=np.asarray(global_step_other_ms, dtype=np.float64),
         global_step_kinds=np.asarray(global_step_kinds, dtype=np.str_),
         global_step_histograms=histogram_array,

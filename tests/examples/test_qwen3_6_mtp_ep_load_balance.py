@@ -37,6 +37,10 @@ runtime = _load_module(
     "mtp_ep_experiment_runtime",
     "mtp_ep_experiment_runtime.py",
 )
+analysis = _load_module(
+    "mtp_ep_experiment_analysis",
+    "mtp_ep_experiment_analysis.py",
+)
 
 
 def _scheduler_output(num_scheduled_tokens, scheduled_spec_decode_tokens):
@@ -270,6 +274,14 @@ def test_global_step_time_aggregation_keeps_strict_ep_seq_intersection():
     )
     np.testing.assert_allclose(result.global_step_total_ms, np.array([11.0]))
     np.testing.assert_allclose(result.global_step_ffn_ms, np.array([5.0]))
+    np.testing.assert_allclose(
+        result.global_step_sorted_rank_ffn_ms,
+        np.array([[5.0, 4.0]]),
+    )
+    np.testing.assert_allclose(
+        result.global_step_ffn_max_mean_ratio,
+        np.array([5.0 / 4.5]),
+    )
     np.testing.assert_allclose(result.global_step_other_ms, np.array([6.0]))
     np.testing.assert_array_equal(
         result.global_step_histograms[0, 0],
@@ -277,6 +289,43 @@ def test_global_step_time_aggregation_keeps_strict_ep_seq_intersection():
     )
     assert result.num_global_candidate_steps == 1
     assert result.num_global_captured_steps == 1
+
+
+def test_global_step_time_aggregation_sorts_rank_ffn_times_per_barrier():
+    result = helper.aggregate_global_step_time_components(
+        [
+            _rank_candidate_data(
+                [7, 8],
+                ["decode_only", "decode_only"],
+                [12.0, 9.0],
+                [7.0, 2.0],
+            ),
+            _rank_candidate_data(
+                [7, 8],
+                ["decode_only", "decode_only"],
+                [8.0, 11.0],
+                [3.0, 6.0],
+            ),
+        ],
+        data_parallel_size=2,
+        expected_step_kind="decode_only",
+        layers=(0,),
+        num_experts=4,
+    )
+
+    np.testing.assert_allclose(
+        result.global_step_sorted_rank_ffn_ms,
+        np.array(
+            [
+                [7.0, 3.0],
+                [6.0, 2.0],
+            ]
+        ),
+    )
+    np.testing.assert_allclose(
+        result.global_step_ffn_max_mean_ratio,
+        np.array([7.0 / 5.0, 6.0 / 4.0]),
+    )
 
 
 def test_global_step_time_aggregation_drops_prefill_global_step():
@@ -359,6 +408,43 @@ def test_global_step_time_summary_and_normalization_are_correct():
     assert normalized["normalized_other_ms"] == 0.875
     assert normalized["ffn_share"] == 5.0 / 12.0
     assert normalized["other_share"] == 7.0 / 12.0
+
+
+def test_sorted_rank_ffn_time_rows_average_by_sorted_position():
+    condition = SimpleNamespace(
+        data_parallel_size=2,
+        global_step_sorted_rank_ffn_ms=np.array(
+            [
+                [7.0, 3.0],
+                [6.0, 2.0],
+            ],
+            dtype=np.float64,
+        ),
+        global_step_ffn_max_mean_ratio=np.array(
+            [7.0 / 5.0, 6.0 / 4.0],
+            dtype=np.float64,
+        ),
+        num_global_captured_steps=2,
+    )
+    sorted_rows, imbalance_rows = analysis.build_sorted_rank_ffn_time_rows(
+        {
+            "batch_sizes": (32,),
+            "draft_lengths": (0,),
+        },
+        {
+            (32, 0): condition,
+        },
+    )
+
+    assert [row["sorted_rank_position"] for row in sorted_rows] == [0, 1]
+    np.testing.assert_allclose(
+        [row["avg_local_ffn_ms"] for row in sorted_rows],
+        np.array([6.5, 2.5]),
+    )
+    assert imbalance_rows[0]["avg_heaviest_minus_lightest_local_ffn_ms"] == 4.0
+    assert imbalance_rows[0]["avg_step_ffn_max_mean_ratio"] == (
+        (7.0 / 5.0 + 6.0 / 4.0) / 2.0
+    )
 
 
 def test_close_ffn_component_folds_small_residual_into_ffn():

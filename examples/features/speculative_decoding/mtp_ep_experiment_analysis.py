@@ -57,6 +57,8 @@ class LoadedConditionData:
     global_step_indices: np.ndarray
     global_step_total_ms: np.ndarray
     global_step_ffn_ms: np.ndarray
+    global_step_sorted_rank_ffn_ms: np.ndarray
+    global_step_ffn_max_mean_ratio: np.ndarray
     global_step_other_ms: np.ndarray
     global_step_kinds: np.ndarray
     expert_to_ep_rank: np.ndarray
@@ -93,6 +95,7 @@ def ensure_analysis_dirs(output_dir: Path) -> dict[str, Path]:
     time_dir = plots_dir / "step_time_breakdown"
     expert_load_dir = plots_dir / "expert_load"
     rank_load_dir = plots_dir / "rank_load"
+    sorted_rank_ffn_dir = plots_dir / "rank_ffn_time_sorted"
     rank_traces_dir = plots_dir / "rank_traces"
     for path in (
         tables_dir,
@@ -100,6 +103,7 @@ def ensure_analysis_dirs(output_dir: Path) -> dict[str, Path]:
         time_dir,
         expert_load_dir,
         rank_load_dir,
+        sorted_rank_ffn_dir,
         rank_traces_dir,
     ):
         path.mkdir(parents=True, exist_ok=True)
@@ -109,6 +113,7 @@ def ensure_analysis_dirs(output_dir: Path) -> dict[str, Path]:
         "time": time_dir,
         "expert_load": expert_load_dir,
         "rank_load": rank_load_dir,
+        "rank_ffn_time_sorted": sorted_rank_ffn_dir,
         "rank_traces": rank_traces_dir,
     }
 
@@ -319,6 +324,12 @@ def load_condition_data(path: Path) -> LoadedConditionData:
             global_step_indices=np.asarray(npz["global_step_indices"]),
             global_step_total_ms=np.asarray(npz["global_step_total_ms"]),
             global_step_ffn_ms=np.asarray(npz["global_step_ffn_ms"]),
+            global_step_sorted_rank_ffn_ms=np.asarray(
+                npz["global_step_sorted_rank_ffn_ms"]
+            ),
+            global_step_ffn_max_mean_ratio=np.asarray(
+                npz["global_step_ffn_max_mean_ratio"]
+            ),
             global_step_other_ms=np.asarray(npz["global_step_other_ms"]),
             global_step_kinds=np.asarray(npz["global_step_kinds"]),
             expert_to_ep_rank=np.asarray(npz["expert_to_ep_rank"]),
@@ -613,6 +624,121 @@ def build_load_distribution_rows(
         baseline_sorted_rows,
         rank_load_rows,
     )
+
+
+def _finite_mean(values: np.ndarray) -> float:
+    finite_values = values[np.isfinite(values)]
+    if finite_values.size == 0:
+        return float("nan")
+    return float(np.mean(finite_values))
+
+
+def _finite_percentile(values: np.ndarray, percentile: float) -> float:
+    finite_values = values[np.isfinite(values)]
+    if finite_values.size == 0:
+        return float("nan")
+    return float(np.percentile(finite_values, percentile))
+
+
+def build_sorted_rank_ffn_time_rows(
+    manifest: dict[str, Any],
+    results: dict[tuple[int, int], LoadedConditionData],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    batch_sizes = tuple(manifest["batch_sizes"])
+    draft_lengths = tuple(manifest["draft_lengths"])
+    sorted_rank_rows: list[dict[str, Any]] = []
+    imbalance_rows: list[dict[str, Any]] = []
+
+    for batch_size in batch_sizes:
+        for draft_length in draft_lengths:
+            data = results[(batch_size, draft_length)]
+            sorted_ffn_ms = np.asarray(
+                data.global_step_sorted_rank_ffn_ms, dtype=np.float64
+            )
+            if sorted_ffn_ms.ndim != 2:
+                raise ValueError(
+                    "global_step_sorted_rank_ffn_ms must be 2-D for "
+                    f"batch_size={batch_size}, draft_length={draft_length}."
+                )
+            if sorted_ffn_ms.shape[1] != data.data_parallel_size:
+                raise ValueError(
+                    "global_step_sorted_rank_ffn_ms rank dimension must match "
+                    f"data_parallel_size for batch_size={batch_size}, "
+                    f"draft_length={draft_length}: {sorted_ffn_ms.shape[1]} vs "
+                    f"{data.data_parallel_size}."
+                )
+            if sorted_ffn_ms.shape[0] != data.num_global_captured_steps:
+                raise ValueError(
+                    "global_step_sorted_rank_ffn_ms step dimension must match "
+                    f"num_global_captured_steps for batch_size={batch_size}, "
+                    f"draft_length={draft_length}: {sorted_ffn_ms.shape[0]} vs "
+                    f"{data.num_global_captured_steps}."
+                )
+            if sorted_ffn_ms.shape[0] == 0:
+                raise ValueError(
+                    "No globally captured rank-local FFN times for "
+                    f"batch_size={batch_size}, draft_length={draft_length}."
+                )
+
+            ratios = np.asarray(
+                data.global_step_ffn_max_mean_ratio, dtype=np.float64
+            )
+            if ratios.shape != (sorted_ffn_ms.shape[0],):
+                raise ValueError(
+                    "global_step_ffn_max_mean_ratio must have one value per "
+                    f"captured step for batch_size={batch_size}, "
+                    f"draft_length={draft_length}: {ratios.shape} vs "
+                    f"{(sorted_ffn_ms.shape[0],)}."
+                )
+
+            avg_sorted_ffn_ms = np.mean(sorted_ffn_ms, axis=0)
+            heaviest_ffn_ms = float(avg_sorted_ffn_ms[0])
+            lightest_ffn_ms = float(avg_sorted_ffn_ms[-1])
+            decode_step_scope = (
+                "verification_only" if draft_length > 0 else "decode_only"
+            )
+
+            for sorted_rank_position, avg_ffn_ms in enumerate(avg_sorted_ffn_ms):
+                sorted_rank_rows.append(
+                    {
+                        "batch_size": batch_size,
+                        "draft_length": draft_length,
+                        "decode_step_scope": decode_step_scope,
+                        "sorted_rank_position": sorted_rank_position,
+                        "avg_local_ffn_ms": float(avg_ffn_ms),
+                        "num_global_captured_steps": (
+                            data.num_global_captured_steps
+                        ),
+                    }
+                )
+
+            imbalance_rows.append(
+                {
+                    "batch_size": batch_size,
+                    "draft_length": draft_length,
+                    "decode_step_scope": decode_step_scope,
+                    "num_global_captured_steps": data.num_global_captured_steps,
+                    "avg_heaviest_local_ffn_ms": heaviest_ffn_ms,
+                    "avg_lightest_local_ffn_ms": lightest_ffn_ms,
+                    "avg_heaviest_minus_lightest_local_ffn_ms": (
+                        heaviest_ffn_ms - lightest_ffn_ms
+                    ),
+                    "avg_heaviest_over_lightest_local_ffn_ratio": (
+                        heaviest_ffn_ms / lightest_ffn_ms
+                        if lightest_ffn_ms > 0
+                        else float("nan")
+                    ),
+                    "avg_step_ffn_max_mean_ratio": _finite_mean(ratios),
+                    "p50_step_ffn_max_mean_ratio": _finite_percentile(
+                        ratios, 50.0
+                    ),
+                    "p95_step_ffn_max_mean_ratio": _finite_percentile(
+                        ratios, 95.0
+                    ),
+                }
+            )
+
+    return sorted_rank_rows, imbalance_rows
 
 
 def plot_speedup_vs_draft_length(
@@ -978,12 +1104,60 @@ def plot_rank_load(
     return path
 
 
+def plot_sorted_rank_ffn_time(
+    plot_dir: Path,
+    batch_size: int,
+    draft_lengths: tuple[int, ...],
+    sorted_rank_rows: list[dict[str, Any]],
+) -> Path:
+    plt = import_plot_module()
+    positions = sorted(
+        {
+            int(row["sorted_rank_position"])
+            for row in sorted_rank_rows
+            if row["batch_size"] == batch_size
+        }
+    )
+    colors = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759"]
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    for draft_idx, draft_length in enumerate(draft_lengths):
+        values = [
+            next(
+                float(row["avg_local_ffn_ms"])
+                for row in sorted_rank_rows
+                if row["batch_size"] == batch_size
+                and row["draft_length"] == draft_length
+                and row["sorted_rank_position"] == position
+            )
+            for position in positions
+        ]
+        ax.plot(
+            positions,
+            values,
+            marker="o",
+            color=colors[draft_idx % len(colors)],
+            label=f"d={draft_length}",
+        )
+    ax.set_title(f"batch_size={batch_size} sorted rank-local FFN time")
+    ax.set_xlabel("sorted rank position (0 = heaviest per barrier)")
+    ax.set_ylabel("avg local FFN time after per-barrier sort (ms)")
+    ax.set_xticks(positions)
+    ax.grid(alpha=0.25)
+    ax.legend()
+    path = plot_dir / f"batch_size_{batch_size:03d}_sorted_rank_ffn_time.png"
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return path
+
+
 def build_report(
     output_dir: Path,
     manifest: dict[str, Any],
     speedup_rows: list[dict[str, float | int]],
     step_rows: list[dict[str, float | int]],
     load_metric_rows: list[dict[str, Any]],
+    rank_ffn_imbalance_rows: list[dict[str, Any]],
 ) -> str:
     batch_sizes = tuple(manifest["batch_sizes"])
     draft_lengths = tuple(manifest["draft_lengths"])
@@ -1066,6 +1240,21 @@ def build_report(
                 f"(Δbal={float(worst['balancedness_delta']):+.4f}, "
                 f"Δg={float(worst['gini_delta']):+.4f})"
             )
+
+    lines.extend(["", "## Rank-local FFN time 不均衡", ""])
+    for batch_size in batch_sizes:
+        rows = [
+            row
+            for row in rank_ffn_imbalance_rows
+            if row["batch_size"] == batch_size
+        ]
+        summaries = ", ".join(
+            f"d={row['draft_length']}: "
+            f"max/mean={float(row['avg_step_ffn_max_mean_ratio']):.3f}, "
+            f"gap={float(row['avg_heaviest_minus_lightest_local_ffn_ms']):.2f} ms"
+            for row in rows
+        )
+        lines.append(f"- batch_size={batch_size}: {summaries}")
     return "\n".join(lines) + "\n"
 
 
@@ -1105,6 +1294,10 @@ def analyze_experiment(
         baseline_sorted_rows,
         rank_load_rows,
     ) = build_load_distribution_rows(manifest, results)
+    (
+        sorted_rank_ffn_rows,
+        rank_ffn_imbalance_rows,
+    ) = build_sorted_rank_ffn_time_rows(manifest, results)
 
     save_csv(dirs["tables"] / "speedup_metrics.csv", speedup_rows)
     save_csv(dirs["tables"] / "step_time_breakdown.csv", step_rows)
@@ -1118,6 +1311,14 @@ def analyze_experiment(
         baseline_sorted_rows,
     )
     save_csv(dirs["tables"] / "rank_load_metrics.csv", rank_load_rows)
+    save_csv(
+        dirs["tables"] / "rank_ffn_time_sorted.csv",
+        sorted_rank_ffn_rows,
+    )
+    save_csv(
+        dirs["tables"] / "rank_ffn_imbalance_metrics.csv",
+        rank_ffn_imbalance_rows,
+    )
 
     rank_trace_rows: list[dict[str, Any]] = []
     for condition in manifest["conditions"]:
@@ -1170,6 +1371,12 @@ def analyze_experiment(
                 draft_lengths,
                 rank_load_rows,
             )
+            plot_sorted_rank_ffn_time(
+                dirs["rank_ffn_time_sorted"],
+                batch_size,
+                draft_lengths,
+                sorted_rank_ffn_rows,
+            )
 
     if not skip_report:
         report = build_report(
@@ -1178,6 +1385,7 @@ def analyze_experiment(
             speedup_rows,
             step_rows,
             load_metric_rows,
+            rank_ffn_imbalance_rows,
         )
         with (input_dir / "实验报告.md").open("w", encoding="utf-8") as fp:
             fp.write(report)

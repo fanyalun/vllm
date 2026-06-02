@@ -121,6 +121,8 @@ class ConditionRawData:
     global_step_indices: np.ndarray
     global_step_total_ms: np.ndarray
     global_step_ffn_ms: np.ndarray
+    global_step_sorted_rank_ffn_ms: np.ndarray
+    global_step_ffn_max_mean_ratio: np.ndarray
     global_step_other_ms: np.ndarray
     global_step_kinds: np.ndarray
     expert_to_ep_rank: np.ndarray
@@ -190,6 +192,8 @@ class ConditionRawData:
             "global_step_total_ms": self.global_step_total_ms,
             "global_step_ffn_ms": self.global_step_ffn_ms,
             "global_step_ffn_phase_ms": self.global_step_ffn_ms,
+            "global_step_sorted_rank_ffn_ms": self.global_step_sorted_rank_ffn_ms,
+            "global_step_ffn_max_mean_ratio": self.global_step_ffn_max_mean_ratio,
             "global_step_other_ms": self.global_step_other_ms,
             "global_step_kinds": self.global_step_kinds,
             "expert_to_ep_rank": self.expert_to_ep_rank,
@@ -2030,6 +2034,12 @@ def _aggregate_rank_condition_data(
         global_step_indices=global_steps.global_step_indices,
         global_step_total_ms=global_steps.global_step_total_ms,
         global_step_ffn_ms=global_steps.global_step_ffn_ms,
+        global_step_sorted_rank_ffn_ms=(
+            global_steps.global_step_sorted_rank_ffn_ms
+        ),
+        global_step_ffn_max_mean_ratio=(
+            global_steps.global_step_ffn_max_mean_ratio
+        ),
         global_step_other_ms=global_steps.global_step_other_ms,
         global_step_kinds=global_steps.global_step_kinds,
         expert_to_ep_rank=expert_to_ep_rank,
