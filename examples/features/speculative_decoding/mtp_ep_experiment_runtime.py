@@ -996,7 +996,17 @@ def _measure_worker_section(
     **kwargs: Any,
 ):
     current_step = _WORKER_STATE.current_step
-    if not _WORKER_STATE.enabled or current_step is None:
+    pending_record = (
+        _WORKER_STATE.pending_step_records[-1]
+        if _WORKER_STATE.pending_step_records
+        else None
+    )
+    can_measure_pending_draft = (
+        label == "draft" and current_step is None and pending_record is not None
+    )
+    if not _WORKER_STATE.enabled or (
+        current_step is None and not can_measure_pending_draft
+    ):
         return fn(*args, **kwargs)
     is_outer_draft = False
     if label == "draft":
@@ -1006,6 +1016,16 @@ def _measure_worker_section(
         is_outer_draft = True
 
     try:
+        if can_measure_pending_draft:
+            _synchronize_device()
+            start = time.perf_counter()
+            result = fn(*args, **kwargs)
+            _synchronize_device()
+            end = time.perf_counter()
+            _record_draft_timing(start, end, None, pending_record)
+            return result
+
+        assert current_step is not None
         ep_collective_seq_id = None
         if label in ("prepare", "finalize"):
             ep_collective_seq_id = _WORKER_STATE.next_ep_collective_seq_id
@@ -1058,6 +1078,42 @@ def _measure_worker_section(
             _WORKER_STATE.draft_measure_depth -= 1
 
 
+def _record_draft_timing(
+    start: float,
+    end: float,
+    current_step: StepAccumulator | None,
+    pending_record: dict[str, Any] | None,
+) -> None:
+    elapsed_ms = (end - start) * 1000.0
+    if current_step is not None:
+        start_ms = start * 1000.0 - current_step.step_start_time_ms
+        end_ms = end * 1000.0 - current_step.step_start_time_ms
+        current_step.events.append(
+            {
+                "label": "draft",
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "duration_ms": elapsed_ms,
+                "ep_collective_seq_id": None,
+            }
+        )
+        current_step.draft_ms += elapsed_ms
+    elif pending_record is not None:
+        timing = pending_record["timing"]
+        trace = pending_record["trace"]
+        timing["draft_ms"] = float(timing.get("draft_ms", 0.0)) + elapsed_ms
+        step_start_time_ms = float(trace.get("step_start_time_ms", start * 1000.0))
+        trace["events"].append(
+            {
+                "label": "draft",
+                "start_ms": start * 1000.0 - step_start_time_ms,
+                "end_ms": end * 1000.0 - step_start_time_ms,
+                "duration_ms": elapsed_ms,
+                "ep_collective_seq_id": None,
+            }
+        )
+
+
 def _measure_draft_context(original_context: Any):
     @contextmanager
     def measured_context():
@@ -1085,36 +1141,7 @@ def _measure_draft_context(original_context: Any):
         finally:
             _synchronize_device()
             end = time.perf_counter()
-            elapsed_ms = (end - start) * 1000.0
-            if current_step is not None:
-                start_ms = start * 1000.0 - current_step.step_start_time_ms
-                end_ms = end * 1000.0 - current_step.step_start_time_ms
-                current_step.events.append(
-                    {
-                        "label": "draft",
-                        "start_ms": start_ms,
-                        "end_ms": end_ms,
-                        "duration_ms": elapsed_ms,
-                        "ep_collective_seq_id": None,
-                    }
-                )
-                current_step.draft_ms += elapsed_ms
-            elif pending_record is not None:
-                timing = pending_record["timing"]
-                trace = pending_record["trace"]
-                timing["draft_ms"] = float(timing.get("draft_ms", 0.0)) + elapsed_ms
-                step_start_time_ms = float(
-                    trace.get("step_start_time_ms", start * 1000.0)
-                )
-                trace["events"].append(
-                    {
-                        "label": "draft",
-                        "start_ms": start * 1000.0 - step_start_time_ms,
-                        "end_ms": end * 1000.0 - step_start_time_ms,
-                        "duration_ms": elapsed_ms,
-                        "ep_collective_seq_id": None,
-                    }
-                )
+            _record_draft_timing(start, end, current_step, pending_record)
             _WORKER_STATE.draft_measure_depth -= 1
 
     return measured_context()

@@ -560,6 +560,32 @@ def test_draft_timing_uses_rank_max_and_baseline_zero():
     np.testing.assert_allclose(drafted.global_draft_ms, np.array([2.5]))
 
 
+def test_pending_draft_timing_is_recorded_after_step_is_queued(monkeypatch):
+    state = runtime._WORKER_STATE
+    monkeypatch.setattr(runtime, "_synchronize_device", lambda: None)
+    state.enabled = True
+    state.pending_step_records.clear()
+    state.current_step = None
+    state.draft_measure_depth = 0
+    pending_record = {
+        "timing": {"draft_ms": 0.0},
+        "trace": {"step_start_time_ms": 0.0, "events": []},
+    }
+    state.pending_step_records.append(pending_record)
+
+    try:
+        result = runtime._measure_worker_section("draft", lambda: "drafted")
+    finally:
+        state.enabled = False
+        state.pending_step_records.clear()
+        state.current_step = None
+        state.draft_measure_depth = 0
+
+    assert result == "drafted"
+    assert pending_record["timing"]["draft_ms"] > 0.0
+    assert pending_record["trace"]["events"][-1]["label"] == "draft"
+
+
 def test_global_step_time_aggregation_keeps_prefill_global_step():
     result = helper.aggregate_global_step_time_components(
         [
