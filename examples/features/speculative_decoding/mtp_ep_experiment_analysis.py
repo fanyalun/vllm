@@ -58,6 +58,9 @@ class LoadedConditionData:
     barrier_first_ep_collective_seq_ids: np.ndarray
     barrier_last_ep_collective_seq_ids: np.ndarray
     barrier_num_ep_collectives: np.ndarray
+    rank_barrier_first_ep_collective_seq_ids: np.ndarray
+    rank_barrier_last_ep_collective_seq_ids: np.ndarray
+    rank_barrier_num_ep_collectives: np.ndarray
     rank_step_kinds: np.ndarray
     rank_step_total_ms: np.ndarray
     rank_step_draft_ms: np.ndarray
@@ -343,6 +346,15 @@ def load_condition_data(path: Path) -> LoadedConditionData:
             ),
             barrier_num_ep_collectives=np.asarray(
                 npz["barrier_num_ep_collectives"]
+            ),
+            rank_barrier_first_ep_collective_seq_ids=np.asarray(
+                npz["rank_barrier_first_ep_collective_seq_ids"]
+            ),
+            rank_barrier_last_ep_collective_seq_ids=np.asarray(
+                npz["rank_barrier_last_ep_collective_seq_ids"]
+            ),
+            rank_barrier_num_ep_collectives=np.asarray(
+                npz["rank_barrier_num_ep_collectives"]
             ),
             rank_step_kinds=np.asarray(npz["rank_step_kinds"]),
             rank_step_total_ms=np.asarray(npz["rank_step_total_ms"]),
@@ -696,6 +708,21 @@ def validate_barrier_shapes(
     expected_layer_shape = (num_barriers, num_ranks, num_layers)
     for name, array, expected_shape in (
         ("rank_step_kinds", data.rank_step_kinds, expected_rank_shape),
+        (
+            "rank_barrier_first_ep_collective_seq_ids",
+            data.rank_barrier_first_ep_collective_seq_ids,
+            expected_rank_shape,
+        ),
+        (
+            "rank_barrier_last_ep_collective_seq_ids",
+            data.rank_barrier_last_ep_collective_seq_ids,
+            expected_rank_shape,
+        ),
+        (
+            "rank_barrier_num_ep_collectives",
+            data.rank_barrier_num_ep_collectives,
+            expected_rank_shape,
+        ),
         ("rank_step_total_ms", data.rank_step_total_ms, expected_rank_shape),
         ("rank_step_draft_ms", data.rank_step_draft_ms, expected_rank_shape),
         ("rank_layer_ffn_ms", data.rank_layer_ffn_ms, expected_layer_shape),
@@ -741,17 +768,19 @@ def build_barrier_rank_layer_rows(
                                 "draft_length": draft_length,
                                 "global_barrier_id": int(global_barrier_id),
                                 "first_ep_collective_seq_id": int(
-                                    data.barrier_first_ep_collective_seq_ids[
-                                        barrier_row
+                                    data.rank_barrier_first_ep_collective_seq_ids[
+                                        barrier_row, rank
                                     ]
                                 ),
                                 "last_ep_collective_seq_id": int(
-                                    data.barrier_last_ep_collective_seq_ids[
-                                        barrier_row
+                                    data.rank_barrier_last_ep_collective_seq_ids[
+                                        barrier_row, rank
                                     ]
                                 ),
                                 "num_ep_collectives": int(
-                                    data.barrier_num_ep_collectives[barrier_row]
+                                    data.rank_barrier_num_ep_collectives[
+                                        barrier_row, rank
+                                    ]
                                 ),
                                 "global_step_kind": str(
                                     data.global_step_kinds[barrier_row]
@@ -1121,25 +1150,29 @@ def plot_ffn_vs_draft_length(
     plt = import_plot_module()
     fig, ax = plt.subplots(figsize=(8, 5))
     for batch_size in batch_sizes:
-        baseline_ffn_ms = float(
-            next(
-                row["avg_ffn_ms"]
+        baseline_ffn_ms = next(
+            (
+                float(row["avg_ffn_ms"])
                 for row in step_rows
                 if row["batch_size"] == batch_size and row["draft_length"] == 0
-            )
+            ),
+            float("nan"),
         )
-        y = [
-            float(
-                next(
-                    row["avg_ffn_ms"]
+        y = []
+        for draft_length in draft_lengths:
+            ffn_ms = next(
+                (
+                    float(row["avg_ffn_ms"])
                     for row in step_rows
                     if row["batch_size"] == batch_size
                     and row["draft_length"] == draft_length
-                )
+                ),
+                float("nan"),
             )
-            / baseline_ffn_ms
-            for draft_length in draft_lengths
-        ]
+            if not np.isfinite(baseline_ffn_ms) or baseline_ffn_ms <= 0:
+                y.append(float("nan"))
+            else:
+                y.append(ffn_ms / baseline_ffn_ms)
         ax.plot(draft_lengths, y, marker="o", linewidth=2, label=f"bs={batch_size}")
     ax.axhline(1.0, color="#666666", linewidth=1, linestyle="--")
     ax.set_xlabel("draft_length")

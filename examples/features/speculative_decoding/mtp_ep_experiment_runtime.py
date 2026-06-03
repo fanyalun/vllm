@@ -160,6 +160,9 @@ class ConditionRawData:
     barrier_first_ep_collective_seq_ids: np.ndarray
     barrier_last_ep_collective_seq_ids: np.ndarray
     barrier_num_ep_collectives: np.ndarray
+    rank_barrier_first_ep_collective_seq_ids: np.ndarray
+    rank_barrier_last_ep_collective_seq_ids: np.ndarray
+    rank_barrier_num_ep_collectives: np.ndarray
     rank_step_kinds: np.ndarray
     rank_step_total_ms: np.ndarray
     rank_step_draft_ms: np.ndarray
@@ -267,6 +270,15 @@ class ConditionRawData:
                 self.barrier_last_ep_collective_seq_ids
             ),
             "barrier_num_ep_collectives": self.barrier_num_ep_collectives,
+            "rank_barrier_first_ep_collective_seq_ids": (
+                self.rank_barrier_first_ep_collective_seq_ids
+            ),
+            "rank_barrier_last_ep_collective_seq_ids": (
+                self.rank_barrier_last_ep_collective_seq_ids
+            ),
+            "rank_barrier_num_ep_collectives": (
+                self.rank_barrier_num_ep_collectives
+            ),
             "rank_step_kinds": self.rank_step_kinds,
             "rank_step_total_ms": self.rank_step_total_ms,
             "rank_step_draft_ms": self.rank_step_draft_ms,
@@ -2830,6 +2842,15 @@ def _aggregate_rank_condition_data(
             global_steps.barrier_last_ep_collective_seq_ids
         ),
         barrier_num_ep_collectives=global_steps.barrier_num_ep_collectives,
+        rank_barrier_first_ep_collective_seq_ids=(
+            global_steps.rank_barrier_first_ep_collective_seq_ids
+        ),
+        rank_barrier_last_ep_collective_seq_ids=(
+            global_steps.rank_barrier_last_ep_collective_seq_ids
+        ),
+        rank_barrier_num_ep_collectives=(
+            global_steps.rank_barrier_num_ep_collectives
+        ),
         rank_step_kinds=global_steps.rank_step_kinds,
         rank_step_total_ms=global_steps.rank_step_total_ms,
         rank_step_draft_ms=global_steps.rank_step_draft_ms,

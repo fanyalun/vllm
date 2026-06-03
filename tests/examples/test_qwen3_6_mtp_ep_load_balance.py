@@ -288,7 +288,58 @@ def _rank_candidate_data(
     }
 
 
-def test_global_step_time_aggregation_keeps_strict_ep_seq_intersection():
+def test_global_step_time_aggregation_aligns_rank_barriers_by_ordinal():
+    result = helper.aggregate_global_step_time_components(
+        [
+            _rank_candidate_data(
+                [7, 8],
+                ["verification_only", "verification_only"],
+                [10.0, 12.0],
+                [4.0, 6.0],
+                [[1, 2, 0, 0], [0, 2, 1, 0]],
+            ),
+            _rank_candidate_data(
+                [107, 110],
+                ["verification_only", "verification_only"],
+                [11.0, 9.0],
+                [5.0, 3.0],
+                [[0, 1, 3, 0], [2, 0, 0, 1]],
+            ),
+        ],
+        data_parallel_size=2,
+        layers=(0,),
+        num_experts=4,
+    )
+    np.testing.assert_array_equal(result.global_barrier_ids, np.array([0, 1]))
+    np.testing.assert_array_equal(result.global_step_indices, np.array([7, 8]))
+    np.testing.assert_array_equal(
+        result.rank_barrier_first_ep_collective_seq_ids,
+        np.array([[7, 107], [8, 110]], dtype=np.int64),
+    )
+    np.testing.assert_array_equal(
+        result.global_step_kinds,
+        np.array(["verification_only", "verification_only"]),
+    )
+    np.testing.assert_allclose(result.global_step_total_ms, np.array([11.0, 12.0]))
+    np.testing.assert_allclose(result.global_step_ffn_ms, np.array([5.0, 6.0]))
+    np.testing.assert_allclose(
+        result.global_step_sorted_rank_ffn_ms,
+        np.array([[5.0, 4.0], [6.0, 3.0]]),
+    )
+    np.testing.assert_allclose(
+        result.global_step_ffn_max_mean_ratio,
+        np.array([5.0 / 4.5, 6.0 / 4.5]),
+    )
+    np.testing.assert_allclose(result.global_step_other_ms, np.array([6.0, 6.0]))
+    np.testing.assert_array_equal(
+        result.global_step_histograms[0, 0],
+        np.array([1, 3, 3, 0]),
+    )
+    assert result.num_global_candidate_steps == 2
+    assert result.num_global_captured_steps == 2
+
+
+def test_global_step_time_aggregation_keeps_identical_ep_spans():
     result = helper.aggregate_global_step_time_components(
         [
             _rank_candidate_data(
@@ -417,21 +468,26 @@ def test_global_step_time_aggregation_rejects_span_count_mismatch():
         raise AssertionError("Expected span count mismatch to fail.")
 
 
-def test_global_step_time_aggregation_rejects_missing_rank_span():
+def test_global_step_time_aggregation_rejects_rank_barrier_count_mismatch():
     try:
         helper.aggregate_global_step_time_components(
             [
-                _rank_candidate_data([7], ["decode_only"], [1], [1]),
-                _rank_candidate_data([8], ["decode_only"], [1], [1]),
+                _rank_candidate_data(
+                    [7, 8],
+                    ["decode_only", "decode_only"],
+                    [1, 1],
+                    [1, 1],
+                ),
+                _rank_candidate_data([108], ["decode_only"], [1], [1]),
             ],
             data_parallel_size=2,
             layers=(0,),
             num_experts=4,
         )
     except ValueError as exc:
-        assert "not present on all ranks" in str(exc)
+        assert "different numbers of EP collective spans" in str(exc)
     else:
-        raise AssertionError("Expected missing rank span to fail.")
+        raise AssertionError("Expected rank barrier count mismatch to fail.")
 
 
 def test_per_layer_sorted_rank_reorders_tokens_and_active_with_ffn():
@@ -632,6 +688,13 @@ def test_sorted_rank_summary_rows_average_ffn_tokens_and_active():
         rank_step_kinds=np.array(
             [["decode_only", "decode_only"], ["decode_only", "decode_only"]]
         ),
+        rank_barrier_first_ep_collective_seq_ids=np.array(
+            [[0, 0], [1, 1]], dtype=np.int64
+        ),
+        rank_barrier_last_ep_collective_seq_ids=np.array(
+            [[0, 0], [1, 1]], dtype=np.int64
+        ),
+        rank_barrier_num_ep_collectives=np.ones((2, 2), dtype=np.int64),
         rank_step_total_ms=np.ones((2, 2), dtype=np.float64),
         rank_step_draft_ms=np.zeros((2, 2), dtype=np.float64),
         rank_layer_ffn_ms=np.ones((2, 2, 2), dtype=np.float64),

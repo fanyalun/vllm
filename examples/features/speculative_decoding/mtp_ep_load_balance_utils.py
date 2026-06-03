@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 DEFAULT_MODEL = "Qwen/Qwen3.6-35B-A3B"
 DEFAULT_DATASET = "likaixin/InstructCoder"
@@ -79,6 +79,9 @@ class GlobalStepTimingAggregation:
     barrier_first_ep_collective_seq_ids: np.ndarray
     barrier_last_ep_collective_seq_ids: np.ndarray
     barrier_num_ep_collectives: np.ndarray
+    rank_barrier_first_ep_collective_seq_ids: np.ndarray
+    rank_barrier_last_ep_collective_seq_ids: np.ndarray
+    rank_barrier_num_ep_collectives: np.ndarray
     rank_step_kinds: np.ndarray
     rank_step_total_ms: np.ndarray
     rank_step_draft_ms: np.ndarray
@@ -504,7 +507,7 @@ def aggregate_global_step_time_components(
             f"{len(rank_step_data)} vs {data_parallel_size}."
         )
 
-    per_step_records: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
+    per_rank_records: list[list[dict[str, Any]]] = []
     for rank_idx, rank_data in enumerate(rank_step_data):
         first_seq_ids = np.asarray(
             rank_data["candidate_first_ep_collective_seq_ids"], dtype=np.int64
@@ -567,6 +570,7 @@ def aggregate_global_step_time_components(
                 )
 
         seen_spans: set[tuple[int, int, int]] = set()
+        per_rank_records_for_rank: list[dict[str, Any]] = []
         for idx in range(size):
             first_seq_id = int(first_seq_ids[idx])
             last_seq_id = int(last_seq_ids[idx])
@@ -592,6 +596,9 @@ def aggregate_global_step_time_components(
 
             record = {
                 "rank_idx": rank_idx,
+                "first_ep_collective_seq_id": first_seq_id,
+                "last_ep_collective_seq_id": last_seq_id,
+                "num_ep_collectives": collective_count,
                 "step_kind": str(step_kinds[idx]),
                 "step_total_ms": float(step_total_ms[idx]),
                 "step_draft_ms": float(step_draft_ms[idx]),
@@ -601,13 +608,26 @@ def aggregate_global_step_time_components(
                 "layer_local_routed_tokens": layer_local_routed_tokens[idx],
                 "layer_local_active_experts": layer_local_active_experts[idx],
             }
-            per_step_records.setdefault(span, []).append(record)
+            per_rank_records_for_rank.append(record)
+        per_rank_records.append(
+            sorted(
+                per_rank_records_for_rank,
+                key=lambda record: (
+                    int(record["first_ep_collective_seq_id"]),
+                    int(record["last_ep_collective_seq_id"]),
+                    int(record["num_ep_collectives"]),
+                ),
+            )
+        )
 
     global_barrier_ids: list[int] = []
     global_step_indices: list[int] = []
     barrier_first_seq_ids: list[int] = []
     barrier_last_seq_ids: list[int] = []
     barrier_num_collectives: list[int] = []
+    rank_barrier_first_seq_ids: list[np.ndarray] = []
+    rank_barrier_last_seq_ids: list[np.ndarray] = []
+    rank_barrier_num_collectives: list[np.ndarray] = []
     rank_step_kinds: list[np.ndarray] = []
     rank_step_total_ms: list[np.ndarray] = []
     rank_step_draft_ms: list[np.ndarray] = []
@@ -629,16 +649,39 @@ def aggregate_global_step_time_components(
     num_global_mixed_dropped_steps = 0
     num_global_non_target_dropped_steps = 0
 
-    for barrier_id, span in enumerate(sorted(per_step_records)):
-        records = per_step_records[span]
-        if len(records) != data_parallel_size:
-            raise ValueError(
-                f"EP collective span {span} is not present on all ranks: "
-                f"{len(records)} vs {data_parallel_size}."
-            )
+    per_rank_sizes = [len(records) for records in per_rank_records]
+    if len(set(per_rank_sizes)) != 1:
+        raise ValueError(
+            "Ranks produced different numbers of EP collective spans: "
+            f"{per_rank_sizes}."
+        )
+
+    for barrier_id in range(per_rank_sizes[0] if per_rank_sizes else 0):
+        records = [rank_records[barrier_id] for rank_records in per_rank_records]
         if len({int(record["rank_idx"]) for record in records}) != data_parallel_size:
-            raise ValueError(f"EP collective span {span} has duplicate rank records.")
+            raise ValueError(
+                f"Ordinal barrier {barrier_id} has duplicate rank records."
+            )
         records = sorted(records, key=lambda record: int(record["rank_idx"]))
+
+        per_rank_first_seq_ids = np.asarray(
+            [int(record["first_ep_collective_seq_id"]) for record in records],
+            dtype=np.int64,
+        )
+        per_rank_last_seq_ids = np.asarray(
+            [int(record["last_ep_collective_seq_id"]) for record in records],
+            dtype=np.int64,
+        )
+        per_rank_num_collectives = np.asarray(
+            [int(record["num_ep_collectives"]) for record in records],
+            dtype=np.int64,
+        )
+        if len(set(per_rank_num_collectives.tolist())) != 1:
+            raise ValueError(
+                "Ordinal barrier "
+                f"{barrier_id} has inconsistent EP collective counts across "
+                f"ranks: {per_rank_num_collectives.tolist()}."
+            )
 
         step_kind_set = {str(record["step_kind"]) for record in records}
         global_step_kind = (
@@ -697,7 +740,7 @@ def aggregate_global_step_time_components(
         other_ms = total_ms - ffn_ms
         if ffn_ms < 0:
             raise ValueError(
-                f"Captured EP collective span {span} produced negative FFN time: "
+                f"Captured ordinal barrier {barrier_id} produced negative FFN time: "
                 f"{ffn_ms:.6f} ms."
             )
         mean_rank_ffn_ms = float(np.mean(sorted_rank_ffn_ms))
@@ -708,16 +751,19 @@ def aggregate_global_step_time_components(
         )
         if other_ms < -tol_ms:
             raise ValueError(
-                f"Captured EP collective span {span} produced negative Other time: "
+                f"Captured ordinal barrier {barrier_id} produced negative Other time: "
                 f"{other_ms:.6f} ms."
             )
         other_ms = max(other_ms, 0.0)
 
         global_barrier_ids.append(barrier_id)
-        global_step_indices.append(int(span[0]))
-        barrier_first_seq_ids.append(int(span[0]))
-        barrier_last_seq_ids.append(int(span[1]))
-        barrier_num_collectives.append(int(span[2]))
+        global_step_indices.append(int(np.min(per_rank_first_seq_ids)))
+        barrier_first_seq_ids.append(int(np.min(per_rank_first_seq_ids)))
+        barrier_last_seq_ids.append(int(np.max(per_rank_last_seq_ids)))
+        barrier_num_collectives.append(int(per_rank_num_collectives[0]))
+        rank_barrier_first_seq_ids.append(per_rank_first_seq_ids)
+        rank_barrier_last_seq_ids.append(per_rank_last_seq_ids)
+        rank_barrier_num_collectives.append(per_rank_num_collectives)
         rank_step_kinds.append(
             np.asarray([str(record["step_kind"]) for record in records], dtype=np.str_)
         )
@@ -780,6 +826,21 @@ def aggregate_global_step_time_components(
         barrier_num_ep_collectives=np.asarray(
             barrier_num_collectives, dtype=np.int64
         ),
+        rank_barrier_first_ep_collective_seq_ids=(
+            np.stack(rank_barrier_first_seq_ids, axis=0).astype(np.int64)
+            if rank_barrier_first_seq_ids
+            else np.empty((0, data_parallel_size), dtype=np.int64)
+        ),
+        rank_barrier_last_ep_collective_seq_ids=(
+            np.stack(rank_barrier_last_seq_ids, axis=0).astype(np.int64)
+            if rank_barrier_last_seq_ids
+            else np.empty((0, data_parallel_size), dtype=np.int64)
+        ),
+        rank_barrier_num_ep_collectives=(
+            np.stack(rank_barrier_num_collectives, axis=0).astype(np.int64)
+            if rank_barrier_num_collectives
+            else np.empty((0, data_parallel_size), dtype=np.int64)
+        ),
         rank_step_kinds=(
             np.stack(rank_step_kinds, axis=0).astype(np.str_)
             if rank_step_kinds
@@ -823,7 +884,7 @@ def aggregate_global_step_time_components(
         global_step_kinds=np.asarray(global_step_kinds, dtype=np.str_),
         global_step_histograms=histogram_array,
         global_step_total_tokens=np.asarray(global_step_total_tokens, dtype=np.int64),
-        num_global_candidate_steps=len(per_step_records),
+        num_global_candidate_steps=per_rank_sizes[0] if per_rank_sizes else 0,
         num_global_captured_steps=len(global_step_indices),
         num_global_prefill_dropped_steps=num_global_prefill_dropped_steps,
         num_global_mixed_dropped_steps=num_global_mixed_dropped_steps,
