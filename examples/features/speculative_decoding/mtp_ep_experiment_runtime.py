@@ -11,6 +11,7 @@ import sys
 import time
 from collections import deque
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MethodType
@@ -519,6 +520,7 @@ class WorkerInstrumentationState:
     enabled: bool = False
     pending_step_records: deque[dict[str, Any]] = field(default_factory=deque)
     current_step: StepAccumulator | None = None
+    draft_measure_depth: int = 0
     enter_step_logs: int = 0
     queued_step_logs: int = 0
     next_step_index: int = 0
@@ -538,6 +540,9 @@ _ORIGINAL_MODULAR_FUSED_EXPERTS = None
 _ORIGINAL_MODULAR_FINALIZE = None
 _ORIGINAL_MONOLITHIC_APPLY = None
 _ORIGINAL_GPU_MODEL_RUNNER_PROPOSE_DRAFT = None
+_ORIGINAL_EAGLE_SPECULATOR_PROPOSE = None
+_ORIGINAL_SPEC_DECODE_BASE_PROPOSER_PROPOSE = None
+_ORIGINAL_GPU_MODEL_RUNNER_RECORD_FUNCTION = None
 
 
 def condition_name(batch_size: int, draft_length: int) -> str:
@@ -981,54 +986,126 @@ def _measure_worker_section(
     current_step = _WORKER_STATE.current_step
     if not _WORKER_STATE.enabled or current_step is None:
         return fn(*args, **kwargs)
+    is_outer_draft = False
+    if label == "draft":
+        if _WORKER_STATE.draft_measure_depth > 0:
+            return fn(*args, **kwargs)
+        _WORKER_STATE.draft_measure_depth += 1
+        is_outer_draft = True
 
-    ep_collective_seq_id = None
-    if label in ("prepare", "finalize"):
-        ep_collective_seq_id = _WORKER_STATE.next_ep_collective_seq_id
-        _WORKER_STATE.next_ep_collective_seq_id += 1
-        if current_step.first_ep_collective_seq_id is None:
-            current_step.first_ep_collective_seq_id = ep_collective_seq_id
-        current_step.last_ep_collective_seq_id = ep_collective_seq_id
-        current_step.num_ep_collectives += 1
+    try:
+        ep_collective_seq_id = None
+        if label in ("prepare", "finalize"):
+            ep_collective_seq_id = _WORKER_STATE.next_ep_collective_seq_id
+            _WORKER_STATE.next_ep_collective_seq_id += 1
+            if current_step.first_ep_collective_seq_id is None:
+                current_step.first_ep_collective_seq_id = ep_collective_seq_id
+            current_step.last_ep_collective_seq_id = ep_collective_seq_id
+            current_step.num_ep_collectives += 1
 
-    _synchronize_device()
-    start = time.perf_counter()
-    result = fn(*args, **kwargs)
-    _synchronize_device()
-    end = time.perf_counter()
-    elapsed_ms = (end - start) * 1000.0
-    start_ms = start * 1000.0 - current_step.step_start_time_ms
-    end_ms = end * 1000.0 - current_step.step_start_time_ms
-    current_step.events.append(
-        {
-            "label": label,
-            "start_ms": start_ms,
-            "end_ms": end_ms,
-            "duration_ms": elapsed_ms,
-            "ep_collective_seq_id": ep_collective_seq_id,
-        }
-    )
-    if label == "prepare":
-        current_step.prepare_ms += elapsed_ms
-    elif label == "finalize":
-        current_step.finalize_ms += elapsed_ms
-    elif label == "attention":
-        current_step.attention_ms += elapsed_ms
-    elif label == "routing":
-        current_step.routing_ms += elapsed_ms
-    elif label == "ffn":
-        if add_to_step_ffn:
-            current_step.ffn_ms += elapsed_ms
-        if current_step.layer_stack:
-            layer_idx = current_step.layer_stack[-1]
-            current_step.layer_ffn_ms[layer_idx] = (
-                current_step.layer_ffn_ms.get(layer_idx, 0.0) + elapsed_ms
-            )
-    elif label == "draft":
-        current_step.draft_ms += elapsed_ms
-    else:
-        raise ValueError(f"Unknown measured label: {label}")
-    return result
+        _synchronize_device()
+        start = time.perf_counter()
+        result = fn(*args, **kwargs)
+        _synchronize_device()
+        end = time.perf_counter()
+        elapsed_ms = (end - start) * 1000.0
+        start_ms = start * 1000.0 - current_step.step_start_time_ms
+        end_ms = end * 1000.0 - current_step.step_start_time_ms
+        current_step.events.append(
+            {
+                "label": label,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "duration_ms": elapsed_ms,
+                "ep_collective_seq_id": ep_collective_seq_id,
+            }
+        )
+        if label == "prepare":
+            current_step.prepare_ms += elapsed_ms
+        elif label == "finalize":
+            current_step.finalize_ms += elapsed_ms
+        elif label == "attention":
+            current_step.attention_ms += elapsed_ms
+        elif label == "routing":
+            current_step.routing_ms += elapsed_ms
+        elif label == "ffn":
+            if add_to_step_ffn:
+                current_step.ffn_ms += elapsed_ms
+            if current_step.layer_stack:
+                layer_idx = current_step.layer_stack[-1]
+                current_step.layer_ffn_ms[layer_idx] = (
+                    current_step.layer_ffn_ms.get(layer_idx, 0.0) + elapsed_ms
+                )
+        elif label == "draft":
+            current_step.draft_ms += elapsed_ms
+        else:
+            raise ValueError(f"Unknown measured label: {label}")
+        return result
+    finally:
+        if is_outer_draft:
+            _WORKER_STATE.draft_measure_depth -= 1
+
+
+def _measure_draft_context(original_context: Any):
+    @contextmanager
+    def measured_context():
+        current_step = _WORKER_STATE.current_step
+        pending_record = (
+            _WORKER_STATE.pending_step_records[-1]
+            if _WORKER_STATE.pending_step_records
+            else None
+        )
+        if (
+            not _WORKER_STATE.enabled
+            or (current_step is None and pending_record is None)
+            or _WORKER_STATE.draft_measure_depth > 0
+        ):
+            with original_context:
+                yield
+            return
+
+        _WORKER_STATE.draft_measure_depth += 1
+        _synchronize_device()
+        start = time.perf_counter()
+        try:
+            with original_context:
+                yield
+        finally:
+            _synchronize_device()
+            end = time.perf_counter()
+            elapsed_ms = (end - start) * 1000.0
+            if current_step is not None:
+                start_ms = start * 1000.0 - current_step.step_start_time_ms
+                end_ms = end * 1000.0 - current_step.step_start_time_ms
+                current_step.events.append(
+                    {
+                        "label": "draft",
+                        "start_ms": start_ms,
+                        "end_ms": end_ms,
+                        "duration_ms": elapsed_ms,
+                        "ep_collective_seq_id": None,
+                    }
+                )
+                current_step.draft_ms += elapsed_ms
+            elif pending_record is not None:
+                timing = pending_record["timing"]
+                trace = pending_record["trace"]
+                timing["draft_ms"] = float(timing.get("draft_ms", 0.0)) + elapsed_ms
+                step_start_time_ms = float(
+                    trace.get("step_start_time_ms", start * 1000.0)
+                )
+                trace["events"].append(
+                    {
+                        "label": "draft",
+                        "start_ms": start * 1000.0 - step_start_time_ms,
+                        "end_ms": end * 1000.0 - step_start_time_ms,
+                        "duration_ms": elapsed_ms,
+                        "ep_collective_seq_id": None,
+                    }
+                )
+            _WORKER_STATE.draft_measure_depth -= 1
+
+    return measured_context()
 
 
 def _extract_layer_index_from_module(module: Any) -> int | None:
@@ -1115,9 +1192,14 @@ def _install_worker_hooks() -> None:
     global _ORIGINAL_MODULAR_FINALIZE
     global _ORIGINAL_MONOLITHIC_APPLY
     global _ORIGINAL_GPU_MODEL_RUNNER_PROPOSE_DRAFT
+    global _ORIGINAL_EAGLE_SPECULATOR_PROPOSE
+    global _ORIGINAL_SPEC_DECODE_BASE_PROPOSER_PROPOSE
+    global _ORIGINAL_GPU_MODEL_RUNNER_RECORD_FUNCTION
 
     if _ORIGINAL_WORKER_EXECUTE_MODEL is not None:
         return
+
+    import vllm.v1.worker.gpu_model_runner as gpu_model_runner_module
 
     from vllm.model_executor.layers.fused_moe.router.base_router import BaseRouter
     from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
@@ -1133,6 +1215,8 @@ def _install_worker_hooks() -> None:
         Qwen3MoeSparseMoeBlock,
     )
     from vllm.model_executor.models.qwen3_next import Qwen3NextAttention
+    from vllm.v1.spec_decode.llm_base_proposer import SpecDecodeBaseProposer
+    from vllm.v1.worker.gpu.spec_decode.eagle.speculator import EagleSpeculator
     from vllm.v1.worker.gpu_model_runner import GPUModelRunner
     from vllm.v1.worker.gpu_worker import Worker
 
@@ -1148,6 +1232,11 @@ def _install_worker_hooks() -> None:
     _ORIGINAL_MODULAR_FINALIZE = FusedMoEKernelModularImpl._finalize
     _ORIGINAL_MONOLITHIC_APPLY = FusedMoEKernelMonolithicImpl.apply
     _ORIGINAL_GPU_MODEL_RUNNER_PROPOSE_DRAFT = GPUModelRunner.propose_draft_token_ids
+    _ORIGINAL_EAGLE_SPECULATOR_PROPOSE = EagleSpeculator.propose
+    _ORIGINAL_SPEC_DECODE_BASE_PROPOSER_PROPOSE = SpecDecodeBaseProposer.propose
+    _ORIGINAL_GPU_MODEL_RUNNER_RECORD_FUNCTION = (
+        gpu_model_runner_module.record_function_or_nullcontext
+    )
 
     def patched_worker_execute_model(self, scheduler_output):
         if (
@@ -1378,6 +1467,30 @@ def _install_worker_hooks() -> None:
             **kwargs,
         )
 
+    def patched_eagle_speculator_propose(self, *args, **kwargs):
+        return _measure_worker_section(
+            "draft",
+            _ORIGINAL_EAGLE_SPECULATOR_PROPOSE,
+            self,
+            *args,
+            **kwargs,
+        )
+
+    def patched_spec_decode_base_proposer_propose(self, *args, **kwargs):
+        return _measure_worker_section(
+            "draft",
+            _ORIGINAL_SPEC_DECODE_BASE_PROPOSER_PROPOSE,
+            self,
+            *args,
+            **kwargs,
+        )
+
+    def patched_record_function_or_nullcontext(name: str):
+        original_context = _ORIGINAL_GPU_MODEL_RUNNER_RECORD_FUNCTION(name)
+        if name != "gpu_model_runner: draft":
+            return original_context
+        return _measure_draft_context(original_context)
+
     Worker.execute_model = patched_worker_execute_model
     BaseRouter.select_experts = patched_router_select_experts
     Qwen2MoeMLP.forward = patched_qwen2_mlp_forward
@@ -1390,6 +1503,11 @@ def _install_worker_hooks() -> None:
     FusedMoEKernelModularImpl._finalize = patched_modular_finalize
     FusedMoEKernelMonolithicImpl.apply = patched_monolithic_apply
     GPUModelRunner.propose_draft_token_ids = patched_propose_draft_token_ids
+    EagleSpeculator.propose = patched_eagle_speculator_propose
+    SpecDecodeBaseProposer.propose = patched_spec_decode_base_proposer_propose
+    gpu_model_runner_module.record_function_or_nullcontext = (
+        patched_record_function_or_nullcontext
+    )
 
 
 def install_experiment_hooks_worker(worker: Any) -> bool:
@@ -1397,6 +1515,7 @@ def install_experiment_hooks_worker(worker: Any) -> bool:
     _WORKER_STATE.enabled = False
     _WORKER_STATE.pending_step_records.clear()
     _WORKER_STATE.current_step = None
+    _WORKER_STATE.draft_measure_depth = 0
     _WORKER_STATE.enter_step_logs = 0
     _WORKER_STATE.queued_step_logs = 0
     _WORKER_STATE.next_step_index = 0
@@ -1408,6 +1527,7 @@ def start_condition_collection_worker(worker: Any) -> bool:
     _WORKER_STATE.enabled = True
     _WORKER_STATE.pending_step_records.clear()
     _WORKER_STATE.current_step = None
+    _WORKER_STATE.draft_measure_depth = 0
     _WORKER_STATE.enter_step_logs = 0
     _WORKER_STATE.queued_step_logs = 0
     return True
@@ -1418,6 +1538,7 @@ def stop_condition_collection_worker(worker: Any) -> dict[str, int]:
     pending = len(_WORKER_STATE.pending_step_records)
     _WORKER_STATE.pending_step_records.clear()
     _WORKER_STATE.current_step = None
+    _WORKER_STATE.draft_measure_depth = 0
     return {"pending_timings": pending}
 
 
