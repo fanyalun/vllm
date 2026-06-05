@@ -10,12 +10,11 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-
 from mtp_ep_load_balance_utils import (
     SCHEMA_VERSION,
     TPOT_DEFINITION,
-    build_rank_load_from_histograms,
     build_condition_metrics,
+    build_rank_load_from_histograms,
     build_speedup_rows,
     normalize_global_time_components,
     reorder_histograms_by_expert_order,
@@ -45,6 +44,14 @@ class LoadedConditionData:
     num_output_tokens_excl_first_total: int
     tpot_ms: float
     decode_throughput_tok_s: float
+    vllm_generation_elapsed_ms: float
+    vllm_request_tpot_ms: float
+    vllm_generation_throughput_tok_s: float
+    spec_num_drafts: int
+    spec_num_draft_tokens: int
+    spec_num_accepted_tokens: int
+    spec_acceptance_rate: float
+    spec_mean_acceptance_length: float
     step_histograms: np.ndarray
     step_total_tokens: np.ndarray
     step_total_ms: np.ndarray
@@ -58,9 +65,6 @@ class LoadedConditionData:
     barrier_first_ep_collective_seq_ids: np.ndarray
     barrier_last_ep_collective_seq_ids: np.ndarray
     barrier_num_ep_collectives: np.ndarray
-    rank_barrier_first_ep_collective_seq_ids: np.ndarray
-    rank_barrier_last_ep_collective_seq_ids: np.ndarray
-    rank_barrier_num_ep_collectives: np.ndarray
     rank_step_kinds: np.ndarray
     rank_step_total_ms: np.ndarray
     rank_step_draft_ms: np.ndarray
@@ -328,6 +332,22 @@ def load_condition_data(path: Path) -> LoadedConditionData:
             decode_throughput_tok_s=_scalar(
                 npz, "decode_throughput_tok_s", float
             ),
+            vllm_generation_elapsed_ms=_scalar(
+                npz, "vllm_generation_elapsed_ms", float
+            ),
+            vllm_request_tpot_ms=_scalar(npz, "vllm_request_tpot_ms", float),
+            vllm_generation_throughput_tok_s=_scalar(
+                npz, "vllm_generation_throughput_tok_s", float
+            ),
+            spec_num_drafts=_scalar(npz, "spec_num_drafts", int),
+            spec_num_draft_tokens=_scalar(npz, "spec_num_draft_tokens", int),
+            spec_num_accepted_tokens=_scalar(
+                npz, "spec_num_accepted_tokens", int
+            ),
+            spec_acceptance_rate=_scalar(npz, "spec_acceptance_rate", float),
+            spec_mean_acceptance_length=_scalar(
+                npz, "spec_mean_acceptance_length", float
+            ),
             step_histograms=np.asarray(npz["step_histograms"]),
             step_total_tokens=np.asarray(npz["step_total_tokens"]),
             step_total_ms=np.asarray(npz["step_total_ms"]),
@@ -346,15 +366,6 @@ def load_condition_data(path: Path) -> LoadedConditionData:
             ),
             barrier_num_ep_collectives=np.asarray(
                 npz["barrier_num_ep_collectives"]
-            ),
-            rank_barrier_first_ep_collective_seq_ids=np.asarray(
-                npz["rank_barrier_first_ep_collective_seq_ids"]
-            ),
-            rank_barrier_last_ep_collective_seq_ids=np.asarray(
-                npz["rank_barrier_last_ep_collective_seq_ids"]
-            ),
-            rank_barrier_num_ep_collectives=np.asarray(
-                npz["rank_barrier_num_ep_collectives"]
             ),
             rank_step_kinds=np.asarray(npz["rank_step_kinds"]),
             rank_step_total_ms=np.asarray(npz["rank_step_total_ms"]),
@@ -462,6 +473,16 @@ def synthesize_manifest(output_dir: Path) -> dict[str, Any]:
                 ),
                 "tpot_ms": data.tpot_ms,
                 "decode_throughput_tok_s": data.decode_throughput_tok_s,
+                "vllm_generation_elapsed_ms": data.vllm_generation_elapsed_ms,
+                "vllm_request_tpot_ms": data.vllm_request_tpot_ms,
+                "vllm_generation_throughput_tok_s": (
+                    data.vllm_generation_throughput_tok_s
+                ),
+                "spec_num_drafts": data.spec_num_drafts,
+                "spec_num_draft_tokens": data.spec_num_draft_tokens,
+                "spec_num_accepted_tokens": data.spec_num_accepted_tokens,
+                "spec_acceptance_rate": data.spec_acceptance_rate,
+                "spec_mean_acceptance_length": data.spec_mean_acceptance_length,
                 "num_forward_steps_total": data.num_forward_steps_total,
                 "num_captured_steps": data.num_captured_steps,
                 "num_global_candidate_steps": data.num_global_candidate_steps,
@@ -708,21 +729,6 @@ def validate_barrier_shapes(
     expected_layer_shape = (num_barriers, num_ranks, num_layers)
     for name, array, expected_shape in (
         ("rank_step_kinds", data.rank_step_kinds, expected_rank_shape),
-        (
-            "rank_barrier_first_ep_collective_seq_ids",
-            data.rank_barrier_first_ep_collective_seq_ids,
-            expected_rank_shape,
-        ),
-        (
-            "rank_barrier_last_ep_collective_seq_ids",
-            data.rank_barrier_last_ep_collective_seq_ids,
-            expected_rank_shape,
-        ),
-        (
-            "rank_barrier_num_ep_collectives",
-            data.rank_barrier_num_ep_collectives,
-            expected_rank_shape,
-        ),
         ("rank_step_total_ms", data.rank_step_total_ms, expected_rank_shape),
         ("rank_step_draft_ms", data.rank_step_draft_ms, expected_rank_shape),
         ("rank_layer_ffn_ms", data.rank_layer_ffn_ms, expected_layer_shape),
@@ -768,19 +774,17 @@ def build_barrier_rank_layer_rows(
                                 "draft_length": draft_length,
                                 "global_barrier_id": int(global_barrier_id),
                                 "first_ep_collective_seq_id": int(
-                                    data.rank_barrier_first_ep_collective_seq_ids[
-                                        barrier_row, rank
+                                    data.barrier_first_ep_collective_seq_ids[
+                                        barrier_row
                                     ]
                                 ),
                                 "last_ep_collective_seq_id": int(
-                                    data.rank_barrier_last_ep_collective_seq_ids[
-                                        barrier_row, rank
+                                    data.barrier_last_ep_collective_seq_ids[
+                                        barrier_row
                                     ]
                                 ),
                                 "num_ep_collectives": int(
-                                    data.rank_barrier_num_ep_collectives[
-                                        barrier_row, rank
-                                    ]
+                                    data.barrier_num_ep_collectives[barrier_row]
                                 ),
                                 "global_step_kind": str(
                                     data.global_step_kinds[barrier_row]
@@ -989,6 +993,39 @@ def build_active_expert_ratio_rows(
     return rows
 
 
+def build_acceptance_metric_rows(
+    manifest: dict[str, Any],
+    results: dict[tuple[int, int], LoadedConditionData],
+) -> list[dict[str, float | int]]:
+    rows: list[dict[str, float | int]] = []
+    for batch_size in tuple(manifest["batch_sizes"]):
+        for draft_length in tuple(manifest["draft_lengths"]):
+            data = results[(batch_size, draft_length)]
+            elapsed_s = data.vllm_generation_elapsed_ms / 1000.0
+            rows.append(
+                {
+                    "batch_size": batch_size,
+                    "draft_length": draft_length,
+                    "spec_num_drafts": data.spec_num_drafts,
+                    "spec_num_draft_tokens": data.spec_num_draft_tokens,
+                    "spec_num_accepted_tokens": data.spec_num_accepted_tokens,
+                    "acceptance_rate": data.spec_acceptance_rate,
+                    "mean_acceptance_length": data.spec_mean_acceptance_length,
+                    "drafted_throughput_tok_s": (
+                        data.spec_num_draft_tokens / elapsed_s
+                        if elapsed_s > 0
+                        else 0.0
+                    ),
+                    "accepted_throughput_tok_s": (
+                        data.spec_num_accepted_tokens / elapsed_s
+                        if elapsed_s > 0
+                        else 0.0
+                    ),
+                }
+            )
+    return rows
+
+
 def plot_speedup_vs_draft_length(
     plot_dir: Path,
     speedup_rows: list[dict[str, float | int]],
@@ -1000,7 +1037,7 @@ def plot_speedup_vs_draft_length(
     for batch_size in batch_sizes:
         y = [
             next(
-                row["tpot_speedup"]
+                row["vllm_request_tpot_speedup"]
                 for row in speedup_rows
                 if row["batch_size"] == batch_size
                 and row["draft_length"] == draft_length
@@ -1010,11 +1047,11 @@ def plot_speedup_vs_draft_length(
         ax.plot(draft_lengths, y, marker="o", linewidth=2, label=f"bs={batch_size}")
     ax.axhline(1.0, color="#666666", linewidth=1, linestyle="--")
     ax.set_xlabel("draft_length")
-    ax.set_ylabel("TPOT speedup vs draft_length=0")
-    ax.set_title("TPOT Speedup vs Draft Length")
+    ax.set_ylabel("vLLM request TPOT speedup vs draft_length=0")
+    ax.set_title("vLLM Request TPOT Speedup vs Draft Length")
     ax.legend()
     ax.grid(alpha=0.25)
-    path = plot_dir / "speedup_vs_draft_length.png"
+    path = plot_dir / "vllm_request_tpot_speedup_vs_draft_length.png"
     fig.tight_layout()
     fig.savefig(path, dpi=200)
     plt.close(fig)
@@ -1032,7 +1069,7 @@ def plot_speedup_vs_batch_size(
     for draft_length in draft_lengths:
         y = [
             next(
-                row["tpot_speedup"]
+                row["vllm_request_tpot_speedup"]
                 for row in speedup_rows
                 if row["batch_size"] == batch_size
                 and row["draft_length"] == draft_length
@@ -1042,11 +1079,11 @@ def plot_speedup_vs_batch_size(
         ax.plot(batch_sizes, y, marker="o", linewidth=2, label=f"d={draft_length}")
     ax.axhline(1.0, color="#666666", linewidth=1, linestyle="--")
     ax.set_xlabel("batch_size")
-    ax.set_ylabel("TPOT speedup vs draft_length=0")
-    ax.set_title("TPOT Speedup vs Global Batch Size")
+    ax.set_ylabel("vLLM request TPOT speedup vs draft_length=0")
+    ax.set_title("vLLM Request TPOT Speedup vs Global Batch Size")
     ax.legend()
     ax.grid(alpha=0.25)
-    path = plot_dir / "tpot_speedup_vs_batch_size.png"
+    path = plot_dir / "vllm_request_tpot_speedup_vs_batch_size.png"
     fig.tight_layout()
     fig.savefig(path, dpi=200)
     plt.close(fig)
@@ -1064,7 +1101,7 @@ def plot_decode_throughput_speedup_vs_batch_size(
     for draft_length in draft_lengths:
         y = [
             next(
-                row["decode_throughput_speedup"]
+                row["vllm_generation_throughput_speedup"]
                 for row in speedup_rows
                 if row["batch_size"] == batch_size
                 and row["draft_length"] == draft_length
@@ -1074,11 +1111,52 @@ def plot_decode_throughput_speedup_vs_batch_size(
         ax.plot(batch_sizes, y, marker="o", linewidth=2, label=f"d={draft_length}")
     ax.axhline(1.0, color="#666666", linewidth=1, linestyle="--")
     ax.set_xlabel("batch_size")
-    ax.set_ylabel("decode throughput speedup vs draft_length=0")
-    ax.set_title("Decode Throughput Speedup vs Global Batch Size")
+    ax.set_ylabel("vLLM generation throughput speedup vs draft_length=0")
+    ax.set_title("vLLM Generation Throughput Speedup vs Global Batch Size")
     ax.legend()
     ax.grid(alpha=0.25)
-    path = plot_dir / "decode_throughput_speedup_vs_batch_size.png"
+    path = plot_dir / "vllm_generation_throughput_speedup_vs_batch_size.png"
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return path
+
+
+def plot_acceptance_rate_vs_draft_length(
+    plot_dir: Path,
+    acceptance_rows: list[dict[str, float | int]],
+    batch_sizes: tuple[int, ...],
+    draft_lengths: tuple[int, ...],
+) -> Path:
+    plt = import_plot_module()
+    fig, ax = plt.subplots(figsize=(8, 5))
+    plotted_lengths = tuple(
+        draft_length for draft_length in draft_lengths if draft_length > 0
+    )
+    for batch_size in batch_sizes:
+        y = [
+            next(
+                row["acceptance_rate"]
+                for row in acceptance_rows
+                if row["batch_size"] == batch_size
+                and row["draft_length"] == draft_length
+            )
+            for draft_length in plotted_lengths
+        ]
+        ax.plot(
+            plotted_lengths,
+            y,
+            marker="o",
+            linewidth=2,
+            label=f"bs={batch_size}",
+        )
+    ax.set_xlabel("draft_length")
+    ax.set_ylabel("accepted draft tokens / drafted tokens")
+    ax.set_title("Spec Decode Acceptance Rate vs Draft Length")
+    ax.set_ylim(0.0, 1.05)
+    ax.legend()
+    ax.grid(alpha=0.25)
+    path = plot_dir / "acceptance_rate_vs_draft_length.png"
     fig.tight_layout()
     fig.savefig(path, dpi=200)
     plt.close(fig)
@@ -1150,29 +1228,25 @@ def plot_ffn_vs_draft_length(
     plt = import_plot_module()
     fig, ax = plt.subplots(figsize=(8, 5))
     for batch_size in batch_sizes:
-        baseline_ffn_ms = next(
-            (
-                float(row["avg_ffn_ms"])
+        baseline_ffn_ms = float(
+            next(
+                row["avg_ffn_ms"]
                 for row in step_rows
                 if row["batch_size"] == batch_size and row["draft_length"] == 0
-            ),
-            float("nan"),
+            )
         )
-        y = []
-        for draft_length in draft_lengths:
-            ffn_ms = next(
-                (
-                    float(row["avg_ffn_ms"])
+        y = [
+            float(
+                next(
+                    row["avg_ffn_ms"]
                     for row in step_rows
                     if row["batch_size"] == batch_size
                     and row["draft_length"] == draft_length
-                ),
-                float("nan"),
+                )
             )
-            if not np.isfinite(baseline_ffn_ms) or baseline_ffn_ms <= 0:
-                y.append(float("nan"))
-            else:
-                y.append(ffn_ms / baseline_ffn_ms)
+            / baseline_ffn_ms
+            for draft_length in draft_lengths
+        ]
         ax.plot(draft_lengths, y, marker="o", linewidth=2, label=f"bs={batch_size}")
     ax.axhline(1.0, color="#666666", linewidth=1, linestyle="--")
     ax.set_xlabel("draft_length")
@@ -1527,6 +1601,7 @@ def build_report(
     output_dir: Path,
     manifest: dict[str, Any],
     speedup_rows: list[dict[str, float | int]],
+    acceptance_rows: list[dict[str, float | int]],
     step_rows: list[dict[str, float | int]],
     load_metric_rows: list[dict[str, Any]],
     rank_ffn_imbalance_rows: list[dict[str, Any]],
@@ -1550,10 +1625,11 @@ def build_report(
         f"- batch_size_scope：`{manifest['batch_size_scope']}`",
         f"- mixed_step_policy：`{manifest['mixed_step_policy']}`",
         f"- TPOT 定义：`{manifest.get('tpot_definition', TPOT_DEFINITION)}`",
+        "- speedup 口径：vLLM request TPOT histogram 和 generation throughput",
         f"- max_tokens：`{manifest['max_tokens']}`",
         f"- warmup_rounds：`{manifest.get('warmup_rounds', 0)}`",
         "",
-        "## TPOT Speedup",
+        "## vLLM Native Speedup",
         "",
     ]
 
@@ -1563,15 +1639,36 @@ def build_report(
             for row in speedup_rows
             if row["batch_size"] == batch_size and row["draft_length"] != 0
         ]
-        best = max(candidates, key=lambda row: float(row["tpot_speedup"]))
+        best = max(
+            candidates,
+            key=lambda row: float(row["vllm_generation_throughput_speedup"]),
+        )
         speedup_summaries = ", ".join(
-            f"d={row['draft_length']}:{float(row['tpot_speedup']):.3f}x"
+            f"d={row['draft_length']}:"
+            f"tpot={float(row['vllm_request_tpot_speedup']):.3f}x,"
+            f"throughput={float(row['vllm_generation_throughput_speedup']):.3f}x"
             for row in candidates
         )
         lines.append(
             f"- batch_size={batch_size}: {speedup_summaries}; "
-            f"best=d={best['draft_length']} ({float(best['tpot_speedup']):.3f}x)"
+            f"best_throughput=d={best['draft_length']} "
+            f"({float(best['vllm_generation_throughput_speedup']):.3f}x)"
         )
+
+    lines.extend(["", "## Spec Decode Acceptance", ""])
+    for batch_size in batch_sizes:
+        rows = [
+            row
+            for row in acceptance_rows
+            if row["batch_size"] == batch_size and row["draft_length"] != 0
+        ]
+        summaries = ", ".join(
+            f"d={row['draft_length']}:"
+            f"accept={float(row['acceptance_rate']) * 100:.1f}%,"
+            f"mean_len={float(row['mean_acceptance_length']):.2f}"
+            for row in rows
+        )
+        lines.append(f"- batch_size={batch_size}: {summaries}")
 
     lines.extend(["", "## Decode/Verification-only 时间开销分解", ""])
     for batch_size in batch_sizes:
@@ -1652,13 +1749,25 @@ def analyze_experiment(
         condition: data.num_output_tokens_excl_first_total
         for condition, data in results.items()
     }
+    vllm_request_tpot_ms_by_condition = {
+        condition: data.vllm_request_tpot_ms for condition, data in results.items()
+    }
+    vllm_generation_throughput_tok_s_by_condition = {
+        condition: data.vllm_generation_throughput_tok_s
+        for condition, data in results.items()
+    }
     speedup_rows = build_speedup_rows(
         decode_time_ms_by_condition,
         generation_tokens_by_condition,
         output_tokens_excl_first_by_condition,
         batch_sizes,
         draft_lengths,
+        vllm_request_tpot_ms_by_condition=vllm_request_tpot_ms_by_condition,
+        vllm_generation_throughput_tok_s_by_condition=(
+            vllm_generation_throughput_tok_s_by_condition
+        ),
     )
+    acceptance_rows = build_acceptance_metric_rows(manifest, results)
     step_rows = build_step_time_rows(manifest, results)
     (
         load_metric_rows,
@@ -1675,6 +1784,7 @@ def analyze_experiment(
     active_expert_ratio_rows = build_active_expert_ratio_rows(manifest, results)
 
     save_csv(dirs["tables"] / "speedup_metrics.csv", speedup_rows)
+    save_csv(dirs["tables"] / "acceptance_metrics.csv", acceptance_rows)
     save_csv(
         dirs["tables"] / "barrier_rank_layer_metrics.csv",
         barrier_rank_layer_rows,
@@ -1724,11 +1834,17 @@ def analyze_experiment(
         save_csv(dirs["tables"] / "rank_trace_summary.csv", rank_trace_rows)
 
     if not skip_plots:
+        plot_speedup_vs_draft_length(
+            dirs["speedup"], speedup_rows, batch_sizes, draft_lengths
+        )
         plot_speedup_vs_batch_size(
             dirs["speedup"], speedup_rows, batch_sizes, draft_lengths
         )
         plot_decode_throughput_speedup_vs_batch_size(
             dirs["speedup"], speedup_rows, batch_sizes, draft_lengths
+        )
+        plot_acceptance_rate_vs_draft_length(
+            dirs["speedup"], acceptance_rows, batch_sizes, draft_lengths
         )
         plot_ffn_vs_draft_length(
             dirs["time"],
@@ -1791,6 +1907,7 @@ def analyze_experiment(
             input_dir,
             manifest,
             speedup_rows,
+            acceptance_rows,
             step_rows,
             load_metric_rows,
             rank_ffn_imbalance_rows,

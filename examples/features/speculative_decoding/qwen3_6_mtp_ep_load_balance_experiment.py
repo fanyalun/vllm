@@ -14,17 +14,18 @@ from mtp_ep_experiment_runtime import (
 )
 from mtp_ep_load_balance_utils import (
     DEFAULT_BATCH_SIZES,
+    DEFAULT_DATA_PARALLEL_SIZE,
     DEFAULT_DATASET,
     DEFAULT_DATASET_CONFIG,
     DEFAULT_DATASET_SPLIT,
     DEFAULT_DRAFT_LENGTHS,
     DEFAULT_LAYERS,
-    DEFAULT_MAX_NUM_BATCHED_TOKENS,
     DEFAULT_MAX_MODEL_LEN,
+    DEFAULT_MAX_NUM_BATCHED_TOKENS,
     DEFAULT_MAX_TOKENS,
     DEFAULT_MODEL,
-    DEFAULT_NUM_SAMPLES,
     DEFAULT_NUM_EXPERTS,
+    DEFAULT_NUM_SAMPLES,
 )
 
 
@@ -58,7 +59,20 @@ def add_common_runtime_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
-    parser.add_argument("--data-parallel-size", type=int, default=2)
+    parser.add_argument(
+        "--data-parallel-size",
+        type=int,
+        default=DEFAULT_DATA_PARALLEL_SIZE,
+        help="DP+EP size. Defaults to 8 for the local RTX 5090 setup.",
+    )
+    parser.add_argument(
+        "--local-gpu-ids",
+        default=None,
+        help=(
+            "Comma-separated local GPU IDs to bind DP ranks to. Defaults to "
+            "CUDA_VISIBLE_DEVICES when set, otherwise 0..data_parallel_size-1."
+        ),
+    )
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
     parser.add_argument(
         "--layers",
@@ -138,7 +152,10 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_MAX_NUM_BATCHED_TOKENS,
     )
     collect_one_parser.add_argument("--tensor-parallel-size", type=int, default=1)
-    collect_one_parser.add_argument("--data-parallel-size", type=int, default=2)
+    collect_one_parser.add_argument(
+        "--data-parallel-size", type=int, default=DEFAULT_DATA_PARALLEL_SIZE
+    )
+    collect_one_parser.add_argument("--local-gpu-ids", default=None)
     collect_one_parser.add_argument(
         "--gpu-memory-utilization", type=float, default=0.85
     )
@@ -205,7 +222,10 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_MAX_NUM_BATCHED_TOKENS,
     )
     collect_one_rank_parser.add_argument("--tensor-parallel-size", type=int, default=1)
-    collect_one_rank_parser.add_argument("--data-parallel-size", type=int, default=2)
+    collect_one_rank_parser.add_argument(
+        "--data-parallel-size", type=int, default=DEFAULT_DATA_PARALLEL_SIZE
+    )
+    collect_one_rank_parser.add_argument("--local-gpu-ids", default=None)
     collect_one_rank_parser.add_argument(
         "--gpu-memory-utilization", type=float, default=0.85
     )
