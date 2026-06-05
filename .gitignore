@@ -209,6 +209,7 @@ cython_debug/
 
 # Results
 *.csv
+examples/features/speculative_decoding/results/
 
 # Python pickle files
 *.pkl

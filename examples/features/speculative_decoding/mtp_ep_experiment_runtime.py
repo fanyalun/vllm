@@ -11,7 +11,7 @@ import sys
 import time
 from collections import deque
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MethodType
@@ -22,27 +22,26 @@ import numpy as np
 os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
 
 from mtp_ep_load_balance_utils import (
-    DEFAULT_DATASET,
-    DEFAULT_DATASET_CONFIG,
-    DEFAULT_DATASET_SPLIT,
     DEFAULT_MAX_NUM_BATCHED_TOKENS,
-    FinishedRequestStatTotals,
     SCHEMA_VERSION,
+    TPOT_DEFINITION,
+    FinishedRequestStatTotals,
     StepTiming,
     aggregate_global_step_time_components,
     aggregate_worker_step_timings,
     average_step_histograms,
     classify_step_capture,
-    compute_num_output_tokens_excluding_first,
     compute_decode_throughput_tok_s,
+    compute_num_output_tokens_excluding_first,
     compute_tpot_ms_from_finished_stats,
     count_layer_expert_histograms,
+    count_position_layer_local_routed_tokens,
     merge_expert_to_ep_rank_maps,
     num_condition_rounds,
-    shard_global_batch_indices,
     select_dataset_indices,
-    TPOT_DEFINITION,
+    shard_global_batch_indices,
 )
+
 from vllm.utils.network_utils import get_open_port
 from vllm.v1.metrics.loggers import StatLoggerBase
 
@@ -58,6 +57,12 @@ class FinishedRequestStatsLogger(StatLoggerBase):
         self.decode_time_total_ms = 0.0
         self.num_generation_tokens_total = 0
         self.num_output_tokens_excl_first_total = 0
+        self.vllm_generation_tokens_total = 0
+        self.vllm_request_tpot_total_ms = 0.0
+        self.vllm_request_tpot_count = 0
+        self.spec_num_drafts = 0
+        self.spec_num_draft_tokens = 0
+        self.spec_num_accepted_tokens = 0
 
     def record(
         self,
@@ -66,8 +71,16 @@ class FinishedRequestStatsLogger(StatLoggerBase):
         mm_cache_stats: Any | None = None,
         engine_idx: int = 0,
     ) -> None:
+        if scheduler_stats is not None:
+            spec_stats = getattr(scheduler_stats, "spec_decoding_stats", None)
+            if spec_stats is not None:
+                self.spec_num_drafts += int(spec_stats.num_drafts)
+                self.spec_num_draft_tokens += int(spec_stats.num_draft_tokens)
+                self.spec_num_accepted_tokens += int(spec_stats.num_accepted_tokens)
+
         if iteration_stats is None:
             return
+        self.vllm_generation_tokens_total += int(iteration_stats.num_generation_tokens)
         for finished_req in iteration_stats.finished_requests:
             num_generation_tokens = int(finished_req.num_generation_tokens)
             self.decode_time_total_ms += float(finished_req.decode_time) * 1000.0
@@ -76,6 +89,10 @@ class FinishedRequestStatsLogger(StatLoggerBase):
                 num_generation_tokens - 1,
                 0,
             )
+            self.vllm_request_tpot_total_ms += (
+                float(finished_req.mean_time_per_output_token) * 1000.0
+            )
+            self.vllm_request_tpot_count += 1
 
     def log_engine_initialized(self) -> None:
         return
@@ -87,11 +104,102 @@ class FinishedRequestStatsLogger(StatLoggerBase):
             num_output_tokens_excl_first_total=(
                 self.num_output_tokens_excl_first_total
             ),
+            vllm_generation_tokens_total=self.vllm_generation_tokens_total,
+            vllm_request_tpot_total_ms=self.vllm_request_tpot_total_ms,
+            vllm_request_tpot_count=self.vllm_request_tpot_count,
+            spec_num_drafts=self.spec_num_drafts,
+            spec_num_draft_tokens=self.spec_num_draft_tokens,
+            spec_num_accepted_tokens=self.spec_num_accepted_tokens,
         )
 
 
 _FINISHED_REQUEST_STATS_LOGGER_ATTR = "_mtp_ep_finished_request_stats_logger"
 _SCHEDULER_CAPACITY_CONFIG_ATTR = "_mtp_ep_scheduler_capacity_config"
+
+RTX_5090_NCCL_ENV_DEFAULTS = {
+    "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+    "NCCL_COLLNET_ENABLE": "0",
+    "NCCL_CUMEM_ENABLE": "0",
+    "NCCL_IB_DISABLE": "1",
+    "NCCL_NVLS_ENABLE": "0",
+    "NCCL_P2P_DISABLE": "1",
+    "NCCL_P2P_NET_DISABLE": "1",
+    "NCCL_SOCKET_IFNAME": "lo",
+}
+
+
+def apply_rtx_5090_nccl_env_defaults(env: dict[str, str]) -> dict[str, str]:
+    for name, value in RTX_5090_NCCL_ENV_DEFAULTS.items():
+        env.setdefault(name, value)
+    return env
+
+
+def parse_local_gpu_ids(
+    local_gpu_ids: str | None,
+    data_parallel_size: int,
+) -> list[str]:
+    if local_gpu_ids:
+        gpu_ids = [gpu_id.strip() for gpu_id in local_gpu_ids.split(",")]
+    else:
+        visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+        gpu_ids = (
+            [gpu_id.strip() for gpu_id in visible_devices.split(",")]
+            if visible_devices
+            else [str(gpu_id) for gpu_id in range(data_parallel_size)]
+        )
+    gpu_ids = [gpu_id for gpu_id in gpu_ids if gpu_id]
+    if not gpu_ids:
+        raise ValueError("At least one local GPU ID must be available.")
+    return gpu_ids
+
+
+def validate_local_gpu_binding(args: Any) -> list[str]:
+    gpu_ids = parse_local_gpu_ids(
+        getattr(args, "local_gpu_ids", None),
+        args.data_parallel_size,
+    )
+    if args.data_parallel_size > len(gpu_ids):
+        raise ValueError(
+            f"data_parallel_size={args.data_parallel_size} requires one visible "
+            f"local GPU per DP rank, but only {len(gpu_ids)} GPU ID(s) were "
+            f"provided: {gpu_ids}. For a 4-card RTX 5090 host, pass "
+            "--data-parallel-size 4 --local-gpu-ids 0,1,2,3."
+        )
+    return gpu_ids
+
+
+def normalize_local_gpu_binding(args: Any) -> list[str]:
+    gpu_ids = validate_local_gpu_binding(args)
+    args.local_gpu_ids = ",".join(gpu_ids)
+    return gpu_ids
+
+
+def get_rank_gpu_id(args: Any, dp_rank: int) -> str:
+    gpu_ids = validate_local_gpu_binding(args)
+    return gpu_ids[dp_rank]
+
+
+def build_collect_subprocess_env(
+    args: Any,
+    *,
+    dp_rank: int | None = None,
+) -> dict[str, str]:
+    env = apply_rtx_5090_nccl_env_defaults(os.environ.copy())
+    if dp_rank is not None:
+        env["CUDA_VISIBLE_DEVICES"] = get_rank_gpu_id(args, dp_rank)
+        env["VLLM_DP_RANK_LOCAL"] = "0"
+    return env
+
+
+def configure_rank_process_environment(args: Any) -> int:
+    apply_rtx_5090_nccl_env_defaults(os.environ)
+    os.environ["CUDA_VISIBLE_DEVICES"] = get_rank_gpu_id(args, args.dp_rank)
+    os.environ["VLLM_DP_RANK"] = str(args.dp_rank)
+    os.environ["VLLM_DP_RANK_LOCAL"] = "0"
+    os.environ["VLLM_DP_SIZE"] = str(args.data_parallel_size)
+    os.environ["VLLM_DP_MASTER_IP"] = args.dp_master_ip
+    os.environ["VLLM_DP_MASTER_PORT"] = str(args.dp_master_port)
+    return 0
 
 
 @dataclass(frozen=True)
@@ -147,6 +255,14 @@ class ConditionRawData:
     num_output_tokens_excl_first_total: int
     tpot_ms: float
     decode_throughput_tok_s: float
+    vllm_generation_elapsed_ms: float
+    vllm_request_tpot_ms: float
+    vllm_generation_throughput_tok_s: float
+    spec_num_drafts: int
+    spec_num_draft_tokens: int
+    spec_num_accepted_tokens: int
+    spec_acceptance_rate: float
+    spec_mean_acceptance_length: float
     step_histograms: np.ndarray
     step_total_tokens: np.ndarray
     step_total_ms: np.ndarray
@@ -160,15 +276,14 @@ class ConditionRawData:
     barrier_first_ep_collective_seq_ids: np.ndarray
     barrier_last_ep_collective_seq_ids: np.ndarray
     barrier_num_ep_collectives: np.ndarray
-    rank_barrier_first_ep_collective_seq_ids: np.ndarray
-    rank_barrier_last_ep_collective_seq_ids: np.ndarray
-    rank_barrier_num_ep_collectives: np.ndarray
     rank_step_kinds: np.ndarray
     rank_step_total_ms: np.ndarray
     rank_step_draft_ms: np.ndarray
     rank_layer_ffn_ms: np.ndarray
     rank_layer_local_routed_tokens: np.ndarray
     rank_layer_local_active_experts: np.ndarray
+    rank_position_layer_ffn_ms: np.ndarray
+    rank_position_layer_local_routed_tokens: np.ndarray
     global_step_indices: np.ndarray
     global_step_total_ms: np.ndarray
     global_draft_ms: np.ndarray
@@ -176,6 +291,8 @@ class ConditionRawData:
     global_step_sorted_rank_ffn_ms: np.ndarray
     global_step_sorted_rank_local_routed_tokens: np.ndarray
     global_step_sorted_rank_local_active_experts: np.ndarray
+    global_step_position_sorted_rank_ffn_ms: np.ndarray
+    global_step_position_sorted_rank_local_routed_tokens: np.ndarray
     global_step_ffn_max_mean_ratio: np.ndarray
     global_step_other_ms: np.ndarray
     global_step_kinds: np.ndarray
@@ -251,6 +368,30 @@ class ConditionRawData:
             "decode_throughput_tok_s": np.asarray(
                 [self.decode_throughput_tok_s], dtype=np.float64
             ),
+            "vllm_generation_elapsed_ms": np.asarray(
+                [self.vllm_generation_elapsed_ms], dtype=np.float64
+            ),
+            "vllm_request_tpot_ms": np.asarray(
+                [self.vllm_request_tpot_ms], dtype=np.float64
+            ),
+            "vllm_generation_throughput_tok_s": np.asarray(
+                [self.vllm_generation_throughput_tok_s], dtype=np.float64
+            ),
+            "spec_num_drafts": np.asarray(
+                [self.spec_num_drafts], dtype=np.int64
+            ),
+            "spec_num_draft_tokens": np.asarray(
+                [self.spec_num_draft_tokens], dtype=np.int64
+            ),
+            "spec_num_accepted_tokens": np.asarray(
+                [self.spec_num_accepted_tokens], dtype=np.int64
+            ),
+            "spec_acceptance_rate": np.asarray(
+                [self.spec_acceptance_rate], dtype=np.float64
+            ),
+            "spec_mean_acceptance_length": np.asarray(
+                [self.spec_mean_acceptance_length], dtype=np.float64
+            ),
             "step_histograms": self.step_histograms,
             "step_total_tokens": self.step_total_tokens,
             "step_total_ms": self.step_total_ms,
@@ -270,15 +411,6 @@ class ConditionRawData:
                 self.barrier_last_ep_collective_seq_ids
             ),
             "barrier_num_ep_collectives": self.barrier_num_ep_collectives,
-            "rank_barrier_first_ep_collective_seq_ids": (
-                self.rank_barrier_first_ep_collective_seq_ids
-            ),
-            "rank_barrier_last_ep_collective_seq_ids": (
-                self.rank_barrier_last_ep_collective_seq_ids
-            ),
-            "rank_barrier_num_ep_collectives": (
-                self.rank_barrier_num_ep_collectives
-            ),
             "rank_step_kinds": self.rank_step_kinds,
             "rank_step_total_ms": self.rank_step_total_ms,
             "rank_step_draft_ms": self.rank_step_draft_ms,
@@ -288,6 +420,10 @@ class ConditionRawData:
             ),
             "rank_layer_local_active_experts": (
                 self.rank_layer_local_active_experts
+            ),
+            "rank_position_layer_ffn_ms": self.rank_position_layer_ffn_ms,
+            "rank_position_layer_local_routed_tokens": (
+                self.rank_position_layer_local_routed_tokens
             ),
             "global_step_indices": self.global_step_indices,
             "global_step_total_ms": self.global_step_total_ms,
@@ -300,6 +436,12 @@ class ConditionRawData:
             ),
             "global_step_sorted_rank_local_active_experts": (
                 self.global_step_sorted_rank_local_active_experts
+            ),
+            "global_step_position_sorted_rank_ffn_ms": (
+                self.global_step_position_sorted_rank_ffn_ms
+            ),
+            "global_step_position_sorted_rank_local_routed_tokens": (
+                self.global_step_position_sorted_rank_local_routed_tokens
             ),
             "global_step_ffn_max_mean_ratio": self.global_step_ffn_max_mean_ratio,
             "global_step_other_ms": self.global_step_other_ms,
@@ -358,6 +500,14 @@ class CollectedConditionSummary:
     num_output_tokens_excl_first_total: int
     tpot_ms: float
     decode_throughput_tok_s: float
+    vllm_generation_elapsed_ms: float
+    vllm_request_tpot_ms: float
+    vllm_generation_throughput_tok_s: float
+    spec_num_drafts: int
+    spec_num_draft_tokens: int
+    spec_num_accepted_tokens: int
+    spec_acceptance_rate: float
+    spec_mean_acceptance_length: float
     num_forward_steps_total: int
     num_captured_steps: int
     num_global_candidate_steps: int
@@ -402,11 +552,19 @@ class RankConditionData:
     candidate_layer_ffn_ms: np.ndarray
     candidate_layer_local_routed_tokens: np.ndarray
     candidate_layer_local_active_experts: np.ndarray
+    candidate_position_layer_ffn_ms: np.ndarray
+    candidate_position_layer_local_routed_tokens: np.ndarray
     expert_to_ep_rank: np.ndarray
     condition_latency_ms: float
     decode_time_total_ms: float
     num_generation_tokens_total: int
     num_output_tokens_excl_first_total: int
+    vllm_generation_tokens_total: int
+    vllm_request_tpot_total_ms: float
+    vllm_request_tpot_count: int
+    spec_num_drafts: int
+    spec_num_draft_tokens: int
+    spec_num_accepted_tokens: int
     num_forward_steps_total: int
     num_captured_steps: int
     num_dropped_steps: int
@@ -460,6 +618,12 @@ class RankConditionData:
             "candidate_layer_local_active_experts": (
                 self.candidate_layer_local_active_experts
             ),
+            "candidate_position_layer_ffn_ms": (
+                self.candidate_position_layer_ffn_ms
+            ),
+            "candidate_position_layer_local_routed_tokens": (
+                self.candidate_position_layer_local_routed_tokens
+            ),
             "expert_to_ep_rank": self.expert_to_ep_rank,
             "condition_latency_ms": np.asarray(
                 [self.condition_latency_ms], dtype=np.float64
@@ -472,6 +636,24 @@ class RankConditionData:
             ),
             "num_output_tokens_excl_first_total": np.asarray(
                 [self.num_output_tokens_excl_first_total], dtype=np.int64
+            ),
+            "vllm_generation_tokens_total": np.asarray(
+                [self.vllm_generation_tokens_total], dtype=np.int64
+            ),
+            "vllm_request_tpot_total_ms": np.asarray(
+                [self.vllm_request_tpot_total_ms], dtype=np.float64
+            ),
+            "vllm_request_tpot_count": np.asarray(
+                [self.vllm_request_tpot_count], dtype=np.int64
+            ),
+            "spec_num_drafts": np.asarray(
+                [self.spec_num_drafts], dtype=np.int64
+            ),
+            "spec_num_draft_tokens": np.asarray(
+                [self.spec_num_draft_tokens], dtype=np.int64
+            ),
+            "spec_num_accepted_tokens": np.asarray(
+                [self.spec_num_accepted_tokens], dtype=np.int64
             ),
             "num_forward_steps_total": np.asarray(
                 [self.num_forward_steps_total], dtype=np.int64
@@ -522,9 +704,10 @@ class StepAccumulator:
     finalize_ms: float = 0.0
     ffn_ms: float = 0.0
     draft_ms: float = 0.0
+    draft_depth: int = 0
     layer_ffn_ms: dict[int, float] = field(default_factory=dict)
     layer_stack: list[int] = field(default_factory=list)
-    events: list[dict[str, float | str]] = field(default_factory=list)
+    events: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -532,7 +715,6 @@ class WorkerInstrumentationState:
     enabled: bool = False
     pending_step_records: deque[dict[str, Any]] = field(default_factory=deque)
     current_step: StepAccumulator | None = None
-    draft_measure_depth: int = 0
     enter_step_logs: int = 0
     queued_step_logs: int = 0
     next_step_index: int = 0
@@ -545,6 +727,7 @@ _ORIGINAL_ROUTER_SELECT_EXPERTS = None
 _ORIGINAL_QWEN2_MLP_FORWARD = None
 _ORIGINAL_QWEN3_MLP_FORWARD = None
 _ORIGINAL_QWEN3_SPARSE_MOE_FORWARD = None
+_ORIGINAL_FUSED_MOE_FORWARD = None
 _ORIGINAL_QWEN3_NEXT_ATTN_FORWARD = None
 _ORIGINAL_QWEN_GDN_FORWARD = None
 _ORIGINAL_MODULAR_PREPARE = None
@@ -552,9 +735,6 @@ _ORIGINAL_MODULAR_FUSED_EXPERTS = None
 _ORIGINAL_MODULAR_FINALIZE = None
 _ORIGINAL_MONOLITHIC_APPLY = None
 _ORIGINAL_GPU_MODEL_RUNNER_PROPOSE_DRAFT = None
-_ORIGINAL_EAGLE_SPECULATOR_PROPOSE = None
-_ORIGINAL_SPEC_DECODE_BASE_PROPOSER_PROPOSE = None
-_ORIGINAL_GPU_MODEL_RUNNER_RECORD_FUNCTION = None
 
 
 def condition_name(batch_size: int, draft_length: int) -> str:
@@ -599,6 +779,8 @@ def save_run_metadata(output_dir: Path, args: Any) -> None:
         "enforce_eager": args.enforce_eager,
         "warmup_rounds": args.warmup_rounds,
         "trace_steps_per_rank": args.trace_steps_per_rank,
+        "local_gpu_ids": getattr(args, "local_gpu_ids", None),
+        "rtx_5090_nccl_env_defaults": RTX_5090_NCCL_ENV_DEFAULTS,
         "enable_chunked_prefill": True,
         "mixed_step_policy": "include_all_global_barriers",
         "tpot_definition": TPOT_DEFINITION,
@@ -632,6 +814,8 @@ def save_collect_manifest(
         "num_experts": args.num_experts,
         "warmup_rounds": args.warmup_rounds,
         "trace_steps_per_rank": args.trace_steps_per_rank,
+        "local_gpu_ids": getattr(args, "local_gpu_ids", None),
+        "rtx_5090_nccl_env_defaults": RTX_5090_NCCL_ENV_DEFAULTS,
         "enable_chunked_prefill": True,
         "mixed_step_policy": "include_all_global_barriers",
         "tpot_definition": TPOT_DEFINITION,
@@ -665,6 +849,18 @@ def save_collect_manifest(
                 ),
                 "tpot_ms": summary.tpot_ms,
                 "decode_throughput_tok_s": summary.decode_throughput_tok_s,
+                "vllm_generation_elapsed_ms": summary.vllm_generation_elapsed_ms,
+                "vllm_request_tpot_ms": summary.vllm_request_tpot_ms,
+                "vllm_generation_throughput_tok_s": (
+                    summary.vllm_generation_throughput_tok_s
+                ),
+                "spec_num_drafts": summary.spec_num_drafts,
+                "spec_num_draft_tokens": summary.spec_num_draft_tokens,
+                "spec_num_accepted_tokens": summary.spec_num_accepted_tokens,
+                "spec_acceptance_rate": summary.spec_acceptance_rate,
+                "spec_mean_acceptance_length": (
+                    summary.spec_mean_acceptance_length
+                ),
                 "num_forward_steps_total": summary.num_forward_steps_total,
                 "num_captured_steps": summary.num_captured_steps,
                 "num_global_candidate_steps": summary.num_global_candidate_steps,
@@ -721,6 +917,18 @@ def load_condition_summary(raw_path: Path) -> CollectedConditionSummary:
         )
         tpot_ms = float(data["tpot_ms"][0])
         decode_throughput_tok_s = float(data["decode_throughput_tok_s"][0])
+        vllm_generation_elapsed_ms = float(data["vllm_generation_elapsed_ms"][0])
+        vllm_request_tpot_ms = float(data["vllm_request_tpot_ms"][0])
+        vllm_generation_throughput_tok_s = float(
+            data["vllm_generation_throughput_tok_s"][0]
+        )
+        spec_num_drafts = int(data["spec_num_drafts"][0])
+        spec_num_draft_tokens = int(data["spec_num_draft_tokens"][0])
+        spec_num_accepted_tokens = int(data["spec_num_accepted_tokens"][0])
+        spec_acceptance_rate = float(data["spec_acceptance_rate"][0])
+        spec_mean_acceptance_length = float(
+            data["spec_mean_acceptance_length"][0]
+        )
         num_forward_steps_total = int(data["num_forward_steps_total"][0])
         num_captured_steps = int(data["num_captured_steps"][0])
         num_global_candidate_steps = int(data["num_global_candidate_steps"][0])
@@ -756,6 +964,14 @@ def load_condition_summary(raw_path: Path) -> CollectedConditionSummary:
         num_output_tokens_excl_first_total=num_output_tokens_excl_first_total,
         tpot_ms=tpot_ms,
         decode_throughput_tok_s=decode_throughput_tok_s,
+        vllm_generation_elapsed_ms=vllm_generation_elapsed_ms,
+        vllm_request_tpot_ms=vllm_request_tpot_ms,
+        vllm_generation_throughput_tok_s=vllm_generation_throughput_tok_s,
+        spec_num_drafts=spec_num_drafts,
+        spec_num_draft_tokens=spec_num_draft_tokens,
+        spec_num_accepted_tokens=spec_num_accepted_tokens,
+        spec_acceptance_rate=spec_acceptance_rate,
+        spec_mean_acceptance_length=spec_mean_acceptance_length,
         num_forward_steps_total=num_forward_steps_total,
         num_captured_steps=num_captured_steps,
         num_global_candidate_steps=num_global_candidate_steps,
@@ -996,38 +1212,16 @@ def _measure_worker_section(
     **kwargs: Any,
 ):
     current_step = _WORKER_STATE.current_step
-    pending_record = (
-        _WORKER_STATE.pending_step_records[-1]
-        if _WORKER_STATE.pending_step_records
-        else None
-    )
-    can_measure_pending_draft = (
-        label == "draft" and current_step is None and pending_record is not None
-    )
-    if not _WORKER_STATE.enabled or (
-        current_step is None and not can_measure_pending_draft
-    ):
+    if not _WORKER_STATE.enabled or current_step is None:
         return fn(*args, **kwargs)
-    is_outer_draft = False
-    if label == "draft":
-        if _WORKER_STATE.draft_measure_depth > 0:
-            return fn(*args, **kwargs)
-        _WORKER_STATE.draft_measure_depth += 1
-        is_outer_draft = True
 
+    is_draft_section = label == "draft"
+    if is_draft_section:
+        current_step.draft_depth += 1
     try:
-        if can_measure_pending_draft:
-            _synchronize_device()
-            start = time.perf_counter()
-            result = fn(*args, **kwargs)
-            _synchronize_device()
-            end = time.perf_counter()
-            _record_draft_timing(start, end, None, pending_record)
-            return result
-
-        assert current_step is not None
+        in_draft_section = current_step.draft_depth > 0 and not is_draft_section
         ep_collective_seq_id = None
-        if label in ("prepare", "finalize"):
+        if label in ("prepare", "finalize") and not in_draft_section:
             ep_collective_seq_id = _WORKER_STATE.next_ep_collective_seq_id
             _WORKER_STATE.next_ep_collective_seq_id += 1
             if current_step.first_ep_collective_seq_id is None:
@@ -1040,111 +1234,46 @@ def _measure_worker_section(
         result = fn(*args, **kwargs)
         _synchronize_device()
         end = time.perf_counter()
-        elapsed_ms = (end - start) * 1000.0
-        start_ms = start * 1000.0 - current_step.step_start_time_ms
-        end_ms = end * 1000.0 - current_step.step_start_time_ms
-        current_step.events.append(
-            {
-                "label": label,
-                "start_ms": start_ms,
-                "end_ms": end_ms,
-                "duration_ms": elapsed_ms,
-                "ep_collective_seq_id": ep_collective_seq_id,
-            }
-        )
-        if label == "prepare":
-            current_step.prepare_ms += elapsed_ms
-        elif label == "finalize":
-            current_step.finalize_ms += elapsed_ms
-        elif label == "attention":
-            current_step.attention_ms += elapsed_ms
-        elif label == "routing":
-            current_step.routing_ms += elapsed_ms
-        elif label == "ffn":
-            if add_to_step_ffn:
-                current_step.ffn_ms += elapsed_ms
-            if current_step.layer_stack:
-                layer_idx = current_step.layer_stack[-1]
-                current_step.layer_ffn_ms[layer_idx] = (
-                    current_step.layer_ffn_ms.get(layer_idx, 0.0) + elapsed_ms
-                )
-        elif label == "draft":
-            current_step.draft_ms += elapsed_ms
-        else:
-            raise ValueError(f"Unknown measured label: {label}")
-        return result
     finally:
-        if is_outer_draft:
-            _WORKER_STATE.draft_measure_depth -= 1
+        if is_draft_section:
+            current_step.draft_depth -= 1
 
-
-def _record_draft_timing(
-    start: float,
-    end: float,
-    current_step: StepAccumulator | None,
-    pending_record: dict[str, Any] | None,
-) -> None:
     elapsed_ms = (end - start) * 1000.0
-    if current_step is not None:
-        start_ms = start * 1000.0 - current_step.step_start_time_ms
-        end_ms = end * 1000.0 - current_step.step_start_time_ms
-        current_step.events.append(
-            {
-                "label": "draft",
-                "start_ms": start_ms,
-                "end_ms": end_ms,
-                "duration_ms": elapsed_ms,
-                "ep_collective_seq_id": None,
-            }
-        )
+    start_ms = start * 1000.0 - current_step.step_start_time_ms
+    end_ms = end * 1000.0 - current_step.step_start_time_ms
+    current_step.events.append(
+        {
+            "label": label,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "duration_ms": elapsed_ms,
+            "ep_collective_seq_id": ep_collective_seq_id,
+            "in_draft_section": in_draft_section,
+        }
+    )
+    if in_draft_section:
+        return result
+    if label == "prepare":
+        current_step.prepare_ms += elapsed_ms
+    elif label == "finalize":
+        current_step.finalize_ms += elapsed_ms
+    elif label == "attention":
+        current_step.attention_ms += elapsed_ms
+    elif label == "routing":
+        current_step.routing_ms += elapsed_ms
+    elif label == "ffn":
+        if add_to_step_ffn:
+            current_step.ffn_ms += elapsed_ms
+        if current_step.layer_stack:
+            layer_idx = current_step.layer_stack[-1]
+            current_step.layer_ffn_ms[layer_idx] = (
+                current_step.layer_ffn_ms.get(layer_idx, 0.0) + elapsed_ms
+            )
+    elif label == "draft":
         current_step.draft_ms += elapsed_ms
-    elif pending_record is not None:
-        timing = pending_record["timing"]
-        trace = pending_record["trace"]
-        timing["draft_ms"] = float(timing.get("draft_ms", 0.0)) + elapsed_ms
-        step_start_time_ms = float(trace.get("step_start_time_ms", start * 1000.0))
-        trace["events"].append(
-            {
-                "label": "draft",
-                "start_ms": start * 1000.0 - step_start_time_ms,
-                "end_ms": end * 1000.0 - step_start_time_ms,
-                "duration_ms": elapsed_ms,
-                "ep_collective_seq_id": None,
-            }
-        )
-
-
-def _measure_draft_context(original_context: Any):
-    @contextmanager
-    def measured_context():
-        current_step = _WORKER_STATE.current_step
-        pending_record = (
-            _WORKER_STATE.pending_step_records[-1]
-            if _WORKER_STATE.pending_step_records
-            else None
-        )
-        if (
-            not _WORKER_STATE.enabled
-            or (current_step is None and pending_record is None)
-            or _WORKER_STATE.draft_measure_depth > 0
-        ):
-            with original_context:
-                yield
-            return
-
-        _WORKER_STATE.draft_measure_depth += 1
-        _synchronize_device()
-        start = time.perf_counter()
-        try:
-            with original_context:
-                yield
-        finally:
-            _synchronize_device()
-            end = time.perf_counter()
-            _record_draft_timing(start, end, current_step, pending_record)
-            _WORKER_STATE.draft_measure_depth -= 1
-
-    return measured_context()
+    else:
+        raise ValueError(f"Unknown measured label: {label}")
+    return result
 
 
 def _extract_layer_index_from_module(module: Any) -> int | None:
@@ -1224,6 +1353,7 @@ def _install_worker_hooks() -> None:
     global _ORIGINAL_QWEN2_MLP_FORWARD
     global _ORIGINAL_QWEN3_MLP_FORWARD
     global _ORIGINAL_QWEN3_SPARSE_MOE_FORWARD
+    global _ORIGINAL_FUSED_MOE_FORWARD
     global _ORIGINAL_QWEN3_NEXT_ATTN_FORWARD
     global _ORIGINAL_QWEN_GDN_FORWARD
     global _ORIGINAL_MODULAR_PREPARE
@@ -1231,22 +1361,18 @@ def _install_worker_hooks() -> None:
     global _ORIGINAL_MODULAR_FINALIZE
     global _ORIGINAL_MONOLITHIC_APPLY
     global _ORIGINAL_GPU_MODEL_RUNNER_PROPOSE_DRAFT
-    global _ORIGINAL_EAGLE_SPECULATOR_PROPOSE
-    global _ORIGINAL_SPEC_DECODE_BASE_PROPOSER_PROPOSE
-    global _ORIGINAL_GPU_MODEL_RUNNER_RECORD_FUNCTION
 
     if _ORIGINAL_WORKER_EXECUTE_MODEL is not None:
         return
 
-    import vllm.v1.worker.gpu_model_runner as gpu_model_runner_module
-
-    from vllm.model_executor.layers.fused_moe.router.base_router import BaseRouter
-    from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
-        QwenGatedDeltaNetAttention,
-    )
+    from vllm.model_executor.layers.fused_moe.layer import FusedMoE
     from vllm.model_executor.layers.fused_moe.modular_kernel import (
         FusedMoEKernelModularImpl,
         FusedMoEKernelMonolithicImpl,
+    )
+    from vllm.model_executor.layers.fused_moe.router.base_router import BaseRouter
+    from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
+        QwenGatedDeltaNetAttention,
     )
     from vllm.model_executor.models.qwen2_moe import Qwen2MoeMLP
     from vllm.model_executor.models.qwen3_moe import (
@@ -1254,8 +1380,6 @@ def _install_worker_hooks() -> None:
         Qwen3MoeSparseMoeBlock,
     )
     from vllm.model_executor.models.qwen3_next import Qwen3NextAttention
-    from vllm.v1.spec_decode.llm_base_proposer import SpecDecodeBaseProposer
-    from vllm.v1.worker.gpu.spec_decode.eagle.speculator import EagleSpeculator
     from vllm.v1.worker.gpu_model_runner import GPUModelRunner
     from vllm.v1.worker.gpu_worker import Worker
 
@@ -1264,6 +1388,7 @@ def _install_worker_hooks() -> None:
     _ORIGINAL_QWEN2_MLP_FORWARD = Qwen2MoeMLP.forward
     _ORIGINAL_QWEN3_MLP_FORWARD = Qwen3MoeMLP.forward
     _ORIGINAL_QWEN3_SPARSE_MOE_FORWARD = Qwen3MoeSparseMoeBlock.forward
+    _ORIGINAL_FUSED_MOE_FORWARD = FusedMoE.forward
     _ORIGINAL_QWEN3_NEXT_ATTN_FORWARD = Qwen3NextAttention.forward
     _ORIGINAL_QWEN_GDN_FORWARD = QwenGatedDeltaNetAttention.forward
     _ORIGINAL_MODULAR_PREPARE = FusedMoEKernelModularImpl._prepare
@@ -1271,11 +1396,6 @@ def _install_worker_hooks() -> None:
     _ORIGINAL_MODULAR_FINALIZE = FusedMoEKernelModularImpl._finalize
     _ORIGINAL_MONOLITHIC_APPLY = FusedMoEKernelMonolithicImpl.apply
     _ORIGINAL_GPU_MODEL_RUNNER_PROPOSE_DRAFT = GPUModelRunner.propose_draft_token_ids
-    _ORIGINAL_EAGLE_SPECULATOR_PROPOSE = EagleSpeculator.propose
-    _ORIGINAL_SPEC_DECODE_BASE_PROPOSER_PROPOSE = SpecDecodeBaseProposer.propose
-    _ORIGINAL_GPU_MODEL_RUNNER_RECORD_FUNCTION = (
-        gpu_model_runner_module.record_function_or_nullcontext
-    )
 
     def patched_worker_execute_model(self, scheduler_output):
         if (
@@ -1386,6 +1506,13 @@ def _install_worker_hooks() -> None:
         pushed = _push_current_layer(_extract_layer_index_from_module(self))
         try:
             return _ORIGINAL_QWEN3_SPARSE_MOE_FORWARD(self, *args, **kwargs)
+        finally:
+            _pop_current_layer(pushed)
+
+    def patched_fused_moe_forward(self, *args, **kwargs):
+        pushed = _push_current_layer(_extract_layer_index_from_module(self))
+        try:
+            return _ORIGINAL_FUSED_MOE_FORWARD(self, *args, **kwargs)
         finally:
             _pop_current_layer(pushed)
 
@@ -1506,35 +1633,12 @@ def _install_worker_hooks() -> None:
             **kwargs,
         )
 
-    def patched_eagle_speculator_propose(self, *args, **kwargs):
-        return _measure_worker_section(
-            "draft",
-            _ORIGINAL_EAGLE_SPECULATOR_PROPOSE,
-            self,
-            *args,
-            **kwargs,
-        )
-
-    def patched_spec_decode_base_proposer_propose(self, *args, **kwargs):
-        return _measure_worker_section(
-            "draft",
-            _ORIGINAL_SPEC_DECODE_BASE_PROPOSER_PROPOSE,
-            self,
-            *args,
-            **kwargs,
-        )
-
-    def patched_record_function_or_nullcontext(name: str):
-        original_context = _ORIGINAL_GPU_MODEL_RUNNER_RECORD_FUNCTION(name)
-        if name != "gpu_model_runner: draft":
-            return original_context
-        return _measure_draft_context(original_context)
-
     Worker.execute_model = patched_worker_execute_model
     BaseRouter.select_experts = patched_router_select_experts
     Qwen2MoeMLP.forward = patched_qwen2_mlp_forward
     Qwen3MoeMLP.forward = patched_qwen3_mlp_forward
     Qwen3MoeSparseMoeBlock.forward = patched_qwen3_sparse_moe_forward
+    FusedMoE.forward = patched_fused_moe_forward
     Qwen3NextAttention.forward = patched_qwen3_next_attention_forward
     QwenGatedDeltaNetAttention.forward = patched_qwen_gdn_forward
     FusedMoEKernelModularImpl._prepare = patched_modular_prepare
@@ -1542,11 +1646,6 @@ def _install_worker_hooks() -> None:
     FusedMoEKernelModularImpl._finalize = patched_modular_finalize
     FusedMoEKernelMonolithicImpl.apply = patched_monolithic_apply
     GPUModelRunner.propose_draft_token_ids = patched_propose_draft_token_ids
-    EagleSpeculator.propose = patched_eagle_speculator_propose
-    SpecDecodeBaseProposer.propose = patched_spec_decode_base_proposer_propose
-    gpu_model_runner_module.record_function_or_nullcontext = (
-        patched_record_function_or_nullcontext
-    )
 
 
 def install_experiment_hooks_worker(worker: Any) -> bool:
@@ -1554,7 +1653,6 @@ def install_experiment_hooks_worker(worker: Any) -> bool:
     _WORKER_STATE.enabled = False
     _WORKER_STATE.pending_step_records.clear()
     _WORKER_STATE.current_step = None
-    _WORKER_STATE.draft_measure_depth = 0
     _WORKER_STATE.enter_step_logs = 0
     _WORKER_STATE.queued_step_logs = 0
     _WORKER_STATE.next_step_index = 0
@@ -1566,7 +1664,6 @@ def start_condition_collection_worker(worker: Any) -> bool:
     _WORKER_STATE.enabled = True
     _WORKER_STATE.pending_step_records.clear()
     _WORKER_STATE.current_step = None
-    _WORKER_STATE.draft_measure_depth = 0
     _WORKER_STATE.enter_step_logs = 0
     _WORKER_STATE.queued_step_logs = 0
     return True
@@ -1577,7 +1674,6 @@ def stop_condition_collection_worker(worker: Any) -> dict[str, int]:
     pending = len(_WORKER_STATE.pending_step_records)
     _WORKER_STATE.pending_step_records.clear()
     _WORKER_STATE.current_step = None
-    _WORKER_STATE.draft_measure_depth = 0
     return {"pending_timings": pending}
 
 
@@ -1661,6 +1757,7 @@ class SchedulerStepRecorder:
         model_executor: Any,
         *,
         use_spec_decode: bool,
+        draft_length: int,
         layers: tuple[int, ...],
         num_experts: int,
         expert_to_ep_rank: np.ndarray,
@@ -1670,6 +1767,7 @@ class SchedulerStepRecorder:
         self.scheduler = scheduler
         self.model_executor = model_executor
         self.use_spec_decode = use_spec_decode
+        self.max_verification_positions = draft_length + 1 if use_spec_decode else 1
         self.layers = layers
         self.num_experts = num_experts
         self.expert_to_ep_rank = np.asarray(expert_to_ep_rank, dtype=np.int64)
@@ -1702,6 +1800,8 @@ class SchedulerStepRecorder:
         self.candidate_layer_ffn_ms: list[np.ndarray] = []
         self.candidate_layer_local_routed_tokens: list[np.ndarray] = []
         self.candidate_layer_local_active_experts: list[np.ndarray] = []
+        self.candidate_position_layer_ffn_ms: list[np.ndarray] = []
+        self.candidate_position_layer_local_routed_tokens: list[np.ndarray] = []
         self.num_forward_steps_total = 0
         self.num_dropped_steps = 0
         self.num_prefill_dropped_steps = 0
@@ -1765,7 +1865,55 @@ class SchedulerStepRecorder:
             np.count_nonzero(local_counts > 0, axis=1).astype(np.int64),
         )
 
-    def __enter__(self) -> "SchedulerStepRecorder":
+    def _build_position_local_routed_tokens(
+        self,
+        scheduler_output: Any,
+        model_runner_output: Any,
+    ) -> np.ndarray:
+        routed_experts = getattr(model_runner_output, "routed_experts", None)
+        if routed_experts is None:
+            return np.zeros(
+                (self.max_verification_positions, len(self.layers)),
+                dtype=np.int64,
+            )
+        routing_data = np.asarray(routed_experts.routing_data)
+        if routing_data.size == 0:
+            return np.zeros(
+                (self.max_verification_positions, len(self.layers)),
+                dtype=np.int64,
+            )
+        request_ids = tuple(getattr(model_runner_output, "req_ids", ()))
+        num_scheduled_tokens = dict(
+            getattr(scheduler_output, "num_scheduled_tokens", {})
+        )
+        return count_position_layer_local_routed_tokens(
+            routing_data,
+            request_ids,
+            num_scheduled_tokens,
+            max_positions=self.max_verification_positions,
+            expert_to_ep_rank=self.expert_to_ep_rank,
+            local_ep_rank=self.local_ep_rank,
+            layers=self.layers,
+        )
+
+    def _attribute_position_layer_ffn_ms(
+        self,
+        layer_ffn_ms: np.ndarray,
+        position_layer_tokens: np.ndarray,
+    ) -> np.ndarray:
+        position_layer_ffn_ms = np.zeros_like(
+            position_layer_tokens,
+            dtype=np.float64,
+        )
+        routed_totals = position_layer_tokens.sum(axis=0)
+        nonzero = routed_totals > 0
+        position_layer_ffn_ms[:, nonzero] = (
+            position_layer_tokens[:, nonzero].astype(np.float64)
+            / routed_totals[nonzero].astype(np.float64)
+        ) * layer_ffn_ms[nonzero]
+        return position_layer_ffn_ms
+
+    def __enter__(self) -> SchedulerStepRecorder:
         self._original_update = self.scheduler.update_from_output
 
         def wrapped_update(
@@ -1784,7 +1932,7 @@ class SchedulerStepRecorder:
                 pop_step_timing_worker,
                 timeout=30,
             )
-            step_timing = aggregate_worker_step_timings(
+            raw_step_timing = aggregate_worker_step_timings(
                 [
                     None if record is None else record["timing"]
                     for record in worker_records
@@ -1797,6 +1945,26 @@ class SchedulerStepRecorder:
                     if record is not None
                 ),
                 default=0.0,
+            )
+            verify_total_ms = max(
+                (
+                    max(
+                        float(record["timing"].get("total_ms", 0.0))
+                        - float(record["timing"].get("draft_ms", 0.0)),
+                        0.0,
+                    )
+                    for record in worker_records
+                    if record is not None
+                ),
+                default=raw_step_timing.total_ms,
+            )
+            step_timing = StepTiming(
+                total_ms=verify_total_ms,
+                attention_ms=raw_step_timing.attention_ms,
+                routing_ms=raw_step_timing.routing_ms,
+                prepare_ms=raw_step_timing.prepare_ms,
+                finalize_ms=raw_step_timing.finalize_ms,
+                ffn_ms=raw_step_timing.ffn_ms,
             )
             layer_ffn_ms = self._build_layer_ffn_ms(worker_records)
             worker_metadata = next(
@@ -1846,6 +2014,16 @@ class SchedulerStepRecorder:
             local_routed_tokens, local_active_experts = (
                 self._build_local_routed_stats(candidate_histogram)
             )
+            position_local_routed_tokens = (
+                self._build_position_local_routed_tokens(
+                    scheduler_output,
+                    model_runner_output,
+                )
+            )
+            position_layer_ffn_ms = self._attribute_position_layer_ffn_ms(
+                layer_ffn_ms,
+                position_local_routed_tokens,
+            )
 
             self.candidate_first_ep_collective_seq_ids.append(
                 first_ep_collective_seq_id
@@ -1864,6 +2042,10 @@ class SchedulerStepRecorder:
             self.candidate_layer_ffn_ms.append(layer_ffn_ms)
             self.candidate_layer_local_routed_tokens.append(local_routed_tokens)
             self.candidate_layer_local_active_experts.append(local_active_experts)
+            self.candidate_position_layer_ffn_ms.append(position_layer_ffn_ms)
+            self.candidate_position_layer_local_routed_tokens.append(
+                position_local_routed_tokens
+            )
 
             if captured_step is None:
                 self.num_dropped_steps += 1
@@ -2040,6 +2222,7 @@ def _run_recorded_round(
             scheduler,
             model_executor,
             use_spec_decode=use_spec_decode,
+            draft_length=draft_length,
             layers=layers,
             num_experts=num_experts,
             expert_to_ep_rank=expert_to_ep_rank,
@@ -2072,9 +2255,11 @@ def _local_prompt_batch(
 
 
 def collect_condition_for_rank(args: Namespace) -> RankConditionData:
+    validate_parallel_config(args)
+    dp_local_rank = configure_rank_process_environment(args)
+
     from vllm import SamplingParams
 
-    validate_parallel_config(args)
     prompt_items = load_prompt_items(args)
     if not prompt_items:
         raise RuntimeError("Prompt cache is empty.")
@@ -2086,11 +2271,12 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         flush=True,
     )
 
-    os.environ["VLLM_DP_RANK"] = str(args.dp_rank)
-    os.environ["VLLM_DP_RANK_LOCAL"] = str(args.dp_local_rank)
-    os.environ["VLLM_DP_SIZE"] = str(args.data_parallel_size)
-    os.environ["VLLM_DP_MASTER_IP"] = args.dp_master_ip
-    os.environ["VLLM_DP_MASTER_PORT"] = str(args.dp_master_port)
+    print(
+        "[collect-rank] device_binding="
+        f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')} "
+        f"dp_local_rank={dp_local_rank}",
+        flush=True,
+    )
 
     llm = create_llm(args, args.batch_size, args.draft_length)
     scheduler_capacity_config = get_scheduler_capacity_config(llm)
@@ -2184,6 +2370,8 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
     candidate_layer_ffn_ms_parts: list[np.ndarray] = []
     candidate_layer_local_routed_tokens_parts: list[np.ndarray] = []
     candidate_layer_local_active_experts_parts: list[np.ndarray] = []
+    candidate_position_layer_ffn_ms_parts: list[np.ndarray] = []
+    candidate_position_layer_local_routed_tokens_parts: list[np.ndarray] = []
     trace_samples: list[dict[str, Any]] = []
     condition_latency_ms = 0.0
     num_forward_steps_total = 0
@@ -2308,6 +2496,17 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
                         recorder.candidate_layer_local_active_experts, axis=0
                     ).astype(np.int64)
                 )
+                candidate_position_layer_ffn_ms_parts.append(
+                    np.stack(
+                        recorder.candidate_position_layer_ffn_ms, axis=0
+                    ).astype(np.float64)
+                )
+                candidate_position_layer_local_routed_tokens_parts.append(
+                    np.stack(
+                        recorder.candidate_position_layer_local_routed_tokens,
+                        axis=0,
+                    ).astype(np.int64)
+                )
             if recorder.step_histograms:
                 step_histograms_parts.append(
                     np.stack(recorder.step_histograms, axis=0).astype(np.int64)
@@ -2361,10 +2560,8 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
                     trace_samples.extend(recorder.trace_samples[:remaining])
     finally:
         finished_stats = finished_stats_logger.snapshot()
-        try:
+        with suppress(Exception):
             llm.llm_engine.engine_core.shutdown()
-        except Exception:
-            pass
         del llm
 
     candidate_first_ep_collective_seq_ids = (
@@ -2432,6 +2629,18 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         if candidate_layer_local_active_experts_parts
         else np.empty((0, len(args.layers)), dtype=np.int64)
     )
+    candidate_position_layer_ffn_ms = (
+        np.concatenate(candidate_position_layer_ffn_ms_parts, axis=0)
+        if candidate_position_layer_ffn_ms_parts
+        else np.empty((0, 0, len(args.layers)), dtype=np.float64)
+    )
+    candidate_position_layer_local_routed_tokens = (
+        np.concatenate(
+            candidate_position_layer_local_routed_tokens_parts, axis=0
+        )
+        if candidate_position_layer_local_routed_tokens_parts
+        else np.empty((0, 0, len(args.layers)), dtype=np.int64)
+    )
 
     if not step_histograms_parts:
         return RankConditionData(
@@ -2477,6 +2686,10 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
             candidate_layer_local_active_experts=(
                 candidate_layer_local_active_experts
             ),
+            candidate_position_layer_ffn_ms=candidate_position_layer_ffn_ms,
+            candidate_position_layer_local_routed_tokens=(
+                candidate_position_layer_local_routed_tokens
+            ),
             expert_to_ep_rank=expert_to_ep_rank,
             condition_latency_ms=condition_latency_ms,
             decode_time_total_ms=finished_stats.decode_time_total_ms,
@@ -2486,6 +2699,16 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
             num_output_tokens_excl_first_total=(
                 finished_stats.num_output_tokens_excl_first_total
             ),
+            vllm_generation_tokens_total=(
+                finished_stats.vllm_generation_tokens_total
+            ),
+            vllm_request_tpot_total_ms=(
+                finished_stats.vllm_request_tpot_total_ms
+            ),
+            vllm_request_tpot_count=finished_stats.vllm_request_tpot_count,
+            spec_num_drafts=finished_stats.spec_num_drafts,
+            spec_num_draft_tokens=finished_stats.spec_num_draft_tokens,
+            spec_num_accepted_tokens=finished_stats.spec_num_accepted_tokens,
             num_forward_steps_total=num_forward_steps_total,
             num_captured_steps=num_captured_steps,
             num_dropped_steps=num_dropped_steps,
@@ -2545,6 +2768,10 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         candidate_layer_ffn_ms=candidate_layer_ffn_ms,
         candidate_layer_local_routed_tokens=candidate_layer_local_routed_tokens,
         candidate_layer_local_active_experts=candidate_layer_local_active_experts,
+        candidate_position_layer_ffn_ms=candidate_position_layer_ffn_ms,
+        candidate_position_layer_local_routed_tokens=(
+            candidate_position_layer_local_routed_tokens
+        ),
         expert_to_ep_rank=expert_to_ep_rank,
         condition_latency_ms=condition_latency_ms,
         decode_time_total_ms=finished_stats.decode_time_total_ms,
@@ -2552,6 +2779,14 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         num_output_tokens_excl_first_total=(
             finished_stats.num_output_tokens_excl_first_total
         ),
+        vllm_generation_tokens_total=(
+            finished_stats.vllm_generation_tokens_total
+        ),
+        vllm_request_tpot_total_ms=finished_stats.vllm_request_tpot_total_ms,
+        vllm_request_tpot_count=finished_stats.vllm_request_tpot_count,
+        spec_num_drafts=finished_stats.spec_num_drafts,
+        spec_num_draft_tokens=finished_stats.spec_num_draft_tokens,
+        spec_num_accepted_tokens=finished_stats.spec_num_accepted_tokens,
         num_forward_steps_total=num_forward_steps_total,
         num_captured_steps=num_captured_steps,
         num_dropped_steps=num_dropped_steps,
@@ -2605,6 +2840,13 @@ def load_rank_condition_data(path: Path) -> RankConditionData:
                 return -1
             return int(data[name][0])
 
+        candidate_layer_ffn_ms = np.asarray(data["candidate_layer_ffn_ms"])
+        candidate_position_shape = (
+            candidate_layer_ffn_ms.shape[0],
+            0,
+            candidate_layer_ffn_ms.shape[1],
+        )
+
         return RankConditionData(
             selected_dataset_indices=np.asarray(data["selected_dataset_indices"]),
             prompt_lengths=np.asarray(data["prompt_lengths"]),
@@ -2647,13 +2889,23 @@ def load_rank_condition_data(path: Path) -> RankConditionData:
             candidate_step_draft_ms=np.asarray(data["candidate_step_draft_ms"]),
             candidate_step_ffn_ms=np.asarray(data["candidate_step_ffn_ms"]),
             candidate_step_histograms=np.asarray(data["candidate_step_histograms"]),
-            candidate_layer_ffn_ms=np.asarray(data["candidate_layer_ffn_ms"]),
+            candidate_layer_ffn_ms=candidate_layer_ffn_ms,
             candidate_layer_local_routed_tokens=np.asarray(
                 data["candidate_layer_local_routed_tokens"]
             ),
             candidate_layer_local_active_experts=np.asarray(
                 data["candidate_layer_local_active_experts"]
             ),
+            candidate_position_layer_ffn_ms=np.asarray(
+                data["candidate_position_layer_ffn_ms"]
+            )
+            if "candidate_position_layer_ffn_ms" in data
+            else np.empty(candidate_position_shape, dtype=np.float64),
+            candidate_position_layer_local_routed_tokens=np.asarray(
+                data["candidate_position_layer_local_routed_tokens"]
+            )
+            if "candidate_position_layer_local_routed_tokens" in data
+            else np.empty(candidate_position_shape, dtype=np.int64),
             expert_to_ep_rank=np.asarray(data["expert_to_ep_rank"]),
             condition_latency_ms=float(data["condition_latency_ms"][0]),
             decode_time_total_ms=float(data["decode_time_total_ms"][0]),
@@ -2661,6 +2913,16 @@ def load_rank_condition_data(path: Path) -> RankConditionData:
             num_output_tokens_excl_first_total=int(
                 data["num_output_tokens_excl_first_total"][0]
             ),
+            vllm_generation_tokens_total=int(
+                data["vllm_generation_tokens_total"][0]
+            ),
+            vllm_request_tpot_total_ms=float(
+                data["vllm_request_tpot_total_ms"][0]
+            ),
+            vllm_request_tpot_count=int(data["vllm_request_tpot_count"][0]),
+            spec_num_drafts=int(data["spec_num_drafts"][0]),
+            spec_num_draft_tokens=int(data["spec_num_draft_tokens"][0]),
+            spec_num_accepted_tokens=int(data["spec_num_accepted_tokens"][0]),
             num_forward_steps_total=int(data["num_forward_steps_total"][0]),
             num_captured_steps=int(data["num_captured_steps"][0]),
             num_dropped_steps=int(data["num_dropped_steps"][0]),
@@ -2785,6 +3047,12 @@ def _aggregate_rank_condition_data(
                 "candidate_layer_local_active_experts": (
                     partial.candidate_layer_local_active_experts
                 ),
+                "candidate_position_layer_ffn_ms": (
+                    partial.candidate_position_layer_ffn_ms
+                ),
+                "candidate_position_layer_local_routed_tokens": (
+                    partial.candidate_position_layer_local_routed_tokens
+                ),
             }
             for partial in partials
         ],
@@ -2819,6 +3087,45 @@ def _aggregate_rank_condition_data(
         num_generation_tokens_total,
         decode_time_total_ms,
     )
+    vllm_generation_tokens_total = sum(
+        partial.vllm_generation_tokens_total for partial in partials
+    )
+    vllm_generation_elapsed_ms = max(
+        (partial.condition_latency_ms for partial in partials),
+        default=0.0,
+    )
+    vllm_request_tpot_total_ms = sum(
+        partial.vllm_request_tpot_total_ms for partial in partials
+    )
+    vllm_request_tpot_count = sum(
+        partial.vllm_request_tpot_count for partial in partials
+    )
+    vllm_request_tpot_ms = (
+        vllm_request_tpot_total_ms / vllm_request_tpot_count
+        if vllm_request_tpot_count > 0
+        else 0.0
+    )
+    vllm_generation_throughput_tok_s = compute_decode_throughput_tok_s(
+        vllm_generation_tokens_total,
+        vllm_generation_elapsed_ms,
+    )
+    spec_num_drafts = sum(partial.spec_num_drafts for partial in partials)
+    spec_num_draft_tokens = sum(
+        partial.spec_num_draft_tokens for partial in partials
+    )
+    spec_num_accepted_tokens = sum(
+        partial.spec_num_accepted_tokens for partial in partials
+    )
+    spec_acceptance_rate = (
+        spec_num_accepted_tokens / spec_num_draft_tokens
+        if spec_num_draft_tokens > 0
+        else math.nan
+    )
+    spec_mean_acceptance_length = (
+        1.0 + spec_num_accepted_tokens / spec_num_drafts
+        if spec_num_drafts > 0
+        else math.nan
+    )
 
     return ConditionRawData(
         batch_size=args.batch_size,
@@ -2852,6 +3159,14 @@ def _aggregate_rank_condition_data(
         num_output_tokens_excl_first_total=num_output_tokens_excl_first_total,
         tpot_ms=tpot_ms,
         decode_throughput_tok_s=decode_throughput_tok_s,
+        vllm_generation_elapsed_ms=vllm_generation_elapsed_ms,
+        vllm_request_tpot_ms=vllm_request_tpot_ms,
+        vllm_generation_throughput_tok_s=vllm_generation_throughput_tok_s,
+        spec_num_drafts=spec_num_drafts,
+        spec_num_draft_tokens=spec_num_draft_tokens,
+        spec_num_accepted_tokens=spec_num_accepted_tokens,
+        spec_acceptance_rate=spec_acceptance_rate,
+        spec_mean_acceptance_length=spec_mean_acceptance_length,
         step_histograms=global_steps.global_step_histograms,
         step_total_tokens=global_steps.global_step_total_tokens,
         step_total_ms=global_steps.global_step_total_ms,
@@ -2869,15 +3184,6 @@ def _aggregate_rank_condition_data(
             global_steps.barrier_last_ep_collective_seq_ids
         ),
         barrier_num_ep_collectives=global_steps.barrier_num_ep_collectives,
-        rank_barrier_first_ep_collective_seq_ids=(
-            global_steps.rank_barrier_first_ep_collective_seq_ids
-        ),
-        rank_barrier_last_ep_collective_seq_ids=(
-            global_steps.rank_barrier_last_ep_collective_seq_ids
-        ),
-        rank_barrier_num_ep_collectives=(
-            global_steps.rank_barrier_num_ep_collectives
-        ),
         rank_step_kinds=global_steps.rank_step_kinds,
         rank_step_total_ms=global_steps.rank_step_total_ms,
         rank_step_draft_ms=global_steps.rank_step_draft_ms,
@@ -2887,6 +3193,10 @@ def _aggregate_rank_condition_data(
         ),
         rank_layer_local_active_experts=(
             global_steps.rank_layer_local_active_experts
+        ),
+        rank_position_layer_ffn_ms=global_steps.rank_position_layer_ffn_ms,
+        rank_position_layer_local_routed_tokens=(
+            global_steps.rank_position_layer_local_routed_tokens
         ),
         global_step_indices=global_steps.global_step_indices,
         global_step_total_ms=global_steps.global_step_total_ms,
@@ -2900,6 +3210,12 @@ def _aggregate_rank_condition_data(
         ),
         global_step_sorted_rank_local_active_experts=(
             global_steps.global_step_sorted_rank_local_active_experts
+        ),
+        global_step_position_sorted_rank_ffn_ms=(
+            global_steps.global_step_position_sorted_rank_ffn_ms
+        ),
+        global_step_position_sorted_rank_local_routed_tokens=(
+            global_steps.global_step_position_sorted_rank_local_routed_tokens
         ),
         global_step_ffn_max_mean_ratio=(
             global_steps.global_step_ffn_max_mean_ratio
@@ -2935,8 +3251,10 @@ def _aggregate_rank_condition_data(
 def collect_one_condition(
     args: Namespace,
     output_dir: Path,
+    entrypoint: Path | None = None,
 ) -> CollectedConditionSummary:
     validate_parallel_config(args)
+    normalize_local_gpu_binding(args)
     dirs = ensure_collect_dirs(output_dir)
     if getattr(args, "prompt_cache_path", None) is None:
         args.prompt_cache_path = prepare_prompt_cache(args, dirs["root"])
@@ -2950,6 +3268,12 @@ def collect_one_condition(
     processes: list[subprocess.Popen[str]] = []
     partial_paths: list[Path] = []
     cwd = Path(__file__).resolve().parent.parent.parent.parent
+    rank_entrypoint = (
+        entrypoint
+        if entrypoint is not None
+        else Path(__file__).resolve().parent
+        / "qwen3_6_mtp_ep_load_balance_experiment.py"
+    )
     start = time.perf_counter()
     for dp_rank in range(args.data_parallel_size):
         partial_path = partial_dir / f"rank_{dp_rank:02d}.npz"
@@ -2957,10 +3281,9 @@ def collect_one_condition(
         command = _build_collect_one_rank_command(
             args,
             output_dir,
-            Path(__file__).resolve().parent
-            / "qwen3_6_mtp_ep_load_balance_experiment.py",
+            rank_entrypoint,
             dp_rank=dp_rank,
-            dp_local_rank=dp_rank,
+            dp_local_rank=0,
             dp_master_ip=dp_master_ip,
             dp_master_port=dp_master_port,
             rank_output_path=partial_path,
@@ -2969,7 +3292,7 @@ def collect_one_condition(
             subprocess.Popen(
                 command,
                 cwd=cwd,
-                env=os.environ.copy(),
+                env=build_collect_subprocess_env(args, dp_rank=dp_rank),
                 text=True,
             )
         )
@@ -3044,6 +3367,11 @@ def _build_collect_one_command(
         "--max-num-batched-tokens",
         getattr(args, "max_num_batched_tokens", None),
     )
+    _append_optional_arg(
+        command,
+        "--local-gpu-ids",
+        getattr(args, "local_gpu_ids", None),
+    )
     command.extend(["--layers", *(str(layer) for layer in args.layers)])
     command.append("--enforce-eager" if args.enforce_eager else "--no-enforce-eager")
     return command
@@ -3088,12 +3416,22 @@ def _build_collect_one_rank_command(
 
 def collect_experiment(args: Namespace, output_dir: Path, entrypoint: Path) -> None:
     validate_parallel_config(args)
+    normalize_local_gpu_binding(args)
     dirs = ensure_collect_dirs(output_dir)
     save_run_metadata(dirs["root"], args)
     prompts_cache = prepare_prompt_cache(args, dirs["root"])
     condition_summaries: list[CollectedConditionSummary] = []
     for batch_size in args.batch_sizes:
         for draft_length in args.draft_lengths:
+            raw_path = dirs["raw"] / f"{condition_name(batch_size, draft_length)}.npz"
+            if raw_path.exists():
+                print(
+                    f"[collect-parent] skipping existing batch_size={batch_size} "
+                    f"draft_length={draft_length}: {raw_path}",
+                    flush=True,
+                )
+                condition_summaries.append(load_condition_summary(raw_path))
+                continue
             print(
                 f"[collect-parent] launching batch_size={batch_size} "
                 f"draft_length={draft_length} dp={args.data_parallel_size}",
@@ -3111,7 +3449,7 @@ def collect_experiment(args: Namespace, output_dir: Path, entrypoint: Path) -> N
                 command,
                 check=True,
                 cwd=entrypoint.parent.parent.parent.parent,
-                env=os.environ.copy(),
+                env=build_collect_subprocess_env(args),
             )
             raw_path = dirs["raw"] / f"{condition_name(batch_size, draft_length)}.npz"
             summary = load_condition_summary(raw_path)
