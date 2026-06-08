@@ -16,11 +16,8 @@ from mtp_ep_load_balance_utils import (
     build_condition_metrics,
     build_rank_load_from_histograms,
     build_speedup_rows,
-    compute_critical_rank_step_time_components,
-    normalize_global_time_components,
     reorder_histograms_by_expert_order,
     sort_experts_desc,
-    summarize_global_step_time_components,
 )
 
 PLOT_MODULE = None
@@ -36,6 +33,8 @@ class LoadedConditionData:
     batch_size_scope: str
     mixed_step_policy: str
     tpot_definition: str
+    timing_backend: str
+    timing_scope: str
     selected_dataset_indices: np.ndarray
     prompt_lengths: np.ndarray
     output_lengths: np.ndarray
@@ -71,8 +70,26 @@ class LoadedConditionData:
     rank_barrier_last_ep_collective_seq_ids: np.ndarray
     rank_barrier_num_ep_collectives: np.ndarray
     rank_step_kinds: np.ndarray
+    rank_execute_wall_ms: np.ndarray
+    rank_verification_wall_ms: np.ndarray
+    rank_draft_wall_ms: np.ndarray
+    rank_iteration_wall_ms: np.ndarray
+    rank_execute_gpu_ms: np.ndarray
+    rank_verification_gpu_ms: np.ndarray
+    rank_draft_gpu_ms: np.ndarray
+    rank_iteration_gpu_ms: np.ndarray
+    rank_attention_gpu_ms: np.ndarray
+    rank_moe_gpu_ms: np.ndarray
+    rank_gpu_other_ms: np.ndarray
+    rank_timing_complete: np.ndarray
     rank_step_total_ms: np.ndarray
     rank_step_draft_ms: np.ndarray
+    rank_layer_moe_gpu_ms: np.ndarray
+    rank_layer_routed_expert_gpu_ms: np.ndarray
+    rank_layer_shared_expert_gpu_ms: np.ndarray
+    rank_layer_routing_gpu_ms: np.ndarray
+    rank_layer_prepare_gpu_ms: np.ndarray
+    rank_layer_finalize_gpu_ms: np.ndarray
     rank_layer_ffn_ms: np.ndarray
     rank_layer_local_routed_tokens: np.ndarray
     rank_layer_local_active_experts: np.ndarray
@@ -80,6 +97,18 @@ class LoadedConditionData:
     global_step_total_ms: np.ndarray
     global_draft_ms: np.ndarray
     global_step_ffn_ms: np.ndarray
+    global_critical_rank_indices: np.ndarray
+    global_verification_wall_ms: np.ndarray
+    global_iteration_wall_ms: np.ndarray
+    global_draft_wall_ms: np.ndarray
+    global_verification_gpu_total_ms: np.ndarray
+    global_attention_gpu_ms: np.ndarray
+    global_moe_gpu_ms: np.ndarray
+    global_gpu_other_ms: np.ndarray
+    global_step_sorted_rank_routed_expert_gpu_ms: np.ndarray
+    global_step_sorted_rank_moe_gpu_ms: np.ndarray
+    global_step_routed_expert_max_mean_ratio: np.ndarray
+    global_step_moe_max_mean_ratio: np.ndarray
     global_step_sorted_rank_ffn_ms: np.ndarray
     global_step_sorted_rank_local_routed_tokens: np.ndarray
     global_step_sorted_rank_local_active_experts: np.ndarray
@@ -206,11 +235,20 @@ def build_rank_trace_rows(
                         float(sample["step_end_time_ms"]) - origin_ms
                     ),
                     "step_total_ms": float(sample["step_total_ms"]),
-                    "attention_ms": float(phase_totals["attention"]),
-                    "routing_ms": float(phase_totals["routing"]),
-                    "prepare_ms": float(phase_totals["prepare"]),
-                    "finalize_ms": float(phase_totals["finalize"]),
-                    "ffn_ms": float(phase_totals["ffn"]),
+                    "attention_gpu_ms": float(
+                        phase_totals["attention_gpu"]
+                    ),
+                    "moe_gpu_ms": float(phase_totals["moe_gpu"]),
+                    "gpu_other_ms": float(phase_totals["gpu_other"]),
+                    "routing_gpu_ms": float(phase_totals["routing_gpu"]),
+                    "prepare_gpu_ms": float(phase_totals["prepare_gpu"]),
+                    "routed_expert_gpu_ms": float(
+                        phase_totals["routed_expert_gpu"]
+                    ),
+                    "shared_expert_gpu_ms": float(
+                        phase_totals["shared_expert_gpu"]
+                    ),
+                    "finalize_gpu_ms": float(phase_totals["finalize_gpu"]),
                 }
             )
     return rows
@@ -228,9 +266,11 @@ def plot_rank_trace_timeline(
     plt = import_plot_module()
     label_colors = {
         "attention": "#4E79A7",
+        "moe": "#B07AA1",
         "routing": "#F28E2B",
         "prepare": "#E15759",
-        "ffn": "#59A14F",
+        "routed_expert": "#59A14F",
+        "shared_expert": "#EDC948",
         "finalize": "#76B7B2",
     }
     origin_ms = min(
@@ -302,7 +342,7 @@ def plot_rank_trace_timeline(
         ncol=len(label_colors),
         loc="upper center",
     )
-    axes[-1].set_xlabel("wall-clock offset within traced samples (ms)")
+    axes[-1].set_xlabel("CUDA Event offset within traced samples (ms)")
     axes[-1].set_xlim(0.0, max_end_ms - origin_ms)
     fig.suptitle(f"{condition_name} DP rank event timeline", y=0.98)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
@@ -320,29 +360,19 @@ def _scalar(npz: Any, key: str, cast: type) -> Any:
 def load_condition_data(path: Path) -> LoadedConditionData:
     with np.load(path, allow_pickle=False) as npz:
         schema_version = _scalar(npz, "schema_version", int)
-        if schema_version not in (8, SCHEMA_VERSION):
+        if schema_version != SCHEMA_VERSION:
             raise ValueError(
                 "Unsupported raw schema_version="
-                f"{schema_version} for {path}. Re-run `collect` with the current "
-                "runtime before `analyze`."
+                f"{schema_version} for {path}. Schema v9 and older timing data "
+                "used synchronized wall-clock instrumentation and cannot be "
+                "analyzed as CUDA Event data. Re-run `collect`."
             )
         num_barriers = int(np.asarray(npz["global_barrier_ids"]).shape[0])
         data_parallel_size = _scalar(npz, "data_parallel_size", int)
         layers = np.asarray(npz["layers"])
-        rank_step_total_ms = np.asarray(
-            npz["rank_step_total_ms"], dtype=np.float64
-        )
+        rank_step_total_ms = np.asarray(npz["rank_step_total_ms"], dtype=np.float64)
         rank_layer_ffn_ms = np.asarray(
             npz["rank_layer_ffn_ms"], dtype=np.float64
-        )
-        (
-            _critical_rank_indices,
-            critical_step_total_ms,
-            critical_step_ffn_ms,
-            critical_step_other_ms,
-        ) = compute_critical_rank_step_time_components(
-            rank_step_total_ms,
-            rank_layer_ffn_ms,
         )
         return LoadedConditionData(
             schema_version=schema_version,
@@ -353,6 +383,8 @@ def load_condition_data(path: Path) -> LoadedConditionData:
             batch_size_scope=_scalar(npz, "batch_size_scope", str),
             mixed_step_policy=_scalar(npz, "mixed_step_policy", str),
             tpot_definition=_scalar(npz, "tpot_definition", str),
+            timing_backend=_scalar(npz, "timing_backend", str),
+            timing_scope=_scalar(npz, "timing_scope", str),
             selected_dataset_indices=np.asarray(npz["selected_dataset_indices"]),
             prompt_lengths=np.asarray(npz["prompt_lengths"]),
             output_lengths=np.asarray(npz["output_lengths"]),
@@ -420,8 +452,43 @@ def load_condition_data(path: Path) -> LoadedConditionData:
             if "rank_barrier_num_ep_collectives" in npz
             else np.empty((num_barriers, data_parallel_size), dtype=np.int64),
             rank_step_kinds=np.asarray(npz["rank_step_kinds"]),
+            rank_execute_wall_ms=np.asarray(npz["rank_execute_wall_ms"]),
+            rank_verification_wall_ms=np.asarray(
+                npz["rank_verification_wall_ms"]
+            ),
+            rank_draft_wall_ms=np.asarray(npz["rank_draft_wall_ms"]),
+            rank_iteration_wall_ms=np.asarray(npz["rank_iteration_wall_ms"]),
+            rank_execute_gpu_ms=np.asarray(npz["rank_execute_gpu_ms"]),
+            rank_verification_gpu_ms=np.asarray(
+                npz["rank_verification_gpu_ms"]
+            ),
+            rank_draft_gpu_ms=np.asarray(npz["rank_draft_gpu_ms"]),
+            rank_iteration_gpu_ms=np.asarray(npz["rank_iteration_gpu_ms"]),
+            rank_attention_gpu_ms=np.asarray(npz["rank_attention_gpu_ms"]),
+            rank_moe_gpu_ms=np.asarray(npz["rank_moe_gpu_ms"]),
+            rank_gpu_other_ms=np.asarray(npz["rank_gpu_other_ms"]),
+            rank_timing_complete=np.asarray(
+                npz["rank_timing_complete"],
+                dtype=np.bool_,
+            ),
             rank_step_total_ms=rank_step_total_ms,
             rank_step_draft_ms=np.asarray(npz["rank_step_draft_ms"]),
+            rank_layer_moe_gpu_ms=np.asarray(npz["rank_layer_moe_gpu_ms"]),
+            rank_layer_routed_expert_gpu_ms=np.asarray(
+                npz["rank_layer_routed_expert_gpu_ms"]
+            ),
+            rank_layer_shared_expert_gpu_ms=np.asarray(
+                npz["rank_layer_shared_expert_gpu_ms"]
+            ),
+            rank_layer_routing_gpu_ms=np.asarray(
+                npz["rank_layer_routing_gpu_ms"]
+            ),
+            rank_layer_prepare_gpu_ms=np.asarray(
+                npz["rank_layer_prepare_gpu_ms"]
+            ),
+            rank_layer_finalize_gpu_ms=np.asarray(
+                npz["rank_layer_finalize_gpu_ms"]
+            ),
             rank_layer_ffn_ms=rank_layer_ffn_ms,
             rank_layer_local_routed_tokens=np.asarray(
                 npz["rank_layer_local_routed_tokens"]
@@ -430,9 +497,39 @@ def load_condition_data(path: Path) -> LoadedConditionData:
                 npz["rank_layer_local_active_experts"]
             ),
             global_step_indices=np.asarray(npz["global_step_indices"]),
-            global_step_total_ms=critical_step_total_ms,
+            global_step_total_ms=np.asarray(npz["global_step_total_ms"]),
             global_draft_ms=np.asarray(npz["global_draft_ms"]),
-            global_step_ffn_ms=critical_step_ffn_ms,
+            global_step_ffn_ms=np.asarray(npz["global_step_ffn_ms"]),
+            global_critical_rank_indices=np.asarray(
+                npz["global_critical_rank_indices"]
+            ),
+            global_verification_wall_ms=np.asarray(
+                npz["global_verification_wall_ms"]
+            ),
+            global_iteration_wall_ms=np.asarray(
+                npz["global_iteration_wall_ms"]
+            ),
+            global_draft_wall_ms=np.asarray(npz["global_draft_wall_ms"]),
+            global_verification_gpu_total_ms=np.asarray(
+                npz["global_verification_gpu_total_ms"]
+            ),
+            global_attention_gpu_ms=np.asarray(
+                npz["global_attention_gpu_ms"]
+            ),
+            global_moe_gpu_ms=np.asarray(npz["global_moe_gpu_ms"]),
+            global_gpu_other_ms=np.asarray(npz["global_gpu_other_ms"]),
+            global_step_sorted_rank_routed_expert_gpu_ms=np.asarray(
+                npz["global_step_sorted_rank_routed_expert_gpu_ms"]
+            ),
+            global_step_sorted_rank_moe_gpu_ms=np.asarray(
+                npz["global_step_sorted_rank_moe_gpu_ms"]
+            ),
+            global_step_routed_expert_max_mean_ratio=np.asarray(
+                npz["global_step_routed_expert_max_mean_ratio"]
+            ),
+            global_step_moe_max_mean_ratio=np.asarray(
+                npz["global_step_moe_max_mean_ratio"]
+            ),
             global_step_sorted_rank_ffn_ms=np.asarray(
                 npz["global_step_sorted_rank_ffn_ms"]
             ),
@@ -451,7 +548,7 @@ def load_condition_data(path: Path) -> LoadedConditionData:
             global_step_ffn_max_mean_ratio=np.asarray(
                 npz["global_step_ffn_max_mean_ratio"]
             ),
-            global_step_other_ms=critical_step_other_ms,
+            global_step_other_ms=np.asarray(npz["global_gpu_other_ms"]),
             global_step_kinds=np.asarray(npz["global_step_kinds"]),
             global_token_barrier_offsets=np.asarray(
                 npz["global_token_barrier_offsets"],
@@ -518,11 +615,11 @@ def load_manifest(output_dir: Path) -> dict[str, Any]:
         return synthesize_manifest(output_dir)
     with manifest_path.open("r", encoding="utf-8") as fp:
         manifest = json.load(fp)
-    if manifest["schema_version"] not in (8, SCHEMA_VERSION):
+    if manifest["schema_version"] != SCHEMA_VERSION:
         raise ValueError(
             "Unsupported manifest schema_version="
-            f"{manifest['schema_version']}. Re-run `collect` with the current "
-            "runtime before `analyze`."
+            f"{manifest['schema_version']}. Schema v10 raw data must be "
+            "re-collected before analysis."
         )
     return manifest
 
@@ -645,7 +742,8 @@ def build_step_time_rows(
     batch_sizes = tuple(manifest["batch_sizes"])
     draft_lengths = tuple(manifest["draft_lengths"])
     rows: list[dict[str, float | int]] = []
-    baseline_totals: dict[int, float] = {}
+    baseline_wall_totals: dict[int, float] = {}
+    baseline_gpu_totals: dict[int, float] = {}
     partial_rows: dict[tuple[int, int], dict[str, float | int]] = {}
 
     for batch_size in batch_sizes:
@@ -660,15 +758,33 @@ def build_step_time_rows(
                     "No strict target barriers for "
                     f"batch_size={batch_size}, draft_length={draft_length}."
                 )
-            summary = summarize_global_step_time_components(
-                data.global_step_total_ms[target_mask],
-                data.global_step_ffn_ms[target_mask],
-                data.global_step_other_ms[target_mask],
-            )
+            verification_wall = data.global_verification_wall_ms[target_mask]
+            iteration_wall = data.global_iteration_wall_ms[target_mask]
+            draft_wall = data.global_draft_wall_ms[target_mask]
+            verification_gpu = data.global_verification_gpu_total_ms[target_mask]
+            attention_gpu = data.global_attention_gpu_ms[target_mask]
+            moe_gpu = data.global_moe_gpu_ms[target_mask]
+            other_gpu = data.global_gpu_other_ms[target_mask]
+            if not np.allclose(
+                attention_gpu + moe_gpu + other_gpu,
+                verification_gpu,
+                rtol=1e-6,
+                atol=1e-3,
+            ):
+                raise ValueError(
+                    "Attention + MoE + Other must equal verification GPU total "
+                    f"for batch_size={batch_size}, draft_length={draft_length}."
+                )
+            avg_verification_wall_ms = float(np.mean(verification_wall))
+            avg_verification_gpu_ms = float(np.mean(verification_gpu))
+            avg_attention_gpu_ms = float(np.mean(attention_gpu))
+            avg_moe_gpu_ms = float(np.mean(moe_gpu))
+            avg_other_gpu_ms = float(np.mean(other_gpu))
             row: dict[str, float | int] = {
                 "batch_size": batch_size,
                 "draft_length": draft_length,
-                "timing_scope": "critical_rank_wall_clock",
+                "timing_scope": data.timing_scope,
+                "timing_backend": data.timing_backend,
                 "decode_step_scope": (
                     "verification_only" if draft_length > 0 else "decode_only"
                 ),
@@ -694,17 +810,77 @@ def build_step_time_rows(
                     if data.num_global_candidate_steps > 0
                     else 0.0
                 ),
-                **summary,
+                "avg_verification_wall_ms": avg_verification_wall_ms,
+                "p50_verification_wall_ms": float(
+                    np.percentile(verification_wall, 50)
+                ),
+                "p95_verification_wall_ms": float(
+                    np.percentile(verification_wall, 95)
+                ),
+                "avg_iteration_wall_ms": float(np.mean(iteration_wall)),
+                "avg_draft_wall_ms": float(np.mean(draft_wall)),
+                "avg_verification_gpu_total_ms": avg_verification_gpu_ms,
+                "avg_attention_gpu_ms": avg_attention_gpu_ms,
+                "avg_moe_gpu_ms": avg_moe_gpu_ms,
+                "avg_gpu_other_ms": avg_other_gpu_ms,
+                "attention_gpu_share": (
+                    avg_attention_gpu_ms / avg_verification_gpu_ms
+                    if avg_verification_gpu_ms > 0
+                    else 0.0
+                ),
+                "moe_gpu_share": (
+                    avg_moe_gpu_ms / avg_verification_gpu_ms
+                    if avg_verification_gpu_ms > 0
+                    else 0.0
+                ),
+                # Compatibility aliases for existing plotting/report helpers.
+                "avg_step_total_ms": avg_verification_wall_ms,
+                "avg_ffn_ms": avg_moe_gpu_ms,
+                "avg_other_ms": avg_other_gpu_ms,
+                "ffn_share": (
+                    avg_moe_gpu_ms / avg_verification_gpu_ms
+                    if avg_verification_gpu_ms > 0
+                    else 0.0
+                ),
             }
             partial_rows[(batch_size, draft_length)] = row
             if draft_length == 0:
-                baseline_totals[batch_size] = float(summary["avg_step_total_ms"])
+                baseline_wall_totals[batch_size] = avg_verification_wall_ms
+                baseline_gpu_totals[batch_size] = avg_verification_gpu_ms
 
     for batch_size in batch_sizes:
-        baseline_total = baseline_totals[batch_size]
+        baseline_wall = baseline_wall_totals[batch_size]
+        baseline_gpu = baseline_gpu_totals[batch_size]
         for draft_length in draft_lengths:
             row = dict(partial_rows[(batch_size, draft_length)])
-            row.update(normalize_global_time_components(row, baseline_total))
+            row["normalized_verification_wall"] = (
+                float(row["avg_verification_wall_ms"]) / baseline_wall
+                if baseline_wall > 0
+                else 0.0
+            )
+            row["normalized_verification_gpu_total"] = (
+                float(row["avg_verification_gpu_total_ms"]) / baseline_gpu
+                if baseline_gpu > 0
+                else 0.0
+            )
+            row["normalized_attention_gpu"] = (
+                float(row["avg_attention_gpu_ms"]) / baseline_gpu
+                if baseline_gpu > 0
+                else 0.0
+            )
+            row["normalized_moe_gpu"] = (
+                float(row["avg_moe_gpu_ms"]) / baseline_gpu
+                if baseline_gpu > 0
+                else 0.0
+            )
+            row["normalized_gpu_other"] = (
+                float(row["avg_gpu_other_ms"]) / baseline_gpu
+                if baseline_gpu > 0
+                else 0.0
+            )
+            row["normalized_total_ms"] = row["normalized_verification_wall"]
+            row["normalized_ffn_ms"] = row["normalized_moe_gpu"]
+            row["normalized_other_ms"] = row["normalized_gpu_other"]
             rows.append(row)
     return rows
 
@@ -843,22 +1019,41 @@ def validate_barrier_shapes(
     num_layers = data.layers.shape[0]
     expected_rank_shape = (num_barriers, num_ranks)
     expected_layer_shape = (num_barriers, num_ranks, num_layers)
-    for name, array, expected_shape in (
-        ("rank_step_kinds", data.rank_step_kinds, expected_rank_shape),
-        ("rank_step_total_ms", data.rank_step_total_ms, expected_rank_shape),
-        ("rank_step_draft_ms", data.rank_step_draft_ms, expected_rank_shape),
-        ("rank_layer_ffn_ms", data.rank_layer_ffn_ms, expected_layer_shape),
-        (
-            "rank_layer_local_routed_tokens",
-            data.rank_layer_local_routed_tokens,
-            expected_layer_shape,
-        ),
-        (
-            "rank_layer_local_active_experts",
-            data.rank_layer_local_active_experts,
-            expected_layer_shape,
-        ),
+    rank_names = (
+        "rank_step_kinds",
+        "rank_execute_wall_ms",
+        "rank_verification_wall_ms",
+        "rank_draft_wall_ms",
+        "rank_iteration_wall_ms",
+        "rank_execute_gpu_ms",
+        "rank_verification_gpu_ms",
+        "rank_draft_gpu_ms",
+        "rank_iteration_gpu_ms",
+        "rank_attention_gpu_ms",
+        "rank_moe_gpu_ms",
+        "rank_gpu_other_ms",
+        "rank_timing_complete",
+        "rank_step_total_ms",
+        "rank_step_draft_ms",
+    )
+    layer_names = (
+        "rank_layer_ffn_ms",
+        "rank_layer_moe_gpu_ms",
+        "rank_layer_routed_expert_gpu_ms",
+        "rank_layer_shared_expert_gpu_ms",
+        "rank_layer_routing_gpu_ms",
+        "rank_layer_prepare_gpu_ms",
+        "rank_layer_finalize_gpu_ms",
+        "rank_layer_local_routed_tokens",
+        "rank_layer_local_active_experts",
+    )
+    for name, expected_shape in (
+        *((name, expected_rank_shape) for name in rank_names),
+        *((name, expected_layer_shape) for name in layer_names),
     ):
+        if not hasattr(data, name):
+            continue
+        array = getattr(data, name)
         if array.shape != expected_shape:
             raise ValueError(
                 f"{name} has shape {array.shape}; expected {expected_shape} "
@@ -912,12 +1107,82 @@ def build_barrier_rank_layer_rows(
                                 "rank_step_total_ms": float(
                                     data.rank_step_total_ms[barrier_row, rank]
                                 ),
+                                "execute_wall_ms": float(
+                                    data.rank_execute_wall_ms[barrier_row, rank]
+                                ),
+                                "verification_wall_ms": float(
+                                    data.rank_verification_wall_ms[
+                                        barrier_row, rank
+                                    ]
+                                ),
+                                "draft_wall_ms": float(
+                                    data.rank_draft_wall_ms[barrier_row, rank]
+                                ),
+                                "iteration_wall_ms": float(
+                                    data.rank_iteration_wall_ms[barrier_row, rank]
+                                ),
+                                "execute_gpu_ms": float(
+                                    data.rank_execute_gpu_ms[barrier_row, rank]
+                                ),
+                                "verification_gpu_ms": float(
+                                    data.rank_verification_gpu_ms[
+                                        barrier_row, rank
+                                    ]
+                                ),
+                                "draft_gpu_ms": float(
+                                    data.rank_draft_gpu_ms[barrier_row, rank]
+                                ),
+                                "iteration_gpu_ms": float(
+                                    data.rank_iteration_gpu_ms[barrier_row, rank]
+                                ),
+                                "attention_gpu_ms": float(
+                                    data.rank_attention_gpu_ms[barrier_row, rank]
+                                ),
+                                "moe_gpu_ms": float(
+                                    data.rank_moe_gpu_ms[barrier_row, rank]
+                                ),
+                                "gpu_other_ms": float(
+                                    data.rank_gpu_other_ms[barrier_row, rank]
+                                ),
+                                "timing_complete": bool(
+                                    data.rank_timing_complete[barrier_row, rank]
+                                ),
                                 "rank_step_draft_ms": float(
                                     data.rank_step_draft_ms[barrier_row, rank]
                                 ),
                                 "layer": int(layer),
                                 "rank_layer_ffn_ms": float(
                                     data.rank_layer_ffn_ms[
+                                        barrier_row, rank, layer_row
+                                    ]
+                                ),
+                                "layer_moe_gpu_ms": float(
+                                    data.rank_layer_moe_gpu_ms[
+                                        barrier_row, rank, layer_row
+                                    ]
+                                ),
+                                "layer_routed_expert_gpu_ms": float(
+                                    data.rank_layer_routed_expert_gpu_ms[
+                                        barrier_row, rank, layer_row
+                                    ]
+                                ),
+                                "layer_shared_expert_gpu_ms": float(
+                                    data.rank_layer_shared_expert_gpu_ms[
+                                        barrier_row, rank, layer_row
+                                    ]
+                                ),
+                                "layer_routing_gpu_ms": float(
+                                    data.rank_layer_routing_gpu_ms[
+                                        barrier_row, rank, layer_row
+                                    ]
+                                ),
+                                "layer_prepare_gpu_ms": float(
+                                    data.rank_layer_prepare_gpu_ms[
+                                        barrier_row, rank, layer_row
+                                    ]
+                                ),
+                                "layer_finalize_gpu_ms": float(
+                                    data.rank_layer_finalize_gpu_ms[
                                         barrier_row, rank, layer_row
                                     ]
                                 ),
@@ -933,6 +1198,60 @@ def build_barrier_rank_layer_rows(
                                 ),
                             }
                         )
+    return rows
+
+
+def build_timing_completeness_rows(
+    manifest: dict[str, Any],
+    results: dict[tuple[int, int], LoadedConditionData],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for batch_size in tuple(manifest["batch_sizes"]):
+        for draft_length in tuple(manifest["draft_lengths"]):
+            data = results[(batch_size, draft_length)]
+            target_mask = strict_target_barrier_mask(
+                data,
+                draft_length=draft_length,
+            )
+            for barrier_row, barrier_id in enumerate(data.global_barrier_ids):
+                for rank in range(data.data_parallel_size):
+                    decomposition_error_ms = abs(
+                        float(data.rank_attention_gpu_ms[barrier_row, rank])
+                        + float(data.rank_moe_gpu_ms[barrier_row, rank])
+                        + float(data.rank_gpu_other_ms[barrier_row, rank])
+                        - float(data.rank_verification_gpu_ms[barrier_row, rank])
+                    )
+                    rows.append(
+                        {
+                            "batch_size": batch_size,
+                            "draft_length": draft_length,
+                            "global_barrier_id": int(barrier_id),
+                            "rank": rank,
+                            "strict_target_barrier": bool(
+                                target_mask[barrier_row]
+                            ),
+                            "timing_complete": bool(
+                                data.rank_timing_complete[barrier_row, rank]
+                            ),
+                            "missing_moe_layers": int(
+                                np.count_nonzero(
+                                    data.rank_layer_moe_gpu_ms[
+                                        barrier_row, rank
+                                    ]
+                                    <= 0.0
+                                )
+                            ),
+                            "missing_routed_expert_layers": int(
+                                np.count_nonzero(
+                                    data.rank_layer_routed_expert_gpu_ms[
+                                        barrier_row, rank
+                                    ]
+                                    <= 0.0
+                                )
+                            ),
+                            "decomposition_error_ms": decomposition_error_ms,
+                        }
+                    )
     return rows
 
 
@@ -1042,6 +1361,9 @@ def build_position_breakdown_rows(
                             "sorted_rank_position": sorted_rank,
                             "num_global_steps": int(ffn.shape[0]),
                             "avg_attributed_ffn_ms": float(
+                                avg_ffn[position, sorted_rank]
+                            ),
+                            "avg_attributed_routed_expert_gpu_ms": float(
                                 avg_ffn[position, sorted_rank]
                             ),
                             "avg_destination_routed_assignments": float(
@@ -1494,6 +1816,9 @@ def build_sorted_rank_ffn_time_rows(
                         "decode_step_scope": decode_step_scope,
                         "sorted_rank_position": sorted_rank_position,
                         "avg_local_ffn_ms": float(avg_ffn_ms),
+                        "avg_layer_sorted_routed_expert_gpu_ms": float(
+                            avg_ffn_ms
+                        ),
                         "num_global_captured_steps": num_target_barriers,
                     }
                 )
@@ -1506,6 +1831,8 @@ def build_sorted_rank_ffn_time_rows(
                     "num_global_captured_steps": num_target_barriers,
                     "avg_heaviest_local_ffn_ms": heaviest_ffn_ms,
                     "avg_lightest_local_ffn_ms": lightest_ffn_ms,
+                    "avg_heaviest_routed_expert_gpu_ms": heaviest_ffn_ms,
+                    "avg_lightest_routed_expert_gpu_ms": lightest_ffn_ms,
                     "avg_heaviest_minus_lightest_local_ffn_ms": (
                         heaviest_ffn_ms - lightest_ffn_ms
                     ),
@@ -1525,6 +1852,54 @@ def build_sorted_rank_ffn_time_rows(
             )
 
     return sorted_rank_rows, imbalance_rows
+
+
+def build_sorted_rank_moe_time_rows(
+    manifest: dict[str, Any],
+    results: dict[tuple[int, int], LoadedConditionData],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    sorted_rows: list[dict[str, Any]] = []
+    imbalance_rows: list[dict[str, Any]] = []
+    for batch_size in tuple(manifest["batch_sizes"]):
+        for draft_length in tuple(manifest["draft_lengths"]):
+            data = results[(batch_size, draft_length)]
+            target_mask = strict_target_barrier_mask(
+                data,
+                draft_length=draft_length,
+            )
+            values = data.global_step_sorted_rank_moe_gpu_ms[target_mask]
+            ratios = data.global_step_moe_max_mean_ratio[target_mask]
+            if values.ndim != 2 or values.shape[0] == 0:
+                raise ValueError(
+                    "No strict sorted-rank MoE CUDA Event data for "
+                    f"batch_size={batch_size}, draft_length={draft_length}."
+                )
+            averages = np.mean(values, axis=0)
+            for position, value in enumerate(averages):
+                sorted_rows.append(
+                    {
+                        "batch_size": batch_size,
+                        "draft_length": draft_length,
+                        "sorted_rank_position": position,
+                        "avg_layer_sorted_moe_gpu_ms": float(value),
+                        "num_global_barriers": int(values.shape[0]),
+                    }
+                )
+            imbalance_rows.append(
+                {
+                    "batch_size": batch_size,
+                    "draft_length": draft_length,
+                    "num_global_barriers": int(values.shape[0]),
+                    "avg_heaviest_moe_gpu_ms": float(averages[0]),
+                    "avg_lightest_moe_gpu_ms": float(averages[-1]),
+                    "avg_step_moe_max_mean_ratio": _finite_mean(ratios),
+                    "p95_step_moe_max_mean_ratio": _finite_percentile(
+                        ratios,
+                        95.0,
+                    ),
+                }
+            )
+    return sorted_rows, imbalance_rows
 
 
 def build_sorted_rank_summary_rows(
@@ -1561,6 +1936,28 @@ def build_sorted_rank_summary_rows(
                         "avg_ffn_ms": float(
                             np.mean(
                                 data.global_step_sorted_rank_ffn_ms[
+                                    target_mask, position
+                                ]
+                            )
+                        ),
+                        "avg_routed_expert_gpu_ms": float(
+                            np.mean(
+                                getattr(
+                                    data,
+                                    "global_step_sorted_rank_routed_expert_gpu_ms",
+                                    data.global_step_sorted_rank_ffn_ms,
+                                )[
+                                    target_mask, position
+                                ]
+                            )
+                        ),
+                        "avg_moe_gpu_ms": float(
+                            np.mean(
+                                getattr(
+                                    data,
+                                    "global_step_sorted_rank_moe_gpu_ms",
+                                    data.global_step_sorted_rank_ffn_ms,
+                                )[
                                     target_mask, position
                                 ]
                             )
@@ -1917,38 +2314,46 @@ def plot_step_time_breakdown(
         for draft_length in draft_lengths
     ]
     x = np.arange(len(draft_lengths))
-    other = np.asarray(
-        [row["normalized_other_ms"] for row in rows], dtype=np.float64
+    wall = np.asarray(
+        [row["normalized_verification_wall"] for row in rows],
+        dtype=np.float64,
     )
-    ffn = np.asarray(
-        [row["normalized_ffn_ms"] for row in rows], dtype=np.float64
+    other = np.asarray(
+        [row["normalized_gpu_other"] for row in rows], dtype=np.float64
+    )
+    attention = np.asarray(
+        [row["normalized_attention_gpu"] for row in rows], dtype=np.float64
+    )
+    moe = np.asarray(
+        [row["normalized_moe_gpu"] for row in rows], dtype=np.float64
     )
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.bar(x, other, label="Other", color="#4e79a7")
+    width = 0.36
+    ax.bar(x - width / 2, wall, width=width, label="verification wall")
+    ax.bar(x + width / 2, other, width=width, label="GPU Other")
     ax.bar(
-        x,
-        ffn,
+        x + width / 2,
+        attention,
+        width=width,
         bottom=other,
-        label="FFN",
+        label="GPU Attention",
+        color="#59a14f",
+    )
+    ax.bar(
+        x + width / 2,
+        moe,
+        width=width,
+        bottom=other + attention,
+        label="GPU MoE",
         color="#e15759",
     )
-    for idx, row in enumerate(rows):
-        total_height = other[idx] + ffn[idx]
-        ax.text(
-            idx,
-            total_height + 0.02,
-            f"{float(row['ffn_share']) * 100:.1f}%",
-            ha="center",
-            va="bottom",
-            fontsize=9,
-        )
     ax.set_xticks(x)
     ax.set_xticklabels([str(d) for d in draft_lengths])
     ax.set_xlabel("draft_length")
-    ax.set_ylabel("normalized avg decode/verification-only step time")
+    ax.set_ylabel("normalized time (wall and GPU shown separately)")
     ax.set_title(
-        f"Critical-rank FFN/Other Step Time (batch_size={batch_size})"
+        f"Critical-rank wall and CUDA Event GPU time (batch_size={batch_size})"
     )
     ax.legend()
     ax.grid(axis="y", alpha=0.25)
@@ -2377,6 +2782,14 @@ def build_report(
         "- speedup 口径：vLLM request TPOT histogram 和 generation throughput",
         f"- max_tokens：`{manifest['max_tokens']}`",
         f"- warmup_rounds：`{manifest.get('warmup_rounds', 0)}`",
+        (
+            "- timing：verification wall-clock 是主性能口径；Attention/MoE/"
+            "Other 来自延迟解析的 CUDA Event。"
+        ),
+        (
+            "- NVTX：仅用于 Nsight Systems 区间校验，不作为任何 CSV "
+            "数值来源。"
+        ),
         "",
         "## vLLM Native Speedup",
         "",
@@ -2419,7 +2832,7 @@ def build_report(
         )
         lines.append(f"- batch_size={batch_size}: {summaries}")
 
-    lines.extend(["", "## Decode/Verification-only 时间开销分解", ""])
+    lines.extend(["", "## Decode/Verification-only Wall/GPU 时间", ""])
     for batch_size in batch_sizes:
         rows = [
             row for row in step_rows if row["batch_size"] == batch_size
@@ -2428,10 +2841,12 @@ def build_report(
         for row in rows:
             lines.append(
                 f"- draft_length={row['draft_length']}: "
-                f"avg_step={float(row['avg_step_total_ms']):.2f} ms, "
-                f"ffn={float(row['avg_ffn_ms']):.2f} ms, "
-                f"other={float(row['avg_other_ms']):.2f} ms, "
-                f"({float(row['ffn_share']) * 100:.1f}%), "
+                "verification_wall="
+                f"{float(row['avg_verification_wall_ms']):.2f} ms, "
+                f"moe_gpu={float(row['avg_moe_gpu_ms']):.2f} ms, "
+                f"gpu_other={float(row['avg_gpu_other_ms']):.2f} ms, "
+                "moe_gpu_share="
+                f"{float(row['moe_gpu_share']) * 100:.1f}%, "
                 f"global_captured={int(row['num_global_captured_steps'])}, "
                 f"global_candidates={int(row['num_global_candidate_steps'])}, "
                 f"prefill_drop={int(row['num_global_prefill_dropped_steps'])}, "
@@ -2459,7 +2874,7 @@ def build_report(
                 f"Δg={float(worst['gini_delta']):+.4f})"
             )
 
-    lines.extend(["", "## Rank-local FFN time 不均衡", ""])
+    lines.extend(["", "## Rank-local Routed Expert GPU time 不均衡", ""])
     for batch_size in batch_sizes:
         rows = [
             row
@@ -2513,8 +2928,7 @@ def analyze_experiment(
     schema_versions = sorted({data.schema_version for data in results.values()})
     if schema_versions != [SCHEMA_VERSION]:
         raise RuntimeError(
-            "Unified analysis requires schema v9 raw data for complete "
-            "destination-rank routing and draft-token identities; found "
+            "Unified analysis requires schema v10 CUDA Event raw data; found "
             f"schema versions {schema_versions}. Re-run collect."
         )
     batch_sizes = tuple(manifest["batch_sizes"])
@@ -2567,7 +2981,15 @@ def analyze_experiment(
         sorted_rank_ffn_rows,
         rank_ffn_imbalance_rows,
     ) = build_sorted_rank_ffn_time_rows(manifest, results)
+    (
+        sorted_rank_moe_rows,
+        rank_moe_imbalance_rows,
+    ) = build_sorted_rank_moe_time_rows(manifest, results)
     barrier_rank_layer_rows = build_barrier_rank_layer_rows(manifest, results)
+    timing_completeness_rows = build_timing_completeness_rows(
+        manifest,
+        results,
+    )
     sorted_rank_summary_rows = build_sorted_rank_summary_rows(manifest, results)
     active_expert_ratio_rows = build_active_expert_ratio_rows(manifest, results)
     position_rows = build_position_breakdown_rows(manifest, results)
@@ -2578,6 +3000,14 @@ def analyze_experiment(
     save_csv(
         dirs["tables"] / "barrier_rank_layer_metrics.csv",
         barrier_rank_layer_rows,
+    )
+    save_csv(
+        dirs["tables"] / "barrier_rank_layer_cuda_event.csv",
+        barrier_rank_layer_rows,
+    )
+    save_csv(
+        dirs["tables"] / "timing_completeness.csv",
+        timing_completeness_rows,
     )
     save_csv(dirs["tables"] / "sorted_rank_summary.csv", sorted_rank_summary_rows)
     save_csv(
@@ -2600,8 +3030,20 @@ def analyze_experiment(
         sorted_rank_ffn_rows,
     )
     save_csv(
+        dirs["tables"] / "rank_routed_expert_gpu_time_sorted.csv",
+        sorted_rank_ffn_rows,
+    )
+    save_csv(
+        dirs["tables"] / "rank_moe_gpu_time_sorted.csv",
+        sorted_rank_moe_rows,
+    )
+    save_csv(
         dirs["tables"] / "rank_ffn_imbalance_metrics.csv",
         rank_ffn_imbalance_rows,
+    )
+    save_csv(
+        dirs["tables"] / "rank_moe_gpu_imbalance_metrics.csv",
+        rank_moe_imbalance_rows,
     )
     save_csv(dirs["tables"] / "position_ffn_breakdown.csv", position_rows)
     cutoff_rows, layer_rows, drop_step_rows, condition_drop_rows = drop_rows

@@ -24,11 +24,12 @@ os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
 from mtp_ep_load_balance_utils import (
     DEFAULT_MAX_NUM_BATCHED_TOKENS,
     SCHEMA_VERSION,
+    TIMING_BACKEND,
+    TIMING_SCOPE,
     TPOT_DEFINITION,
     FinishedRequestStatTotals,
     StepTiming,
     aggregate_global_step_time_components,
-    aggregate_worker_step_timings,
     average_step_histograms,
     build_token_layer_destination_assignments,
     classify_step_capture,
@@ -37,10 +38,13 @@ from mtp_ep_load_balance_utils import (
     compute_tpot_ms_from_finished_stats,
     count_layer_expert_histograms,
     count_position_layer_local_routed_tokens,
+    interval_set_overlap_duration_ms,
+    interval_union_duration_ms,
     merge_expert_to_ep_rank_maps,
     num_condition_rounds,
     select_dataset_indices,
     shard_global_batch_indices,
+    subtract_interval_overlap_ms,
 )
 
 from vllm.utils.network_utils import get_open_port
@@ -246,6 +250,8 @@ class ConditionRawData:
     speculative_max_num_new_slots_for_drafting: int
     mixed_step_policy: str
     tpot_definition: str
+    timing_backend: str
+    timing_scope: str
     selected_dataset_indices: np.ndarray
     prompt_lengths: np.ndarray
     output_lengths: np.ndarray
@@ -281,8 +287,26 @@ class ConditionRawData:
     rank_barrier_last_ep_collective_seq_ids: np.ndarray
     rank_barrier_num_ep_collectives: np.ndarray
     rank_step_kinds: np.ndarray
+    rank_execute_wall_ms: np.ndarray
+    rank_verification_wall_ms: np.ndarray
+    rank_draft_wall_ms: np.ndarray
+    rank_iteration_wall_ms: np.ndarray
+    rank_execute_gpu_ms: np.ndarray
+    rank_verification_gpu_ms: np.ndarray
+    rank_draft_gpu_ms: np.ndarray
+    rank_iteration_gpu_ms: np.ndarray
+    rank_attention_gpu_ms: np.ndarray
+    rank_moe_gpu_ms: np.ndarray
+    rank_gpu_other_ms: np.ndarray
+    rank_timing_complete: np.ndarray
     rank_step_total_ms: np.ndarray
     rank_step_draft_ms: np.ndarray
+    rank_layer_moe_gpu_ms: np.ndarray
+    rank_layer_routed_expert_gpu_ms: np.ndarray
+    rank_layer_shared_expert_gpu_ms: np.ndarray
+    rank_layer_routing_gpu_ms: np.ndarray
+    rank_layer_prepare_gpu_ms: np.ndarray
+    rank_layer_finalize_gpu_ms: np.ndarray
     rank_layer_ffn_ms: np.ndarray
     rank_layer_local_routed_tokens: np.ndarray
     rank_layer_local_active_experts: np.ndarray
@@ -292,6 +316,18 @@ class ConditionRawData:
     global_step_total_ms: np.ndarray
     global_draft_ms: np.ndarray
     global_step_ffn_ms: np.ndarray
+    global_critical_rank_indices: np.ndarray
+    global_verification_wall_ms: np.ndarray
+    global_iteration_wall_ms: np.ndarray
+    global_draft_wall_ms: np.ndarray
+    global_verification_gpu_total_ms: np.ndarray
+    global_attention_gpu_ms: np.ndarray
+    global_moe_gpu_ms: np.ndarray
+    global_gpu_other_ms: np.ndarray
+    global_step_sorted_rank_routed_expert_gpu_ms: np.ndarray
+    global_step_sorted_rank_moe_gpu_ms: np.ndarray
+    global_step_routed_expert_max_mean_ratio: np.ndarray
+    global_step_moe_max_mean_ratio: np.ndarray
     global_step_sorted_rank_ffn_ms: np.ndarray
     global_step_sorted_rank_local_routed_tokens: np.ndarray
     global_step_sorted_rank_local_active_experts: np.ndarray
@@ -349,6 +385,8 @@ class ConditionRawData:
             ),
             "mixed_step_policy": np.asarray([self.mixed_step_policy]),
             "tpot_definition": np.asarray([self.tpot_definition]),
+            "timing_backend": np.asarray([self.timing_backend]),
+            "timing_scope": np.asarray([self.timing_scope]),
             "selected_dataset_indices": self.selected_dataset_indices,
             "prompt_lengths": self.prompt_lengths,
             "output_lengths": self.output_lengths,
@@ -430,8 +468,30 @@ class ConditionRawData:
                 self.rank_barrier_num_ep_collectives
             ),
             "rank_step_kinds": self.rank_step_kinds,
+            "rank_execute_wall_ms": self.rank_execute_wall_ms,
+            "rank_verification_wall_ms": self.rank_verification_wall_ms,
+            "rank_draft_wall_ms": self.rank_draft_wall_ms,
+            "rank_iteration_wall_ms": self.rank_iteration_wall_ms,
+            "rank_execute_gpu_ms": self.rank_execute_gpu_ms,
+            "rank_verification_gpu_ms": self.rank_verification_gpu_ms,
+            "rank_draft_gpu_ms": self.rank_draft_gpu_ms,
+            "rank_iteration_gpu_ms": self.rank_iteration_gpu_ms,
+            "rank_attention_gpu_ms": self.rank_attention_gpu_ms,
+            "rank_moe_gpu_ms": self.rank_moe_gpu_ms,
+            "rank_gpu_other_ms": self.rank_gpu_other_ms,
+            "rank_timing_complete": self.rank_timing_complete,
             "rank_step_total_ms": self.rank_step_total_ms,
             "rank_step_draft_ms": self.rank_step_draft_ms,
+            "rank_layer_moe_gpu_ms": self.rank_layer_moe_gpu_ms,
+            "rank_layer_routed_expert_gpu_ms": (
+                self.rank_layer_routed_expert_gpu_ms
+            ),
+            "rank_layer_shared_expert_gpu_ms": (
+                self.rank_layer_shared_expert_gpu_ms
+            ),
+            "rank_layer_routing_gpu_ms": self.rank_layer_routing_gpu_ms,
+            "rank_layer_prepare_gpu_ms": self.rank_layer_prepare_gpu_ms,
+            "rank_layer_finalize_gpu_ms": self.rank_layer_finalize_gpu_ms,
             "rank_layer_ffn_ms": self.rank_layer_ffn_ms,
             "rank_layer_local_routed_tokens": (
                 self.rank_layer_local_routed_tokens
@@ -448,6 +508,28 @@ class ConditionRawData:
             "global_draft_ms": self.global_draft_ms,
             "global_step_ffn_ms": self.global_step_ffn_ms,
             "global_step_ffn_phase_ms": self.global_step_ffn_ms,
+            "global_critical_rank_indices": self.global_critical_rank_indices,
+            "global_verification_wall_ms": self.global_verification_wall_ms,
+            "global_iteration_wall_ms": self.global_iteration_wall_ms,
+            "global_draft_wall_ms": self.global_draft_wall_ms,
+            "global_verification_gpu_total_ms": (
+                self.global_verification_gpu_total_ms
+            ),
+            "global_attention_gpu_ms": self.global_attention_gpu_ms,
+            "global_moe_gpu_ms": self.global_moe_gpu_ms,
+            "global_gpu_other_ms": self.global_gpu_other_ms,
+            "global_step_sorted_rank_routed_expert_gpu_ms": (
+                self.global_step_sorted_rank_routed_expert_gpu_ms
+            ),
+            "global_step_sorted_rank_moe_gpu_ms": (
+                self.global_step_sorted_rank_moe_gpu_ms
+            ),
+            "global_step_routed_expert_max_mean_ratio": (
+                self.global_step_routed_expert_max_mean_ratio
+            ),
+            "global_step_moe_max_mean_ratio": (
+                self.global_step_moe_max_mean_ratio
+            ),
             "global_step_sorted_rank_ffn_ms": self.global_step_sorted_rank_ffn_ms,
             "global_step_sorted_rank_local_routed_tokens": (
                 self.global_step_sorted_rank_local_routed_tokens
@@ -573,8 +655,26 @@ class RankConditionData:
     candidate_step_total_ms: np.ndarray
     candidate_step_draft_ms: np.ndarray
     candidate_step_ffn_ms: np.ndarray
+    candidate_execute_wall_ms: np.ndarray
+    candidate_verification_wall_ms: np.ndarray
+    candidate_draft_wall_ms: np.ndarray
+    candidate_iteration_wall_ms: np.ndarray
+    candidate_execute_gpu_ms: np.ndarray
+    candidate_verification_gpu_ms: np.ndarray
+    candidate_draft_gpu_ms: np.ndarray
+    candidate_iteration_gpu_ms: np.ndarray
+    candidate_attention_gpu_ms: np.ndarray
+    candidate_moe_gpu_ms: np.ndarray
+    candidate_gpu_other_ms: np.ndarray
+    candidate_timing_complete: np.ndarray
     candidate_step_histograms: np.ndarray
     candidate_layer_ffn_ms: np.ndarray
+    candidate_layer_moe_gpu_ms: np.ndarray
+    candidate_layer_routed_expert_gpu_ms: np.ndarray
+    candidate_layer_shared_expert_gpu_ms: np.ndarray
+    candidate_layer_routing_gpu_ms: np.ndarray
+    candidate_layer_prepare_gpu_ms: np.ndarray
+    candidate_layer_finalize_gpu_ms: np.ndarray
     candidate_layer_local_routed_tokens: np.ndarray
     candidate_layer_local_active_experts: np.ndarray
     candidate_position_layer_ffn_ms: np.ndarray
@@ -639,8 +739,40 @@ class RankConditionData:
             "candidate_step_total_ms": self.candidate_step_total_ms,
             "candidate_step_draft_ms": self.candidate_step_draft_ms,
             "candidate_step_ffn_ms": self.candidate_step_ffn_ms,
+            "candidate_execute_wall_ms": self.candidate_execute_wall_ms,
+            "candidate_verification_wall_ms": (
+                self.candidate_verification_wall_ms
+            ),
+            "candidate_draft_wall_ms": self.candidate_draft_wall_ms,
+            "candidate_iteration_wall_ms": self.candidate_iteration_wall_ms,
+            "candidate_execute_gpu_ms": self.candidate_execute_gpu_ms,
+            "candidate_verification_gpu_ms": (
+                self.candidate_verification_gpu_ms
+            ),
+            "candidate_draft_gpu_ms": self.candidate_draft_gpu_ms,
+            "candidate_iteration_gpu_ms": self.candidate_iteration_gpu_ms,
+            "candidate_attention_gpu_ms": self.candidate_attention_gpu_ms,
+            "candidate_moe_gpu_ms": self.candidate_moe_gpu_ms,
+            "candidate_gpu_other_ms": self.candidate_gpu_other_ms,
+            "candidate_timing_complete": self.candidate_timing_complete,
             "candidate_step_histograms": self.candidate_step_histograms,
             "candidate_layer_ffn_ms": self.candidate_layer_ffn_ms,
+            "candidate_layer_moe_gpu_ms": self.candidate_layer_moe_gpu_ms,
+            "candidate_layer_routed_expert_gpu_ms": (
+                self.candidate_layer_routed_expert_gpu_ms
+            ),
+            "candidate_layer_shared_expert_gpu_ms": (
+                self.candidate_layer_shared_expert_gpu_ms
+            ),
+            "candidate_layer_routing_gpu_ms": (
+                self.candidate_layer_routing_gpu_ms
+            ),
+            "candidate_layer_prepare_gpu_ms": (
+                self.candidate_layer_prepare_gpu_ms
+            ),
+            "candidate_layer_finalize_gpu_ms": (
+                self.candidate_layer_finalize_gpu_ms
+            ),
             "candidate_layer_local_routed_tokens": (
                 self.candidate_layer_local_routed_tokens
             ),
@@ -728,21 +860,60 @@ class RankConditionData:
 
 
 @dataclass
+class CudaEventInterval:
+    label: str
+    start_event: Any
+    end_event: Any
+    wall_start_s: float
+    wall_end_s: float
+    layer_idx: int | None
+    ep_collective_seq_id: int | None
+    in_draft_section: bool
+
+
+class CudaEventPool:
+    def __init__(self, event_factory: Callable[[], Any] | None = None) -> None:
+        self._event_factory = event_factory
+        self._available: list[Any] = []
+        self.created = 0
+
+    def _create_event(self) -> Any:
+        if self._event_factory is not None:
+            return self._event_factory()
+        import torch
+
+        return torch.cuda.Event(enable_timing=True)
+
+    def acquire(self) -> Any:
+        if self._available:
+            return self._available.pop()
+        self.created += 1
+        return self._create_event()
+
+    def release(self, event: Any) -> None:
+        self._available.append(event)
+
+    @property
+    def available(self) -> int:
+        return len(self._available)
+
+
+@dataclass
 class StepAccumulator:
-    step_start_time_ms: float = 0.0
+    step_index: int
+    execute_wall_start_s: float
+    execute_start_event: Any
+    execute_wall_end_s: float = 0.0
+    execute_end_event: Any | None = None
+    completion_event: Any | None = None
     first_ep_collective_seq_id: int | None = None
     last_ep_collective_seq_id: int | None = None
     num_ep_collectives: int = 0
-    attention_ms: float = 0.0
-    routing_ms: float = 0.0
-    prepare_ms: float = 0.0
-    finalize_ms: float = 0.0
-    ffn_ms: float = 0.0
-    draft_ms: float = 0.0
     draft_depth: int = 0
-    layer_ffn_ms: dict[int, float] = field(default_factory=dict)
     layer_stack: list[int] = field(default_factory=list)
-    events: list[dict[str, Any]] = field(default_factory=list)
+    event_intervals: list[CudaEventInterval] = field(default_factory=list)
+    draft_wall_intervals: list[tuple[float, float]] = field(default_factory=list)
+    owned_events: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -755,6 +926,9 @@ class WorkerInstrumentationState:
     queued_step_logs: int = 0
     next_step_index: int = 0
     next_ep_collective_seq_id: int = 0
+    enable_nvtx_ranges: bool = False
+    event_pool: CudaEventPool = field(default_factory=CudaEventPool)
+    synchronize_count: int = 0
 
 
 _WORKER_STATE = WorkerInstrumentationState()
@@ -763,6 +937,7 @@ _ORIGINAL_ROUTER_SELECT_EXPERTS = None
 _ORIGINAL_QWEN2_MLP_FORWARD = None
 _ORIGINAL_QWEN3_MLP_FORWARD = None
 _ORIGINAL_QWEN3_SPARSE_MOE_FORWARD = None
+_ORIGINAL_QWEN3_NEXT_SPARSE_MOE_FORWARD = None
 _ORIGINAL_FUSED_MOE_FORWARD = None
 _ORIGINAL_QWEN3_NEXT_ATTN_FORWARD = None
 _ORIGINAL_QWEN_GDN_FORWARD = None
@@ -815,6 +990,11 @@ def save_run_metadata(output_dir: Path, args: Any) -> None:
         "enforce_eager": args.enforce_eager,
         "warmup_rounds": args.warmup_rounds,
         "trace_steps_per_rank": args.trace_steps_per_rank,
+        "enable_nvtx_ranges": bool(
+            getattr(args, "enable_nvtx_ranges", False)
+        ),
+        "timing_backend": TIMING_BACKEND,
+        "timing_scope": TIMING_SCOPE,
         "local_gpu_ids": getattr(args, "local_gpu_ids", None),
         "rtx_5090_nccl_env_defaults": RTX_5090_NCCL_ENV_DEFAULTS,
         "enable_chunked_prefill": True,
@@ -850,6 +1030,11 @@ def save_collect_manifest(
         "num_experts": args.num_experts,
         "warmup_rounds": args.warmup_rounds,
         "trace_steps_per_rank": args.trace_steps_per_rank,
+        "enable_nvtx_ranges": bool(
+            getattr(args, "enable_nvtx_ranges", False)
+        ),
+        "timing_backend": TIMING_BACKEND,
+        "timing_scope": TIMING_SCOPE,
         "local_gpu_ids": getattr(args, "local_gpu_ids", None),
         "rtx_5090_nccl_env_defaults": RTX_5090_NCCL_ENV_DEFAULTS,
         "enable_chunked_prefill": True,
@@ -1091,6 +1276,11 @@ def validate_parallel_config(args: Namespace) -> None:
         )
     if args.data_parallel_size < 1:
         raise ValueError("data_parallel_size must be >= 1.")
+    if not args.enforce_eager:
+        raise ValueError(
+            "CUDA Event timing only supports eager execution. CUDA Graph mode "
+            "is not supported; use the default --enforce-eager."
+        )
 
 
 def get_local_max_num_seqs(batch_size: int, data_parallel_size: int) -> int:
@@ -1232,19 +1422,56 @@ def get_inproc_handles(llm: Any) -> tuple[Any, Any]:
     return engine_core.scheduler, engine_core.model_executor
 
 
-def _synchronize_device() -> None:
-    from vllm.platforms import current_platform
+def _record_cuda_event(step: StepAccumulator) -> Any:
+    import torch
 
-    synchronize = current_platform.synchronize
-    if synchronize is not None:
-        synchronize()
+    event = _WORKER_STATE.event_pool.acquire()
+    event.record(torch.cuda.current_stream())
+    step.owned_events.append(event)
+    return event
+
+
+def _nvtx_range_name(
+    label: str,
+    step: StepAccumulator,
+    layer_idx: int | None,
+) -> str:
+    parts = [f"step={step.step_index}", label]
+    if layer_idx is not None:
+        parts.insert(1, f"layer={layer_idx}")
+    return "/".join(parts)
+
+
+def _push_nvtx_range(
+    label: str,
+    step: StepAccumulator,
+    layer_idx: int | None,
+) -> bool:
+    if not _WORKER_STATE.enable_nvtx_ranges:
+        return False
+    import torch
+
+    torch.cuda.nvtx.range_push(_nvtx_range_name(label, step, layer_idx))
+    return True
+
+
+def _pop_nvtx_range(pushed: bool) -> None:
+    if not pushed:
+        return
+    import torch
+
+    torch.cuda.nvtx.range_pop()
+
+
+def _event_elapsed_ms(start_event: Any, end_event: Any) -> float:
+    return float(start_event.elapsed_time(end_event))
 
 
 def _measure_worker_section(
     label: str,
     fn: Callable,
     *args: Any,
-    add_to_step_ffn: bool = True,
+    layer_idx: int | None = None,
     **kwargs: Any,
 ):
     current_step = _WORKER_STATE.current_step
@@ -1267,13 +1494,29 @@ def _measure_worker_section(
             return fn(*args, **kwargs)
         _WORKER_STATE.draft_measure_depth += 1
     if can_measure_pending_draft:
+        accumulator = pending_record["_accumulator"]
         try:
-            _synchronize_device()
             start = time.perf_counter()
+            start_event = _record_cuda_event(accumulator)
+            pushed_nvtx = _push_nvtx_range("Draft", accumulator, None)
             result = fn(*args, **kwargs)
-            _synchronize_device()
             end = time.perf_counter()
-            _record_pending_draft_timing(start, end, pending_record)
+            _pop_nvtx_range(pushed_nvtx)
+            end_event = _record_cuda_event(accumulator)
+            accumulator.event_intervals.append(
+                CudaEventInterval(
+                    label="draft",
+                    start_event=start_event,
+                    end_event=end_event,
+                    wall_start_s=start,
+                    wall_end_s=end,
+                    layer_idx=None,
+                    ep_collective_seq_id=None,
+                    in_draft_section=False,
+                )
+            )
+            accumulator.draft_wall_intervals.append((start, end))
+            accumulator.completion_event = end_event
             return result
         finally:
             _WORKER_STATE.draft_measure_depth -= 1
@@ -1292,74 +1535,209 @@ def _measure_worker_section(
             current_step.last_ep_collective_seq_id = ep_collective_seq_id
             current_step.num_ep_collectives += 1
 
-        _synchronize_device()
         start = time.perf_counter()
-        result = fn(*args, **kwargs)
-        _synchronize_device()
-        end = time.perf_counter()
+        start_event = _record_cuda_event(current_step)
+        effective_layer_idx = (
+            layer_idx
+            if layer_idx is not None
+            else (current_step.layer_stack[-1] if current_step.layer_stack else None)
+        )
+        pushed_nvtx = _push_nvtx_range(
+            label.replace("_", " ").title().replace(" ", ""),
+            current_step,
+            effective_layer_idx,
+        )
+        try:
+            result = fn(*args, **kwargs)
+        finally:
+            end = time.perf_counter()
+            _pop_nvtx_range(pushed_nvtx)
+            end_event = _record_cuda_event(current_step)
     finally:
         if is_draft_section:
             current_step.draft_depth -= 1
             _WORKER_STATE.draft_measure_depth -= 1
 
-    elapsed_ms = (end - start) * 1000.0
-    start_ms = start * 1000.0 - current_step.step_start_time_ms
-    end_ms = end * 1000.0 - current_step.step_start_time_ms
-    current_step.events.append(
-        {
-            "label": label,
-            "start_ms": start_ms,
-            "end_ms": end_ms,
-            "duration_ms": elapsed_ms,
-            "ep_collective_seq_id": ep_collective_seq_id,
-            "in_draft_section": in_draft_section,
-        }
+    current_step.event_intervals.append(
+        CudaEventInterval(
+            label=label,
+            start_event=start_event,
+            end_event=end_event,
+            wall_start_s=start,
+            wall_end_s=end,
+            layer_idx=effective_layer_idx,
+            ep_collective_seq_id=ep_collective_seq_id,
+            in_draft_section=in_draft_section,
+        )
     )
-    if in_draft_section:
-        return result
-    if label == "prepare":
-        current_step.prepare_ms += elapsed_ms
-    elif label == "finalize":
-        current_step.finalize_ms += elapsed_ms
-    elif label == "attention":
-        current_step.attention_ms += elapsed_ms
-    elif label == "routing":
-        current_step.routing_ms += elapsed_ms
-    elif label == "ffn":
-        if add_to_step_ffn:
-            current_step.ffn_ms += elapsed_ms
-        if current_step.layer_stack:
-            layer_idx = current_step.layer_stack[-1]
-            current_step.layer_ffn_ms[layer_idx] = (
-                current_step.layer_ffn_ms.get(layer_idx, 0.0) + elapsed_ms
-            )
-    elif label == "draft":
-        current_step.draft_ms += elapsed_ms
-    else:
-        raise ValueError(f"Unknown measured label: {label}")
+    if label == "draft":
+        current_step.draft_wall_intervals.append((start, end))
+        current_step.completion_event = end_event
     return result
 
 
-def _record_pending_draft_timing(
-    start: float,
-    end: float,
-    pending_record: dict[str, Any],
-) -> None:
-    elapsed_ms = (end - start) * 1000.0
-    timing = pending_record["timing"]
-    trace = pending_record["trace"]
-    timing["draft_ms"] = float(timing.get("draft_ms", 0.0)) + elapsed_ms
-    step_start_time_ms = float(trace.get("step_start_time_ms", start * 1000.0))
-    trace.setdefault("events", []).append(
-        {
-            "label": "draft",
-            "start_ms": start * 1000.0 - step_start_time_ms,
-            "end_ms": end * 1000.0 - step_start_time_ms,
-            "duration_ms": elapsed_ms,
-            "ep_collective_seq_id": None,
-            "in_draft_section": False,
+def _resolve_step_accumulator(step: StepAccumulator) -> dict[str, Any]:
+    completion_event = step.completion_event or step.execute_end_event
+    if completion_event is None or step.execute_end_event is None:
+        raise RuntimeError("Worker timing record is missing a completion Event.")
+    completion_event.synchronize()
+    _WORKER_STATE.synchronize_count += 1
+
+    try:
+        execute_gpu_interval = (
+            0.0,
+            _event_elapsed_ms(step.execute_start_event, step.execute_end_event),
+        )
+        parsed_events: list[dict[str, Any]] = []
+        gpu_intervals_by_label: dict[str, list[tuple[float, float]]] = {}
+        layer_gpu_ms: dict[str, dict[int, float]] = {}
+        for interval in step.event_intervals:
+            start_ms = _event_elapsed_ms(
+                step.execute_start_event,
+                interval.start_event,
+            )
+            end_ms = _event_elapsed_ms(
+                step.execute_start_event,
+                interval.end_event,
+            )
+            duration_ms = max(end_ms - start_ms, 0.0)
+            parsed_events.append(
+                {
+                    "label": interval.label,
+                    "layer_idx": interval.layer_idx,
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                    "duration_ms": duration_ms,
+                    "wall_start_ms": (
+                        interval.wall_start_s - step.execute_wall_start_s
+                    )
+                    * 1000.0,
+                    "wall_end_ms": (
+                        interval.wall_end_s - step.execute_wall_start_s
+                    )
+                    * 1000.0,
+                    "ep_collective_seq_id": interval.ep_collective_seq_id,
+                    "in_draft_section": interval.in_draft_section,
+                }
+            )
+            if interval.in_draft_section:
+                continue
+            gpu_intervals_by_label.setdefault(interval.label, []).append(
+                (start_ms, end_ms)
+            )
+            if interval.layer_idx is not None:
+                layer_values = layer_gpu_ms.setdefault(interval.label, {})
+                layer_values[interval.layer_idx] = (
+                    layer_values.get(interval.layer_idx, 0.0) + duration_ms
+                )
+
+        draft_gpu_intervals = gpu_intervals_by_label.get("draft", [])
+        attention_intervals = gpu_intervals_by_label.get("attention", [])
+        moe_intervals = gpu_intervals_by_label.get("moe", [])
+        attention_moe_overlap_ms = interval_set_overlap_duration_ms(
+            attention_intervals,
+            moe_intervals,
+        )
+        if attention_moe_overlap_ms > 0.05:
+            raise RuntimeError(
+                "Attention and MoE top-level CUDA Event ranges overlap by "
+                f"{attention_moe_overlap_ms:.6f} ms in step {step.step_index}."
+            )
+
+        execute_wall_interval = (
+            step.execute_wall_start_s * 1000.0,
+            step.execute_wall_end_s * 1000.0,
+        )
+        draft_wall_intervals_ms = [
+            (start * 1000.0, end * 1000.0)
+            for start, end in step.draft_wall_intervals
+        ]
+        execute_wall_ms = max(
+            execute_wall_interval[1] - execute_wall_interval[0],
+            0.0,
+        )
+        verification_wall_ms = subtract_interval_overlap_ms(
+            execute_wall_interval,
+            draft_wall_intervals_ms,
+        )
+        draft_wall_ms = interval_union_duration_ms(draft_wall_intervals_ms)
+        iteration_wall_ms = interval_union_duration_ms(
+            [execute_wall_interval, *draft_wall_intervals_ms]
+        )
+        execute_gpu_ms = execute_gpu_interval[1]
+        verification_gpu_ms = subtract_interval_overlap_ms(
+            execute_gpu_interval,
+            draft_gpu_intervals,
+        )
+        draft_gpu_ms = interval_union_duration_ms(draft_gpu_intervals)
+        iteration_gpu_ms = interval_union_duration_ms(
+            [execute_gpu_interval, *draft_gpu_intervals]
+        )
+        attention_gpu_ms = interval_union_duration_ms(attention_intervals)
+        moe_gpu_ms = interval_union_duration_ms(moe_intervals)
+        gpu_other_ms = verification_gpu_ms - interval_union_duration_ms(
+            [*attention_intervals, *moe_intervals]
+        )
+        if gpu_other_ms < -1e-3:
+            raise RuntimeError(
+                "Attention and MoE CUDA Event ranges exceed verification GPU "
+                f"time in step {step.step_index}: other={gpu_other_ms:.6f} ms."
+            )
+        gpu_other_ms = max(gpu_other_ms, 0.0)
+
+        label_totals = {
+            label: interval_union_duration_ms(intervals)
+            for label, intervals in gpu_intervals_by_label.items()
         }
-    )
+        return {
+            "timing": {
+                "timing_backend": TIMING_BACKEND,
+                "execute_wall_ms": execute_wall_ms,
+                "verification_wall_ms": verification_wall_ms,
+                "draft_wall_ms": draft_wall_ms,
+                "iteration_wall_ms": iteration_wall_ms,
+                "execute_gpu_ms": execute_gpu_ms,
+                "verification_gpu_ms": verification_gpu_ms,
+                "draft_gpu_ms": draft_gpu_ms,
+                "iteration_gpu_ms": iteration_gpu_ms,
+                "attention_gpu_ms": attention_gpu_ms,
+                "moe_gpu_ms": moe_gpu_ms,
+                "gpu_other_ms": gpu_other_ms,
+                "routing_gpu_ms": label_totals.get("routing", 0.0),
+                "prepare_gpu_ms": label_totals.get("prepare", 0.0),
+                "routed_expert_gpu_ms": label_totals.get(
+                    "routed_expert",
+                    0.0,
+                ),
+                "shared_expert_gpu_ms": label_totals.get(
+                    "shared_expert",
+                    0.0,
+                ),
+                "finalize_gpu_ms": label_totals.get("finalize", 0.0),
+                "timing_complete": True,
+                # v9-compatible aliases. v10 analysis does not use these names.
+                "total_ms": verification_wall_ms,
+                "attention_ms": attention_gpu_ms,
+                "routing_ms": label_totals.get("routing", 0.0),
+                "prepare_ms": label_totals.get("prepare", 0.0),
+                "finalize_ms": label_totals.get("finalize", 0.0),
+                "ffn_ms": label_totals.get("routed_expert", 0.0),
+                "draft_ms": draft_wall_ms,
+            },
+            "trace": {
+                "step_index": step.step_index,
+                "first_ep_collective_seq_id": step.first_ep_collective_seq_id,
+                "last_ep_collective_seq_id": step.last_ep_collective_seq_id,
+                "num_ep_collectives": step.num_ep_collectives,
+                "step_start_time_ms": step.execute_wall_start_s * 1000.0,
+                "step_end_time_ms": step.execute_wall_end_s * 1000.0,
+                "events": parsed_events,
+                "layer_gpu_ms": layer_gpu_ms,
+            },
+        }
+    finally:
+        for event in step.owned_events:
+            _WORKER_STATE.event_pool.release(event)
 
 
 def _extract_layer_index_from_module(module: Any) -> int | None:
@@ -1439,6 +1817,7 @@ def _install_worker_hooks() -> None:
     global _ORIGINAL_QWEN2_MLP_FORWARD
     global _ORIGINAL_QWEN3_MLP_FORWARD
     global _ORIGINAL_QWEN3_SPARSE_MOE_FORWARD
+    global _ORIGINAL_QWEN3_NEXT_SPARSE_MOE_FORWARD
     global _ORIGINAL_FUSED_MOE_FORWARD
     global _ORIGINAL_QWEN3_NEXT_ATTN_FORWARD
     global _ORIGINAL_QWEN_GDN_FORWARD
@@ -1465,7 +1844,10 @@ def _install_worker_hooks() -> None:
         Qwen3MoeMLP,
         Qwen3MoeSparseMoeBlock,
     )
-    from vllm.model_executor.models.qwen3_next import Qwen3NextAttention
+    from vllm.model_executor.models.qwen3_next import (
+        Qwen3NextAttention,
+        Qwen3NextSparseMoeBlock,
+    )
     from vllm.v1.worker.gpu_model_runner import GPUModelRunner
     from vllm.v1.worker.gpu_worker import Worker
 
@@ -1474,6 +1856,7 @@ def _install_worker_hooks() -> None:
     _ORIGINAL_QWEN2_MLP_FORWARD = Qwen2MoeMLP.forward
     _ORIGINAL_QWEN3_MLP_FORWARD = Qwen3MoeMLP.forward
     _ORIGINAL_QWEN3_SPARSE_MOE_FORWARD = Qwen3MoeSparseMoeBlock.forward
+    _ORIGINAL_QWEN3_NEXT_SPARSE_MOE_FORWARD = Qwen3NextSparseMoeBlock.forward
     _ORIGINAL_FUSED_MOE_FORWARD = FusedMoE.forward
     _ORIGINAL_QWEN3_NEXT_ATTN_FORWARD = Qwen3NextAttention.forward
     _ORIGINAL_QWEN_GDN_FORWARD = QwenGatedDeltaNetAttention.forward
@@ -1499,65 +1882,50 @@ def _install_worker_hooks() -> None:
             _WORKER_STATE.enter_step_logs += 1
 
         step_index = _WORKER_STATE.next_step_index
-        _synchronize_device()
         start = time.perf_counter()
+        import torch
+
+        start_event = _WORKER_STATE.event_pool.acquire()
+        start_event.record(torch.cuda.current_stream())
         _WORKER_STATE.current_step = StepAccumulator(
-            step_start_time_ms=start * 1000.0
+            step_index=step_index,
+            execute_wall_start_s=start,
+            execute_start_event=start_event,
+            owned_events=[start_event],
+        )
+        pushed_nvtx = _push_nvtx_range(
+            "Execute",
+            _WORKER_STATE.current_step,
+            None,
         )
         try:
             output = _ORIGINAL_WORKER_EXECUTE_MODEL(self, scheduler_output)
-            _synchronize_device()
             end = time.perf_counter()
-            elapsed_ms = (end - start) * 1000.0
             assert _WORKER_STATE.current_step is not None
+            _pop_nvtx_range(pushed_nvtx)
+            pushed_nvtx = False
+            end_event = _record_cuda_event(_WORKER_STATE.current_step)
+            _WORKER_STATE.current_step.execute_wall_end_s = end
+            _WORKER_STATE.current_step.execute_end_event = end_event
+            _WORKER_STATE.current_step.completion_event = end_event
             _WORKER_STATE.pending_step_records.append(
                 {
-                    "timing": {
-                        "total_ms": elapsed_ms,
-                        "attention_ms": _WORKER_STATE.current_step.attention_ms,
-                        "routing_ms": _WORKER_STATE.current_step.routing_ms,
-                        "prepare_ms": _WORKER_STATE.current_step.prepare_ms,
-                        "finalize_ms": _WORKER_STATE.current_step.finalize_ms,
-                        "ffn_ms": _WORKER_STATE.current_step.ffn_ms,
-                        "draft_ms": _WORKER_STATE.current_step.draft_ms,
-                    },
+                    "_accumulator": _WORKER_STATE.current_step,
                     "metadata": _extract_worker_step_metadata(self),
-                    "trace": {
-                        "step_index": step_index,
-                        "first_ep_collective_seq_id": (
-                            _WORKER_STATE.current_step.first_ep_collective_seq_id
-                        ),
-                        "last_ep_collective_seq_id": (
-                            _WORKER_STATE.current_step.last_ep_collective_seq_id
-                        ),
-                        "num_ep_collectives": (
-                            _WORKER_STATE.current_step.num_ep_collectives
-                        ),
-                        "step_start_time_ms": (
-                            _WORKER_STATE.current_step.step_start_time_ms
-                        ),
-                        "step_end_time_ms": end * 1000.0,
-                        "events": list(_WORKER_STATE.current_step.events),
-                        "layer_ffn_ms": dict(_WORKER_STATE.current_step.layer_ffn_ms),
-                    },
                 }
             )
             _WORKER_STATE.next_step_index += 1
             if _WORKER_STATE.queued_step_logs < 3:
                 print(
                     "[worker_timing] queued "
-                    f"total_ms={elapsed_ms:.3f} "
-                    f"attention_ms={_WORKER_STATE.current_step.attention_ms:.3f} "
-                    f"routing_ms={_WORKER_STATE.current_step.routing_ms:.3f} "
-                    f"prepare_ms={_WORKER_STATE.current_step.prepare_ms:.3f} "
-                    f"finalize_ms={_WORKER_STATE.current_step.finalize_ms:.3f} "
-                    f"ffn_ms={_WORKER_STATE.current_step.ffn_ms:.3f} "
-                    f"draft_ms={_WORKER_STATE.current_step.draft_ms:.3f}",
+                    f"step={step_index} backend={TIMING_BACKEND}",
                     flush=True,
                 )
                 _WORKER_STATE.queued_step_logs += 1
             return output
         finally:
+            if _WORKER_STATE.current_step is not None and pushed_nvtx:
+                _pop_nvtx_range(True)
             _WORKER_STATE.current_step = None
 
     def patched_router_select_experts(self, *args, **kwargs):
@@ -1571,7 +1939,7 @@ def _install_worker_hooks() -> None:
 
     def patched_qwen2_mlp_forward(self, *args, **kwargs):
         return _measure_worker_section(
-            "ffn",
+            "shared_expert",
             _ORIGINAL_QWEN2_MLP_FORWARD,
             self,
             *args,
@@ -1580,18 +1948,40 @@ def _install_worker_hooks() -> None:
 
     def patched_qwen3_mlp_forward(self, *args, **kwargs):
         return _measure_worker_section(
-            "ffn",
+            "shared_expert",
             _ORIGINAL_QWEN3_MLP_FORWARD,
             self,
             *args,
-            add_to_step_ffn=False,
             **kwargs,
         )
 
     def patched_qwen3_sparse_moe_forward(self, *args, **kwargs):
-        pushed = _push_current_layer(_extract_layer_index_from_module(self))
+        layer_idx = _extract_layer_index_from_module(self)
+        pushed = _push_current_layer(layer_idx)
         try:
-            return _ORIGINAL_QWEN3_SPARSE_MOE_FORWARD(self, *args, **kwargs)
+            return _measure_worker_section(
+                "moe",
+                _ORIGINAL_QWEN3_SPARSE_MOE_FORWARD,
+                self,
+                *args,
+                layer_idx=layer_idx,
+                **kwargs,
+            )
+        finally:
+            _pop_current_layer(pushed)
+
+    def patched_qwen3_next_sparse_moe_forward(self, *args, **kwargs):
+        layer_idx = _extract_layer_index_from_module(self)
+        pushed = _push_current_layer(layer_idx)
+        try:
+            return _measure_worker_section(
+                "moe",
+                _ORIGINAL_QWEN3_NEXT_SPARSE_MOE_FORWARD,
+                self,
+                *args,
+                layer_idx=layer_idx,
+                **kwargs,
+            )
         finally:
             _pop_current_layer(pushed)
 
@@ -1608,6 +1998,7 @@ def _install_worker_hooks() -> None:
             _ORIGINAL_QWEN3_NEXT_ATTN_FORWARD,
             self,
             *args,
+            layer_idx=_extract_layer_index_from_module(self),
             **kwargs,
         )
 
@@ -1617,6 +2008,7 @@ def _install_worker_hooks() -> None:
             _ORIGINAL_QWEN_GDN_FORWARD,
             self,
             *args,
+            layer_idx=_extract_layer_index_from_module(self),
             **kwargs,
         )
 
@@ -1631,7 +2023,7 @@ def _install_worker_hooks() -> None:
 
     def patched_modular_fused_experts(self, *args, **kwargs):
         return _measure_worker_section(
-            "ffn",
+            "routed_expert",
             _ORIGINAL_MODULAR_FUSED_EXPERTS,
             self,
             *args,
@@ -1688,7 +2080,7 @@ def _install_worker_hooks() -> None:
             defer_input_quant=self.fused_experts.expects_unquantized_inputs,
         )
         fused_out = _measure_worker_section(
-            "ffn",
+            "routed_expert",
             self.fused_experts.apply,
             hidden_states=a1q,
             w1=w1,
@@ -1724,6 +2116,7 @@ def _install_worker_hooks() -> None:
     Qwen2MoeMLP.forward = patched_qwen2_mlp_forward
     Qwen3MoeMLP.forward = patched_qwen3_mlp_forward
     Qwen3MoeSparseMoeBlock.forward = patched_qwen3_sparse_moe_forward
+    Qwen3NextSparseMoeBlock.forward = patched_qwen3_next_sparse_moe_forward
     FusedMoE.forward = patched_fused_moe_forward
     Qwen3NextAttention.forward = patched_qwen3_next_attention_forward
     QwenGatedDeltaNetAttention.forward = patched_qwen_gdn_forward
@@ -1734,7 +2127,10 @@ def _install_worker_hooks() -> None:
     GPUModelRunner.propose_draft_token_ids = patched_propose_draft_token_ids
 
 
-def install_experiment_hooks_worker(worker: Any) -> bool:
+def install_experiment_hooks_worker(
+    worker: Any,
+    enable_nvtx_ranges: bool = False,
+) -> bool:
     _install_worker_hooks()
     _WORKER_STATE.enabled = False
     _WORKER_STATE.pending_step_records.clear()
@@ -1744,6 +2140,8 @@ def install_experiment_hooks_worker(worker: Any) -> bool:
     _WORKER_STATE.queued_step_logs = 0
     _WORKER_STATE.next_step_index = 0
     _WORKER_STATE.next_ep_collective_seq_id = 0
+    _WORKER_STATE.enable_nvtx_ranges = enable_nvtx_ranges
+    _WORKER_STATE.synchronize_count = 0
     return True
 
 
@@ -1754,13 +2152,23 @@ def start_condition_collection_worker(worker: Any) -> bool:
     _WORKER_STATE.draft_measure_depth = 0
     _WORKER_STATE.enter_step_logs = 0
     _WORKER_STATE.queued_step_logs = 0
+    _WORKER_STATE.synchronize_count = 0
     return True
 
 
 def stop_condition_collection_worker(worker: Any) -> dict[str, int]:
     _WORKER_STATE.enabled = False
     pending = len(_WORKER_STATE.pending_step_records)
-    _WORKER_STATE.pending_step_records.clear()
+    while _WORKER_STATE.pending_step_records:
+        pending_record = _WORKER_STATE.pending_step_records.popleft()
+        accumulator = pending_record.get("_accumulator")
+        if accumulator is None:
+            continue
+        completion_event = accumulator.completion_event
+        if completion_event is not None:
+            completion_event.synchronize()
+        for event in accumulator.owned_events:
+            _WORKER_STATE.event_pool.release(event)
     _WORKER_STATE.current_step = None
     _WORKER_STATE.draft_measure_depth = 0
     return {"pending_timings": pending}
@@ -1774,10 +2182,18 @@ def pop_step_timing_worker(
     deadline = time.perf_counter() + timeout_s
     while time.perf_counter() < deadline:
         if _WORKER_STATE.pending_step_records:
-            return _WORKER_STATE.pending_step_records.popleft()
+            pending_record = _WORKER_STATE.pending_step_records.popleft()
+            resolved = _resolve_step_accumulator(
+                pending_record.pop("_accumulator")
+            )
+            resolved["metadata"] = pending_record.get("metadata")
+            return resolved
         time.sleep(poll_s)
     if _WORKER_STATE.pending_step_records:
-        return _WORKER_STATE.pending_step_records.popleft()
+        pending_record = _WORKER_STATE.pending_step_records.popleft()
+        resolved = _resolve_step_accumulator(pending_record.pop("_accumulator"))
+        resolved["metadata"] = pending_record.get("metadata")
+        return resolved
     return None
 
 
@@ -1810,12 +2226,12 @@ def _extract_step_phase_boundaries(
 ) -> tuple[float, float]:
     step_start_time_ms = float(worker_trace["step_start_time_ms"])
     prepare_events = [
-        step_start_time_ms + float(event["start_ms"])
+        step_start_time_ms + float(event.get("wall_start_ms", event["start_ms"]))
         for event in worker_trace["events"]
         if str(event["label"]) == "prepare"
     ]
     finalize_events = [
-        step_start_time_ms + float(event["end_ms"])
+        step_start_time_ms + float(event.get("wall_end_ms", event["end_ms"]))
         for event in worker_trace["events"]
         if str(event["label"]) == "finalize"
     ]
@@ -1885,8 +2301,26 @@ class SchedulerStepRecorder:
         self.candidate_step_total_ms: list[float] = []
         self.candidate_step_draft_ms: list[float] = []
         self.candidate_step_ffn_ms: list[float] = []
+        self.candidate_execute_wall_ms: list[float] = []
+        self.candidate_verification_wall_ms: list[float] = []
+        self.candidate_draft_wall_ms: list[float] = []
+        self.candidate_iteration_wall_ms: list[float] = []
+        self.candidate_execute_gpu_ms: list[float] = []
+        self.candidate_verification_gpu_ms: list[float] = []
+        self.candidate_draft_gpu_ms: list[float] = []
+        self.candidate_iteration_gpu_ms: list[float] = []
+        self.candidate_attention_gpu_ms: list[float] = []
+        self.candidate_moe_gpu_ms: list[float] = []
+        self.candidate_gpu_other_ms: list[float] = []
+        self.candidate_timing_complete: list[bool] = []
         self.candidate_step_histograms: list[np.ndarray] = []
         self.candidate_layer_ffn_ms: list[np.ndarray] = []
+        self.candidate_layer_moe_gpu_ms: list[np.ndarray] = []
+        self.candidate_layer_routed_expert_gpu_ms: list[np.ndarray] = []
+        self.candidate_layer_shared_expert_gpu_ms: list[np.ndarray] = []
+        self.candidate_layer_routing_gpu_ms: list[np.ndarray] = []
+        self.candidate_layer_prepare_gpu_ms: list[np.ndarray] = []
+        self.candidate_layer_finalize_gpu_ms: list[np.ndarray] = []
         self.candidate_layer_local_routed_tokens: list[np.ndarray] = []
         self.candidate_layer_local_active_experts: list[np.ndarray] = []
         self.candidate_position_layer_ffn_ms: list[np.ndarray] = []
@@ -1904,7 +2338,11 @@ class SchedulerStepRecorder:
         self.trace_steps_limit = trace_steps_limit
         self.trace_samples: list[dict[str, Any]] = []
 
-    def _build_layer_ffn_ms(self, worker_records: list[dict[str, Any] | None]):
+    def _build_layer_gpu_ms(
+        self,
+        worker_records: list[dict[str, Any] | None],
+        label: str,
+    ) -> np.ndarray:
         values = np.zeros((len(self.layers),), dtype=np.float64)
         layer_to_row = {layer: row for row, layer in enumerate(self.layers)}
         for record in worker_records:
@@ -1913,7 +2351,8 @@ class SchedulerStepRecorder:
             trace = record.get("trace")
             if not trace:
                 continue
-            for raw_layer, elapsed_ms in trace.get("layer_ffn_ms", {}).items():
+            layer_values = trace.get("layer_gpu_ms", {}).get(label, {})
+            for raw_layer, elapsed_ms in layer_values.items():
                 layer = int(raw_layer)
                 row = layer_to_row.get(layer)
                 if row is not None:
@@ -2056,45 +2495,60 @@ class SchedulerStepRecorder:
                 pop_step_timing_worker,
                 timeout=30,
             )
-            raw_step_timing = aggregate_worker_step_timings(
-                [
-                    None if record is None else record["timing"]
-                    for record in worker_records
-                ]
-            )
-            draft_ms = max(
-                (
-                    float(record["timing"].get("draft_ms", 0.0))
-                    for record in worker_records
-                    if record is not None
+            valid_records = [
+                record for record in worker_records if record is not None
+            ]
+            if not valid_records:
+                raise RuntimeError("No CUDA Event timing record was returned.")
+            timing_record = max(
+                valid_records,
+                key=lambda record: float(
+                    record["timing"]["verification_wall_ms"]
                 ),
-                default=0.0,
             )
-            verify_total_ms = max(
-                (
-                    max(
-                        float(record["timing"].get("total_ms", 0.0))
-                        - float(record["timing"].get("draft_ms", 0.0)),
-                        0.0,
-                    )
-                    for record in worker_records
-                    if record is not None
-                ),
-                default=raw_step_timing.total_ms,
-            )
+            timing = timing_record["timing"]
+            draft_ms = float(timing["draft_wall_ms"])
             step_timing = StepTiming(
-                total_ms=verify_total_ms,
-                attention_ms=raw_step_timing.attention_ms,
-                routing_ms=raw_step_timing.routing_ms,
-                prepare_ms=raw_step_timing.prepare_ms,
-                finalize_ms=raw_step_timing.finalize_ms,
-                ffn_ms=raw_step_timing.ffn_ms,
+                total_ms=float(timing["verification_wall_ms"]),
+                attention_ms=float(timing["attention_gpu_ms"]),
+                routing_ms=float(timing["routing_gpu_ms"]),
+                prepare_ms=float(timing["prepare_gpu_ms"]),
+                finalize_ms=float(timing["finalize_gpu_ms"]),
+                ffn_ms=float(timing["routed_expert_gpu_ms"]),
             )
-            layer_ffn_ms = self._build_layer_ffn_ms(worker_records)
+            layer_moe_gpu_ms = self._build_layer_gpu_ms(
+                worker_records,
+                "moe",
+            )
+            layer_routed_expert_gpu_ms = self._build_layer_gpu_ms(
+                worker_records,
+                "routed_expert",
+            )
+            layer_shared_expert_gpu_ms = self._build_layer_gpu_ms(
+                worker_records,
+                "shared_expert",
+            )
+            layer_routing_gpu_ms = self._build_layer_gpu_ms(
+                worker_records,
+                "routing",
+            )
+            layer_prepare_gpu_ms = self._build_layer_gpu_ms(
+                worker_records,
+                "prepare",
+            )
+            layer_finalize_gpu_ms = self._build_layer_gpu_ms(
+                worker_records,
+                "finalize",
+            )
+            layer_ffn_ms = layer_routed_expert_gpu_ms
+            timing_complete = bool(timing["timing_complete"]) and bool(
+                np.all(layer_moe_gpu_ms > 0.0)
+                and np.all(layer_routed_expert_gpu_ms > 0.0)
+            )
             worker_metadata = next(
                 (
                     record["metadata"]
-                    for record in worker_records
+                    for record in valid_records
                     if record is not None and record.get("metadata")
                 ),
                 None,
@@ -2102,7 +2556,7 @@ class SchedulerStepRecorder:
             worker_trace = next(
                 (
                     record["trace"]
-                    for record in worker_records
+                    for record in valid_records
                     if record is not None and record.get("trace") is not None
                 ),
                 None,
@@ -2117,8 +2571,6 @@ class SchedulerStepRecorder:
             )
             captured_step = capture_decision.captured_step
             ffn_ms = float(np.sum(layer_ffn_ms))
-            if ffn_ms <= 0.0:
-                ffn_ms = _close_ffn_component(step_timing)
             first_ep_collective_seq_id = -1
             last_ep_collective_seq_id = -1
             num_ep_collectives = 0
@@ -2170,8 +2622,46 @@ class SchedulerStepRecorder:
             self.candidate_step_total_ms.append(step_timing.total_ms)
             self.candidate_step_draft_ms.append(draft_ms)
             self.candidate_step_ffn_ms.append(ffn_ms)
+            self.candidate_execute_wall_ms.append(
+                float(timing["execute_wall_ms"])
+            )
+            self.candidate_verification_wall_ms.append(
+                float(timing["verification_wall_ms"])
+            )
+            self.candidate_draft_wall_ms.append(
+                float(timing["draft_wall_ms"])
+            )
+            self.candidate_iteration_wall_ms.append(
+                float(timing["iteration_wall_ms"])
+            )
+            self.candidate_execute_gpu_ms.append(
+                float(timing["execute_gpu_ms"])
+            )
+            self.candidate_verification_gpu_ms.append(
+                float(timing["verification_gpu_ms"])
+            )
+            self.candidate_draft_gpu_ms.append(float(timing["draft_gpu_ms"]))
+            self.candidate_iteration_gpu_ms.append(
+                float(timing["iteration_gpu_ms"])
+            )
+            self.candidate_attention_gpu_ms.append(
+                float(timing["attention_gpu_ms"])
+            )
+            self.candidate_moe_gpu_ms.append(float(timing["moe_gpu_ms"]))
+            self.candidate_gpu_other_ms.append(float(timing["gpu_other_ms"]))
+            self.candidate_timing_complete.append(timing_complete)
             self.candidate_step_histograms.append(candidate_histogram)
             self.candidate_layer_ffn_ms.append(layer_ffn_ms)
+            self.candidate_layer_moe_gpu_ms.append(layer_moe_gpu_ms)
+            self.candidate_layer_routed_expert_gpu_ms.append(
+                layer_routed_expert_gpu_ms
+            )
+            self.candidate_layer_shared_expert_gpu_ms.append(
+                layer_shared_expert_gpu_ms
+            )
+            self.candidate_layer_routing_gpu_ms.append(layer_routing_gpu_ms)
+            self.candidate_layer_prepare_gpu_ms.append(layer_prepare_gpu_ms)
+            self.candidate_layer_finalize_gpu_ms.append(layer_finalize_gpu_ms)
             self.candidate_layer_local_routed_tokens.append(local_routed_tokens)
             self.candidate_layer_local_active_experts.append(local_active_experts)
             self.candidate_position_layer_ffn_ms.append(position_layer_ffn_ms)
@@ -2234,6 +2724,7 @@ class SchedulerStepRecorder:
                             "step_end_time_ms": step_end_time_ms,
                             "step_total_ms": float(step_timing.total_ms),
                             "draft_ms": float(draft_ms),
+                            "timing_backend": TIMING_BACKEND,
                             "step_kind": captured_step.step_kind,
                             "total_scheduled_tokens": int(
                                 captured_step.total_scheduled_tokens
@@ -2245,6 +2736,7 @@ class SchedulerStepRecorder:
                                     "start_ms": float(event["start_ms"]),
                                     "end_ms": float(event["end_ms"]),
                                     "duration_ms": float(event["duration_ms"]),
+                                    "layer_idx": event.get("layer_idx"),
                                     "ep_collective_seq_id": (
                                         None
                                         if event.get("ep_collective_seq_id") is None
@@ -2254,12 +2746,27 @@ class SchedulerStepRecorder:
                                 for event in trace_events
                             ],
                             "phase_totals_ms": {
-                                "attention": float(step_timing.attention_ms),
-                                "routing": float(step_timing.routing_ms),
-                                "prepare": float(step_timing.prepare_ms),
-                                "finalize": float(step_timing.finalize_ms),
-                                "ffn": float(ffn_ms),
-                                "draft": float(draft_ms),
+                                "attention_gpu": float(
+                                    timing["attention_gpu_ms"]
+                                ),
+                                "moe_gpu": float(timing["moe_gpu_ms"]),
+                                "gpu_other": float(timing["gpu_other_ms"]),
+                                "routing_gpu": float(
+                                    timing["routing_gpu_ms"]
+                                ),
+                                "prepare_gpu": float(
+                                    timing["prepare_gpu_ms"]
+                                ),
+                                "routed_expert_gpu": float(
+                                    timing["routed_expert_gpu_ms"]
+                                ),
+                                "shared_expert_gpu": float(
+                                    timing["shared_expert_gpu_ms"]
+                                ),
+                                "finalize_gpu": float(
+                                    timing["finalize_gpu_ms"]
+                                ),
+                                "draft_wall": float(draft_ms),
                             },
                         }
                     )
@@ -2418,7 +2925,15 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
     llm = create_llm(args, args.batch_size, args.draft_length)
     scheduler_capacity_config = get_scheduler_capacity_config(llm)
     scheduler, model_executor = get_inproc_handles(llm)
-    model_executor.collective_rpc(install_experiment_hooks_worker, timeout=30)
+    model_executor.collective_rpc(
+        install_experiment_hooks_worker,
+        kwargs={
+            "enable_nvtx_ranges": bool(
+                getattr(args, "enable_nvtx_ranges", False)
+            )
+        },
+        timeout=30,
+    )
 
     sampling_params = SamplingParams(
         temperature=0.0,
@@ -2503,8 +3018,26 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
     candidate_step_total_ms_parts: list[np.ndarray] = []
     candidate_step_draft_ms_parts: list[np.ndarray] = []
     candidate_step_ffn_ms_parts: list[np.ndarray] = []
+    candidate_execute_wall_ms_parts: list[np.ndarray] = []
+    candidate_verification_wall_ms_parts: list[np.ndarray] = []
+    candidate_draft_wall_ms_parts: list[np.ndarray] = []
+    candidate_iteration_wall_ms_parts: list[np.ndarray] = []
+    candidate_execute_gpu_ms_parts: list[np.ndarray] = []
+    candidate_verification_gpu_ms_parts: list[np.ndarray] = []
+    candidate_draft_gpu_ms_parts: list[np.ndarray] = []
+    candidate_iteration_gpu_ms_parts: list[np.ndarray] = []
+    candidate_attention_gpu_ms_parts: list[np.ndarray] = []
+    candidate_moe_gpu_ms_parts: list[np.ndarray] = []
+    candidate_gpu_other_ms_parts: list[np.ndarray] = []
+    candidate_timing_complete_parts: list[np.ndarray] = []
     candidate_step_histogram_parts: list[np.ndarray] = []
     candidate_layer_ffn_ms_parts: list[np.ndarray] = []
+    candidate_layer_moe_gpu_ms_parts: list[np.ndarray] = []
+    candidate_layer_routed_expert_gpu_ms_parts: list[np.ndarray] = []
+    candidate_layer_shared_expert_gpu_ms_parts: list[np.ndarray] = []
+    candidate_layer_routing_gpu_ms_parts: list[np.ndarray] = []
+    candidate_layer_prepare_gpu_ms_parts: list[np.ndarray] = []
+    candidate_layer_finalize_gpu_ms_parts: list[np.ndarray] = []
     candidate_layer_local_routed_tokens_parts: list[np.ndarray] = []
     candidate_layer_local_active_experts_parts: list[np.ndarray] = []
     candidate_position_layer_ffn_ms_parts: list[np.ndarray] = []
@@ -2615,6 +3148,69 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
             candidate_step_ffn_ms_parts.append(
                 np.asarray(recorder.candidate_step_ffn_ms, dtype=np.float64)
             )
+            for parts, values, dtype in (
+                (
+                    candidate_execute_wall_ms_parts,
+                    recorder.candidate_execute_wall_ms,
+                    np.float64,
+                ),
+                (
+                    candidate_verification_wall_ms_parts,
+                    recorder.candidate_verification_wall_ms,
+                    np.float64,
+                ),
+                (
+                    candidate_draft_wall_ms_parts,
+                    recorder.candidate_draft_wall_ms,
+                    np.float64,
+                ),
+                (
+                    candidate_iteration_wall_ms_parts,
+                    recorder.candidate_iteration_wall_ms,
+                    np.float64,
+                ),
+                (
+                    candidate_execute_gpu_ms_parts,
+                    recorder.candidate_execute_gpu_ms,
+                    np.float64,
+                ),
+                (
+                    candidate_verification_gpu_ms_parts,
+                    recorder.candidate_verification_gpu_ms,
+                    np.float64,
+                ),
+                (
+                    candidate_draft_gpu_ms_parts,
+                    recorder.candidate_draft_gpu_ms,
+                    np.float64,
+                ),
+                (
+                    candidate_iteration_gpu_ms_parts,
+                    recorder.candidate_iteration_gpu_ms,
+                    np.float64,
+                ),
+                (
+                    candidate_attention_gpu_ms_parts,
+                    recorder.candidate_attention_gpu_ms,
+                    np.float64,
+                ),
+                (
+                    candidate_moe_gpu_ms_parts,
+                    recorder.candidate_moe_gpu_ms,
+                    np.float64,
+                ),
+                (
+                    candidate_gpu_other_ms_parts,
+                    recorder.candidate_gpu_other_ms,
+                    np.float64,
+                ),
+                (
+                    candidate_timing_complete_parts,
+                    recorder.candidate_timing_complete,
+                    np.bool_,
+                ),
+            ):
+                parts.append(np.asarray(values, dtype=dtype))
             if recorder.candidate_step_histograms:
                 candidate_step_histogram_parts.append(
                     np.stack(recorder.candidate_step_histograms, axis=0).astype(
@@ -2627,6 +3223,35 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
                         np.float64
                     )
                 )
+                for parts, values in (
+                    (
+                        candidate_layer_moe_gpu_ms_parts,
+                        recorder.candidate_layer_moe_gpu_ms,
+                    ),
+                    (
+                        candidate_layer_routed_expert_gpu_ms_parts,
+                        recorder.candidate_layer_routed_expert_gpu_ms,
+                    ),
+                    (
+                        candidate_layer_shared_expert_gpu_ms_parts,
+                        recorder.candidate_layer_shared_expert_gpu_ms,
+                    ),
+                    (
+                        candidate_layer_routing_gpu_ms_parts,
+                        recorder.candidate_layer_routing_gpu_ms,
+                    ),
+                    (
+                        candidate_layer_prepare_gpu_ms_parts,
+                        recorder.candidate_layer_prepare_gpu_ms,
+                    ),
+                    (
+                        candidate_layer_finalize_gpu_ms_parts,
+                        recorder.candidate_layer_finalize_gpu_ms,
+                    ),
+                ):
+                    parts.append(
+                        np.stack(values, axis=0).astype(np.float64)
+                    )
                 candidate_layer_local_routed_tokens_parts.append(
                     np.stack(
                         recorder.candidate_layer_local_routed_tokens, axis=0
@@ -2768,6 +3393,66 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         if candidate_step_ffn_ms_parts
         else _empty_float_array()
     )
+    candidate_execute_wall_ms = (
+        np.concatenate(candidate_execute_wall_ms_parts, axis=0)
+        if candidate_execute_wall_ms_parts
+        else _empty_float_array()
+    )
+    candidate_verification_wall_ms = (
+        np.concatenate(candidate_verification_wall_ms_parts, axis=0)
+        if candidate_verification_wall_ms_parts
+        else _empty_float_array()
+    )
+    candidate_draft_wall_ms = (
+        np.concatenate(candidate_draft_wall_ms_parts, axis=0)
+        if candidate_draft_wall_ms_parts
+        else _empty_float_array()
+    )
+    candidate_iteration_wall_ms = (
+        np.concatenate(candidate_iteration_wall_ms_parts, axis=0)
+        if candidate_iteration_wall_ms_parts
+        else _empty_float_array()
+    )
+    candidate_execute_gpu_ms = (
+        np.concatenate(candidate_execute_gpu_ms_parts, axis=0)
+        if candidate_execute_gpu_ms_parts
+        else _empty_float_array()
+    )
+    candidate_verification_gpu_ms = (
+        np.concatenate(candidate_verification_gpu_ms_parts, axis=0)
+        if candidate_verification_gpu_ms_parts
+        else _empty_float_array()
+    )
+    candidate_draft_gpu_ms = (
+        np.concatenate(candidate_draft_gpu_ms_parts, axis=0)
+        if candidate_draft_gpu_ms_parts
+        else _empty_float_array()
+    )
+    candidate_iteration_gpu_ms = (
+        np.concatenate(candidate_iteration_gpu_ms_parts, axis=0)
+        if candidate_iteration_gpu_ms_parts
+        else _empty_float_array()
+    )
+    candidate_attention_gpu_ms = (
+        np.concatenate(candidate_attention_gpu_ms_parts, axis=0)
+        if candidate_attention_gpu_ms_parts
+        else _empty_float_array()
+    )
+    candidate_moe_gpu_ms = (
+        np.concatenate(candidate_moe_gpu_ms_parts, axis=0)
+        if candidate_moe_gpu_ms_parts
+        else _empty_float_array()
+    )
+    candidate_gpu_other_ms = (
+        np.concatenate(candidate_gpu_other_ms_parts, axis=0)
+        if candidate_gpu_other_ms_parts
+        else _empty_float_array()
+    )
+    candidate_timing_complete = (
+        np.concatenate(candidate_timing_complete_parts, axis=0)
+        if candidate_timing_complete_parts
+        else np.empty((0,), dtype=np.bool_)
+    )
     candidate_step_histograms = (
         np.concatenate(candidate_step_histogram_parts, axis=0)
         if candidate_step_histogram_parts
@@ -2777,6 +3462,31 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         np.concatenate(candidate_layer_ffn_ms_parts, axis=0)
         if candidate_layer_ffn_ms_parts
         else np.empty((0, len(args.layers)), dtype=np.float64)
+    )
+    def concat_layer_timing(parts: list[np.ndarray]) -> np.ndarray:
+        return (
+            np.concatenate(parts, axis=0)
+            if parts
+            else np.empty((0, len(args.layers)), dtype=np.float64)
+        )
+
+    candidate_layer_moe_gpu_ms = concat_layer_timing(
+        candidate_layer_moe_gpu_ms_parts
+    )
+    candidate_layer_routed_expert_gpu_ms = concat_layer_timing(
+        candidate_layer_routed_expert_gpu_ms_parts
+    )
+    candidate_layer_shared_expert_gpu_ms = concat_layer_timing(
+        candidate_layer_shared_expert_gpu_ms_parts
+    )
+    candidate_layer_routing_gpu_ms = concat_layer_timing(
+        candidate_layer_routing_gpu_ms_parts
+    )
+    candidate_layer_prepare_gpu_ms = concat_layer_timing(
+        candidate_layer_prepare_gpu_ms_parts
+    )
+    candidate_layer_finalize_gpu_ms = concat_layer_timing(
+        candidate_layer_finalize_gpu_ms_parts
     )
     candidate_layer_local_routed_tokens = (
         np.concatenate(candidate_layer_local_routed_tokens_parts, axis=0)
@@ -2868,8 +3578,30 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
             candidate_step_total_ms=candidate_step_total_ms,
             candidate_step_draft_ms=candidate_step_draft_ms,
             candidate_step_ffn_ms=candidate_step_ffn_ms,
+            candidate_execute_wall_ms=candidate_execute_wall_ms,
+            candidate_verification_wall_ms=candidate_verification_wall_ms,
+            candidate_draft_wall_ms=candidate_draft_wall_ms,
+            candidate_iteration_wall_ms=candidate_iteration_wall_ms,
+            candidate_execute_gpu_ms=candidate_execute_gpu_ms,
+            candidate_verification_gpu_ms=candidate_verification_gpu_ms,
+            candidate_draft_gpu_ms=candidate_draft_gpu_ms,
+            candidate_iteration_gpu_ms=candidate_iteration_gpu_ms,
+            candidate_attention_gpu_ms=candidate_attention_gpu_ms,
+            candidate_moe_gpu_ms=candidate_moe_gpu_ms,
+            candidate_gpu_other_ms=candidate_gpu_other_ms,
+            candidate_timing_complete=candidate_timing_complete,
             candidate_step_histograms=candidate_step_histograms,
             candidate_layer_ffn_ms=candidate_layer_ffn_ms,
+            candidate_layer_moe_gpu_ms=candidate_layer_moe_gpu_ms,
+            candidate_layer_routed_expert_gpu_ms=(
+                candidate_layer_routed_expert_gpu_ms
+            ),
+            candidate_layer_shared_expert_gpu_ms=(
+                candidate_layer_shared_expert_gpu_ms
+            ),
+            candidate_layer_routing_gpu_ms=candidate_layer_routing_gpu_ms,
+            candidate_layer_prepare_gpu_ms=candidate_layer_prepare_gpu_ms,
+            candidate_layer_finalize_gpu_ms=candidate_layer_finalize_gpu_ms,
             candidate_layer_local_routed_tokens=candidate_layer_local_routed_tokens,
             candidate_layer_local_active_experts=(
                 candidate_layer_local_active_experts
@@ -2958,8 +3690,30 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         candidate_step_total_ms=candidate_step_total_ms,
         candidate_step_draft_ms=candidate_step_draft_ms,
         candidate_step_ffn_ms=candidate_step_ffn_ms,
+        candidate_execute_wall_ms=candidate_execute_wall_ms,
+        candidate_verification_wall_ms=candidate_verification_wall_ms,
+        candidate_draft_wall_ms=candidate_draft_wall_ms,
+        candidate_iteration_wall_ms=candidate_iteration_wall_ms,
+        candidate_execute_gpu_ms=candidate_execute_gpu_ms,
+        candidate_verification_gpu_ms=candidate_verification_gpu_ms,
+        candidate_draft_gpu_ms=candidate_draft_gpu_ms,
+        candidate_iteration_gpu_ms=candidate_iteration_gpu_ms,
+        candidate_attention_gpu_ms=candidate_attention_gpu_ms,
+        candidate_moe_gpu_ms=candidate_moe_gpu_ms,
+        candidate_gpu_other_ms=candidate_gpu_other_ms,
+        candidate_timing_complete=candidate_timing_complete,
         candidate_step_histograms=candidate_step_histograms,
         candidate_layer_ffn_ms=candidate_layer_ffn_ms,
+        candidate_layer_moe_gpu_ms=candidate_layer_moe_gpu_ms,
+        candidate_layer_routed_expert_gpu_ms=(
+            candidate_layer_routed_expert_gpu_ms
+        ),
+        candidate_layer_shared_expert_gpu_ms=(
+            candidate_layer_shared_expert_gpu_ms
+        ),
+        candidate_layer_routing_gpu_ms=candidate_layer_routing_gpu_ms,
+        candidate_layer_prepare_gpu_ms=candidate_layer_prepare_gpu_ms,
+        candidate_layer_finalize_gpu_ms=candidate_layer_finalize_gpu_ms,
         candidate_layer_local_routed_tokens=candidate_layer_local_routed_tokens,
         candidate_layer_local_active_experts=candidate_layer_local_active_experts,
         candidate_position_layer_ffn_ms=candidate_position_layer_ffn_ms,
@@ -3088,8 +3842,59 @@ def load_rank_condition_data(path: Path) -> RankConditionData:
             candidate_step_total_ms=np.asarray(data["candidate_step_total_ms"]),
             candidate_step_draft_ms=np.asarray(data["candidate_step_draft_ms"]),
             candidate_step_ffn_ms=np.asarray(data["candidate_step_ffn_ms"]),
+            candidate_execute_wall_ms=np.asarray(
+                data["candidate_execute_wall_ms"]
+            ),
+            candidate_verification_wall_ms=np.asarray(
+                data["candidate_verification_wall_ms"]
+            ),
+            candidate_draft_wall_ms=np.asarray(
+                data["candidate_draft_wall_ms"]
+            ),
+            candidate_iteration_wall_ms=np.asarray(
+                data["candidate_iteration_wall_ms"]
+            ),
+            candidate_execute_gpu_ms=np.asarray(
+                data["candidate_execute_gpu_ms"]
+            ),
+            candidate_verification_gpu_ms=np.asarray(
+                data["candidate_verification_gpu_ms"]
+            ),
+            candidate_draft_gpu_ms=np.asarray(data["candidate_draft_gpu_ms"]),
+            candidate_iteration_gpu_ms=np.asarray(
+                data["candidate_iteration_gpu_ms"]
+            ),
+            candidate_attention_gpu_ms=np.asarray(
+                data["candidate_attention_gpu_ms"]
+            ),
+            candidate_moe_gpu_ms=np.asarray(data["candidate_moe_gpu_ms"]),
+            candidate_gpu_other_ms=np.asarray(
+                data["candidate_gpu_other_ms"]
+            ),
+            candidate_timing_complete=np.asarray(
+                data["candidate_timing_complete"],
+                dtype=np.bool_,
+            ),
             candidate_step_histograms=np.asarray(data["candidate_step_histograms"]),
             candidate_layer_ffn_ms=candidate_layer_ffn_ms,
+            candidate_layer_moe_gpu_ms=np.asarray(
+                data["candidate_layer_moe_gpu_ms"]
+            ),
+            candidate_layer_routed_expert_gpu_ms=np.asarray(
+                data["candidate_layer_routed_expert_gpu_ms"]
+            ),
+            candidate_layer_shared_expert_gpu_ms=np.asarray(
+                data["candidate_layer_shared_expert_gpu_ms"]
+            ),
+            candidate_layer_routing_gpu_ms=np.asarray(
+                data["candidate_layer_routing_gpu_ms"]
+            ),
+            candidate_layer_prepare_gpu_ms=np.asarray(
+                data["candidate_layer_prepare_gpu_ms"]
+            ),
+            candidate_layer_finalize_gpu_ms=np.asarray(
+                data["candidate_layer_finalize_gpu_ms"]
+            ),
             candidate_layer_local_routed_tokens=np.asarray(
                 data["candidate_layer_local_routed_tokens"]
             ),
@@ -3272,9 +4077,47 @@ def _aggregate_rank_condition_data(
                 "candidate_step_total_ms": partial.candidate_step_total_ms,
                 "candidate_step_draft_ms": partial.candidate_step_draft_ms,
                 "candidate_step_ffn_ms": partial.candidate_step_ffn_ms,
+                "candidate_execute_wall_ms": partial.candidate_execute_wall_ms,
+                "candidate_verification_wall_ms": (
+                    partial.candidate_verification_wall_ms
+                ),
+                "candidate_draft_wall_ms": partial.candidate_draft_wall_ms,
+                "candidate_iteration_wall_ms": (
+                    partial.candidate_iteration_wall_ms
+                ),
+                "candidate_execute_gpu_ms": partial.candidate_execute_gpu_ms,
+                "candidate_verification_gpu_ms": (
+                    partial.candidate_verification_gpu_ms
+                ),
+                "candidate_draft_gpu_ms": partial.candidate_draft_gpu_ms,
+                "candidate_iteration_gpu_ms": (
+                    partial.candidate_iteration_gpu_ms
+                ),
+                "candidate_attention_gpu_ms": partial.candidate_attention_gpu_ms,
+                "candidate_moe_gpu_ms": partial.candidate_moe_gpu_ms,
+                "candidate_gpu_other_ms": partial.candidate_gpu_other_ms,
+                "candidate_timing_complete": partial.candidate_timing_complete,
                 "candidate_step_total_tokens": partial.candidate_step_total_tokens,
                 "candidate_step_histograms": partial.candidate_step_histograms,
                 "candidate_layer_ffn_ms": partial.candidate_layer_ffn_ms,
+                "candidate_layer_moe_gpu_ms": (
+                    partial.candidate_layer_moe_gpu_ms
+                ),
+                "candidate_layer_routed_expert_gpu_ms": (
+                    partial.candidate_layer_routed_expert_gpu_ms
+                ),
+                "candidate_layer_shared_expert_gpu_ms": (
+                    partial.candidate_layer_shared_expert_gpu_ms
+                ),
+                "candidate_layer_routing_gpu_ms": (
+                    partial.candidate_layer_routing_gpu_ms
+                ),
+                "candidate_layer_prepare_gpu_ms": (
+                    partial.candidate_layer_prepare_gpu_ms
+                ),
+                "candidate_layer_finalize_gpu_ms": (
+                    partial.candidate_layer_finalize_gpu_ms
+                ),
                 "candidate_layer_local_routed_tokens": (
                     partial.candidate_layer_local_routed_tokens
                 ),
@@ -3393,6 +4236,8 @@ def _aggregate_rank_condition_data(
         ),
         mixed_step_policy="include_all_global_barriers",
         tpot_definition=TPOT_DEFINITION,
+        timing_backend=TIMING_BACKEND,
+        timing_scope=TIMING_SCOPE,
         selected_dataset_indices=selected_indices,
         prompt_lengths=prompt_lengths,
         output_lengths=output_lengths,
@@ -3438,8 +4283,30 @@ def _aggregate_rank_condition_data(
             global_steps.rank_barrier_num_ep_collectives
         ),
         rank_step_kinds=global_steps.rank_step_kinds,
+        rank_execute_wall_ms=global_steps.rank_execute_wall_ms,
+        rank_verification_wall_ms=global_steps.rank_verification_wall_ms,
+        rank_draft_wall_ms=global_steps.rank_draft_wall_ms,
+        rank_iteration_wall_ms=global_steps.rank_iteration_wall_ms,
+        rank_execute_gpu_ms=global_steps.rank_execute_gpu_ms,
+        rank_verification_gpu_ms=global_steps.rank_verification_gpu_ms,
+        rank_draft_gpu_ms=global_steps.rank_draft_gpu_ms,
+        rank_iteration_gpu_ms=global_steps.rank_iteration_gpu_ms,
+        rank_attention_gpu_ms=global_steps.rank_attention_gpu_ms,
+        rank_moe_gpu_ms=global_steps.rank_moe_gpu_ms,
+        rank_gpu_other_ms=global_steps.rank_gpu_other_ms,
+        rank_timing_complete=global_steps.rank_timing_complete,
         rank_step_total_ms=global_steps.rank_step_total_ms,
         rank_step_draft_ms=global_steps.rank_step_draft_ms,
+        rank_layer_moe_gpu_ms=global_steps.rank_layer_moe_gpu_ms,
+        rank_layer_routed_expert_gpu_ms=(
+            global_steps.rank_layer_routed_expert_gpu_ms
+        ),
+        rank_layer_shared_expert_gpu_ms=(
+            global_steps.rank_layer_shared_expert_gpu_ms
+        ),
+        rank_layer_routing_gpu_ms=global_steps.rank_layer_routing_gpu_ms,
+        rank_layer_prepare_gpu_ms=global_steps.rank_layer_prepare_gpu_ms,
+        rank_layer_finalize_gpu_ms=global_steps.rank_layer_finalize_gpu_ms,
         rank_layer_ffn_ms=global_steps.rank_layer_ffn_ms,
         rank_layer_local_routed_tokens=(
             global_steps.rank_layer_local_routed_tokens
@@ -3455,6 +4322,28 @@ def _aggregate_rank_condition_data(
         global_step_total_ms=global_steps.global_step_total_ms,
         global_draft_ms=global_steps.global_draft_ms,
         global_step_ffn_ms=global_steps.global_step_ffn_ms,
+        global_critical_rank_indices=global_steps.global_critical_rank_indices,
+        global_verification_wall_ms=global_steps.global_verification_wall_ms,
+        global_iteration_wall_ms=global_steps.global_iteration_wall_ms,
+        global_draft_wall_ms=global_steps.global_draft_wall_ms,
+        global_verification_gpu_total_ms=(
+            global_steps.global_verification_gpu_total_ms
+        ),
+        global_attention_gpu_ms=global_steps.global_attention_gpu_ms,
+        global_moe_gpu_ms=global_steps.global_moe_gpu_ms,
+        global_gpu_other_ms=global_steps.global_gpu_other_ms,
+        global_step_sorted_rank_routed_expert_gpu_ms=(
+            global_steps.global_step_sorted_rank_routed_expert_gpu_ms
+        ),
+        global_step_sorted_rank_moe_gpu_ms=(
+            global_steps.global_step_sorted_rank_moe_gpu_ms
+        ),
+        global_step_routed_expert_max_mean_ratio=(
+            global_steps.global_step_routed_expert_max_mean_ratio
+        ),
+        global_step_moe_max_mean_ratio=(
+            global_steps.global_step_moe_max_mean_ratio
+        ),
         global_step_sorted_rank_ffn_ms=(
             global_steps.global_step_sorted_rank_ffn_ms
         ),
@@ -3636,6 +4525,8 @@ def _build_collect_one_command(
     )
     command.extend(["--layers", *(str(layer) for layer in args.layers)])
     command.append("--enforce-eager" if args.enforce_eager else "--no-enforce-eager")
+    if getattr(args, "enable_nvtx_ranges", False):
+        command.append("--enable-nvtx-ranges")
     return command
 
 

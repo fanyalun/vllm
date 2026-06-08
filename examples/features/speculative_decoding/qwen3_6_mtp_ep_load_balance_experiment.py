@@ -72,6 +72,7 @@ def add_collect_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--warmup-rounds", type=int, default=1)
     parser.add_argument("--trace-steps-per-rank", type=int, default=0)
+    parser.add_argument("--enable-nvtx-ranges", action="store_true")
     parser.add_argument("--output-dir", type=Path, default=None)
 
     # Collection subprocesses use the same public `collect` mode.
@@ -111,7 +112,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     collect_parser = subparsers.add_parser(
         "collect",
-        help="Collect schema v9 raw data for all configured conditions.",
+        help="Collect schema v10 CUDA Event raw data for all conditions.",
     )
     add_collect_args(collect_parser)
 

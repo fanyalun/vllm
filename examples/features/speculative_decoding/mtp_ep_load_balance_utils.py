@@ -9,7 +9,9 @@ from typing import Any
 
 import numpy as np
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
+TIMING_BACKEND = "cuda_event_deferred"
+TIMING_SCOPE = "wall_critical_rank_cuda_event"
 
 DEFAULT_MODEL = "Qwen/Qwen3.6-35B-A3B"
 DEFAULT_DATASET = "likaixin/InstructCoder"
@@ -85,8 +87,26 @@ class GlobalStepTimingAggregation:
     rank_barrier_last_ep_collective_seq_ids: np.ndarray
     rank_barrier_num_ep_collectives: np.ndarray
     rank_step_kinds: np.ndarray
+    rank_execute_wall_ms: np.ndarray
+    rank_verification_wall_ms: np.ndarray
+    rank_draft_wall_ms: np.ndarray
+    rank_iteration_wall_ms: np.ndarray
+    rank_execute_gpu_ms: np.ndarray
+    rank_verification_gpu_ms: np.ndarray
+    rank_draft_gpu_ms: np.ndarray
+    rank_iteration_gpu_ms: np.ndarray
+    rank_attention_gpu_ms: np.ndarray
+    rank_moe_gpu_ms: np.ndarray
+    rank_gpu_other_ms: np.ndarray
+    rank_timing_complete: np.ndarray
     rank_step_total_ms: np.ndarray
     rank_step_draft_ms: np.ndarray
+    rank_layer_moe_gpu_ms: np.ndarray
+    rank_layer_routed_expert_gpu_ms: np.ndarray
+    rank_layer_shared_expert_gpu_ms: np.ndarray
+    rank_layer_routing_gpu_ms: np.ndarray
+    rank_layer_prepare_gpu_ms: np.ndarray
+    rank_layer_finalize_gpu_ms: np.ndarray
     rank_layer_ffn_ms: np.ndarray
     rank_layer_local_routed_tokens: np.ndarray
     rank_layer_local_active_experts: np.ndarray
@@ -95,6 +115,18 @@ class GlobalStepTimingAggregation:
     global_step_total_ms: np.ndarray
     global_draft_ms: np.ndarray
     global_step_ffn_ms: np.ndarray
+    global_critical_rank_indices: np.ndarray
+    global_verification_wall_ms: np.ndarray
+    global_iteration_wall_ms: np.ndarray
+    global_draft_wall_ms: np.ndarray
+    global_verification_gpu_total_ms: np.ndarray
+    global_attention_gpu_ms: np.ndarray
+    global_moe_gpu_ms: np.ndarray
+    global_gpu_other_ms: np.ndarray
+    global_step_sorted_rank_routed_expert_gpu_ms: np.ndarray
+    global_step_sorted_rank_moe_gpu_ms: np.ndarray
+    global_step_routed_expert_max_mean_ratio: np.ndarray
+    global_step_moe_max_mean_ratio: np.ndarray
     global_step_sorted_rank_ffn_ms: np.ndarray
     global_step_sorted_rank_local_routed_tokens: np.ndarray
     global_step_sorted_rank_local_active_experts: np.ndarray
@@ -128,6 +160,74 @@ class FinishedRequestStatTotals:
     spec_num_drafts: int = 0
     spec_num_draft_tokens: int = 0
     spec_num_accepted_tokens: int = 0
+
+
+def merge_intervals(
+    intervals: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+    *,
+    tol_ms: float = 1e-9,
+) -> list[tuple[float, float]]:
+    normalized = sorted(
+        (float(start), float(end))
+        for start, end in intervals
+        if math.isfinite(start) and math.isfinite(end) and end >= start
+    )
+    merged: list[tuple[float, float]] = []
+    for start, end in normalized:
+        if not merged or start > merged[-1][1] + tol_ms:
+            merged.append((start, end))
+            continue
+        merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+    return merged
+
+
+def interval_union_duration_ms(
+    intervals: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+) -> float:
+    return float(sum(end - start for start, end in merge_intervals(intervals)))
+
+
+def interval_overlap_duration_ms(
+    first: tuple[float, float],
+    second: tuple[float, float],
+) -> float:
+    return max(min(first[1], second[1]) - max(first[0], second[0]), 0.0)
+
+
+def interval_set_overlap_duration_ms(
+    first: list[tuple[float, float]],
+    second: list[tuple[float, float]],
+) -> float:
+    first_merged = merge_intervals(first)
+    second_merged = merge_intervals(second)
+    first_idx = 0
+    second_idx = 0
+    overlap_ms = 0.0
+    while first_idx < len(first_merged) and second_idx < len(second_merged):
+        first_interval = first_merged[first_idx]
+        second_interval = second_merged[second_idx]
+        overlap_ms += interval_overlap_duration_ms(
+            first_interval,
+            second_interval,
+        )
+        if first_interval[1] <= second_interval[1]:
+            first_idx += 1
+        else:
+            second_idx += 1
+    return float(overlap_ms)
+
+
+def subtract_interval_overlap_ms(
+    base: tuple[float, float],
+    excluded: list[tuple[float, float]],
+) -> float:
+    base_duration_ms = max(float(base[1]) - float(base[0]), 0.0)
+    clipped = [
+        (max(base[0], start), min(base[1], end))
+        for start, end in excluded
+        if end > base[0] and start < base[1]
+    ]
+    return max(base_duration_ms - interval_union_duration_ms(clipped), 0.0)
 
 
 def classify_step_capture(
@@ -730,6 +830,7 @@ def aggregate_global_step_time_components(
             rank_data["candidate_num_ep_collectives"], dtype=np.int64
         )
         step_kinds = np.asarray(rank_data["candidate_step_kinds"], dtype=np.str_)
+        size = first_seq_ids.shape[0]
         step_total_ms = np.asarray(
             rank_data["candidate_step_total_ms"], dtype=np.float64
         )
@@ -746,13 +847,120 @@ def aggregate_global_step_time_components(
         layer_ffn_ms = np.asarray(
             rank_data["candidate_layer_ffn_ms"], dtype=np.float64
         )
+        execute_wall_ms = np.asarray(
+            rank_data.get("candidate_execute_wall_ms", step_total_ms),
+            dtype=np.float64,
+        )
+        verification_wall_ms = np.asarray(
+            rank_data.get("candidate_verification_wall_ms", step_total_ms),
+            dtype=np.float64,
+        )
+        draft_wall_ms = np.asarray(
+            rank_data.get("candidate_draft_wall_ms", step_draft_ms),
+            dtype=np.float64,
+        )
+        iteration_wall_ms = np.asarray(
+            rank_data.get(
+                "candidate_iteration_wall_ms",
+                verification_wall_ms + draft_wall_ms,
+            ),
+            dtype=np.float64,
+        )
+        execute_gpu_ms = np.asarray(
+            rank_data.get("candidate_execute_gpu_ms", step_total_ms),
+            dtype=np.float64,
+        )
+        verification_gpu_ms = np.asarray(
+            rank_data.get("candidate_verification_gpu_ms", step_total_ms),
+            dtype=np.float64,
+        )
+        draft_gpu_ms = np.asarray(
+            rank_data.get("candidate_draft_gpu_ms", step_draft_ms),
+            dtype=np.float64,
+        )
+        iteration_gpu_ms = np.asarray(
+            rank_data.get(
+                "candidate_iteration_gpu_ms",
+                verification_gpu_ms + draft_gpu_ms,
+            ),
+            dtype=np.float64,
+        )
+        attention_gpu_ms = np.asarray(
+            rank_data.get(
+                "candidate_attention_gpu_ms",
+                np.zeros((size,), dtype=np.float64),
+            ),
+            dtype=np.float64,
+        )
+        moe_gpu_ms = np.asarray(
+            rank_data.get(
+                "candidate_moe_gpu_ms",
+                np.sum(layer_ffn_ms, axis=1, dtype=np.float64),
+            ),
+            dtype=np.float64,
+        )
+        gpu_other_ms = np.asarray(
+            rank_data.get(
+                "candidate_gpu_other_ms",
+                np.maximum(
+                    verification_gpu_ms - attention_gpu_ms - moe_gpu_ms,
+                    0.0,
+                ),
+            ),
+            dtype=np.float64,
+        )
+        timing_complete = np.asarray(
+            rank_data.get(
+                "candidate_timing_complete",
+                np.ones((size,), dtype=np.bool_),
+            ),
+            dtype=np.bool_,
+        )
+        layer_moe_gpu_ms = np.asarray(
+            rank_data.get("candidate_layer_moe_gpu_ms", layer_ffn_ms),
+            dtype=np.float64,
+        )
+        layer_routed_expert_gpu_ms = np.asarray(
+            rank_data.get(
+                "candidate_layer_routed_expert_gpu_ms",
+                layer_ffn_ms,
+            ),
+            dtype=np.float64,
+        )
+        layer_shared_expert_gpu_ms = np.asarray(
+            rank_data.get(
+                "candidate_layer_shared_expert_gpu_ms",
+                np.zeros_like(layer_ffn_ms),
+            ),
+            dtype=np.float64,
+        )
+        layer_routing_gpu_ms = np.asarray(
+            rank_data.get(
+                "candidate_layer_routing_gpu_ms",
+                np.zeros_like(layer_ffn_ms),
+            ),
+            dtype=np.float64,
+        )
+        layer_prepare_gpu_ms = np.asarray(
+            rank_data.get(
+                "candidate_layer_prepare_gpu_ms",
+                np.zeros_like(layer_ffn_ms),
+            ),
+            dtype=np.float64,
+        )
+        layer_finalize_gpu_ms = np.asarray(
+            rank_data.get(
+                "candidate_layer_finalize_gpu_ms",
+                np.zeros_like(layer_ffn_ms),
+            ),
+            dtype=np.float64,
+        )
         layer_local_routed_tokens = np.asarray(
             rank_data["candidate_layer_local_routed_tokens"], dtype=np.int64
         )
         layer_local_active_experts = np.asarray(
             rank_data["candidate_layer_local_active_experts"], dtype=np.int64
         )
-        size = first_seq_ids.shape[0]
         position_layer_ffn_ms = np.asarray(
             rank_data.get(
                 "candidate_position_layer_ffn_ms",
@@ -803,6 +1011,18 @@ def aggregate_global_step_time_components(
             ("candidate_step_draft_ms", step_draft_ms),
             ("candidate_step_ffn_ms", step_ffn_ms),
             ("candidate_step_total_tokens", step_total_tokens),
+            ("candidate_execute_wall_ms", execute_wall_ms),
+            ("candidate_verification_wall_ms", verification_wall_ms),
+            ("candidate_draft_wall_ms", draft_wall_ms),
+            ("candidate_iteration_wall_ms", iteration_wall_ms),
+            ("candidate_execute_gpu_ms", execute_gpu_ms),
+            ("candidate_verification_gpu_ms", verification_gpu_ms),
+            ("candidate_draft_gpu_ms", draft_gpu_ms),
+            ("candidate_iteration_gpu_ms", iteration_gpu_ms),
+            ("candidate_attention_gpu_ms", attention_gpu_ms),
+            ("candidate_moe_gpu_ms", moe_gpu_ms),
+            ("candidate_gpu_other_ms", gpu_other_ms),
+            ("candidate_timing_complete", timing_complete),
         ):
             if array.shape[0] != size:
                 raise ValueError(
@@ -819,6 +1039,18 @@ def aggregate_global_step_time_components(
             ("candidate_layer_ffn_ms", layer_ffn_ms),
             ("candidate_layer_local_routed_tokens", layer_local_routed_tokens),
             ("candidate_layer_local_active_experts", layer_local_active_experts),
+            ("candidate_layer_moe_gpu_ms", layer_moe_gpu_ms),
+            (
+                "candidate_layer_routed_expert_gpu_ms",
+                layer_routed_expert_gpu_ms,
+            ),
+            (
+                "candidate_layer_shared_expert_gpu_ms",
+                layer_shared_expert_gpu_ms,
+            ),
+            ("candidate_layer_routing_gpu_ms", layer_routing_gpu_ms),
+            ("candidate_layer_prepare_gpu_ms", layer_prepare_gpu_ms),
+            ("candidate_layer_finalize_gpu_ms", layer_finalize_gpu_ms),
         ):
             if array.shape != (size, len(layers)):
                 raise ValueError(
@@ -914,9 +1146,31 @@ def aggregate_global_step_time_components(
                     "step_total_ms": float(step_total_ms[idx]),
                     "step_draft_ms": float(step_draft_ms[idx]),
                     "step_ffn_ms": float(step_ffn_ms[idx]),
+                    "execute_wall_ms": float(execute_wall_ms[idx]),
+                    "verification_wall_ms": float(verification_wall_ms[idx]),
+                    "draft_wall_ms": float(draft_wall_ms[idx]),
+                    "iteration_wall_ms": float(iteration_wall_ms[idx]),
+                    "execute_gpu_ms": float(execute_gpu_ms[idx]),
+                    "verification_gpu_ms": float(verification_gpu_ms[idx]),
+                    "draft_gpu_ms": float(draft_gpu_ms[idx]),
+                    "iteration_gpu_ms": float(iteration_gpu_ms[idx]),
+                    "attention_gpu_ms": float(attention_gpu_ms[idx]),
+                    "moe_gpu_ms": float(moe_gpu_ms[idx]),
+                    "gpu_other_ms": float(gpu_other_ms[idx]),
+                    "timing_complete": bool(timing_complete[idx]),
                     "step_total_tokens": int(step_total_tokens[idx]),
                     "step_histograms": step_histograms[idx],
                     "layer_ffn_ms": layer_ffn_ms[idx],
+                    "layer_moe_gpu_ms": layer_moe_gpu_ms[idx],
+                    "layer_routed_expert_gpu_ms": (
+                        layer_routed_expert_gpu_ms[idx]
+                    ),
+                    "layer_shared_expert_gpu_ms": (
+                        layer_shared_expert_gpu_ms[idx]
+                    ),
+                    "layer_routing_gpu_ms": layer_routing_gpu_ms[idx],
+                    "layer_prepare_gpu_ms": layer_prepare_gpu_ms[idx],
+                    "layer_finalize_gpu_ms": layer_finalize_gpu_ms[idx],
                     "layer_local_routed_tokens": layer_local_routed_tokens[idx],
                     "layer_local_active_experts": layer_local_active_experts[idx],
                     "position_layer_ffn_ms": position_layer_ffn_ms[idx],
@@ -943,8 +1197,26 @@ def aggregate_global_step_time_components(
     rank_barrier_last_seq_ids: list[np.ndarray] = []
     rank_barrier_num_collectives: list[np.ndarray] = []
     rank_step_kinds: list[np.ndarray] = []
+    rank_execute_wall_ms: list[np.ndarray] = []
+    rank_verification_wall_ms: list[np.ndarray] = []
+    rank_draft_wall_ms: list[np.ndarray] = []
+    rank_iteration_wall_ms: list[np.ndarray] = []
+    rank_execute_gpu_ms: list[np.ndarray] = []
+    rank_verification_gpu_ms: list[np.ndarray] = []
+    rank_draft_gpu_ms: list[np.ndarray] = []
+    rank_iteration_gpu_ms: list[np.ndarray] = []
+    rank_attention_gpu_ms: list[np.ndarray] = []
+    rank_moe_gpu_ms: list[np.ndarray] = []
+    rank_gpu_other_ms: list[np.ndarray] = []
+    rank_timing_complete: list[np.ndarray] = []
     rank_step_total_ms: list[np.ndarray] = []
     rank_step_draft_ms: list[np.ndarray] = []
+    rank_layer_moe_gpu_ms: list[np.ndarray] = []
+    rank_layer_routed_expert_gpu_ms: list[np.ndarray] = []
+    rank_layer_shared_expert_gpu_ms: list[np.ndarray] = []
+    rank_layer_routing_gpu_ms: list[np.ndarray] = []
+    rank_layer_prepare_gpu_ms: list[np.ndarray] = []
+    rank_layer_finalize_gpu_ms: list[np.ndarray] = []
     rank_layer_ffn_ms: list[np.ndarray] = []
     rank_layer_local_routed_tokens: list[np.ndarray] = []
     rank_layer_local_active_experts: list[np.ndarray] = []
@@ -953,6 +1225,18 @@ def aggregate_global_step_time_components(
     global_step_total_ms: list[float] = []
     global_draft_ms: list[float] = []
     global_step_ffn_ms: list[float] = []
+    global_critical_rank_indices: list[int] = []
+    global_verification_wall_ms: list[float] = []
+    global_iteration_wall_ms: list[float] = []
+    global_draft_wall_ms: list[float] = []
+    global_verification_gpu_total_ms: list[float] = []
+    global_attention_gpu_ms: list[float] = []
+    global_moe_gpu_ms: list[float] = []
+    global_gpu_other_ms: list[float] = []
+    global_step_sorted_rank_routed_expert_gpu_ms: list[np.ndarray] = []
+    global_step_sorted_rank_moe_gpu_ms: list[np.ndarray] = []
+    global_step_routed_expert_max_mean_ratio: list[float] = []
+    global_step_moe_max_mean_ratio: list[float] = []
     global_step_sorted_rank_ffn_ms: list[np.ndarray] = []
     global_step_sorted_rank_local_routed_tokens: list[np.ndarray] = []
     global_step_sorted_rank_local_active_experts: list[np.ndarray] = []
@@ -1008,6 +1292,78 @@ def aggregate_global_step_time_components(
         )
         per_rank_layer_ffn_ms = np.stack(
             [record["layer_ffn_ms"] for record in records], axis=0
+        ).astype(np.float64)
+        per_rank_execute_wall_ms = np.asarray(
+            [float(record["execute_wall_ms"]) for record in records],
+            dtype=np.float64,
+        )
+        per_rank_verification_wall_ms = np.asarray(
+            [float(record["verification_wall_ms"]) for record in records],
+            dtype=np.float64,
+        )
+        per_rank_draft_wall_ms = np.asarray(
+            [float(record["draft_wall_ms"]) for record in records],
+            dtype=np.float64,
+        )
+        per_rank_iteration_wall_ms = np.asarray(
+            [float(record["iteration_wall_ms"]) for record in records],
+            dtype=np.float64,
+        )
+        per_rank_execute_gpu_ms = np.asarray(
+            [float(record["execute_gpu_ms"]) for record in records],
+            dtype=np.float64,
+        )
+        per_rank_verification_gpu_ms = np.asarray(
+            [float(record["verification_gpu_ms"]) for record in records],
+            dtype=np.float64,
+        )
+        per_rank_draft_gpu_ms = np.asarray(
+            [float(record["draft_gpu_ms"]) for record in records],
+            dtype=np.float64,
+        )
+        per_rank_iteration_gpu_ms = np.asarray(
+            [float(record["iteration_gpu_ms"]) for record in records],
+            dtype=np.float64,
+        )
+        per_rank_attention_gpu_ms = np.asarray(
+            [float(record["attention_gpu_ms"]) for record in records],
+            dtype=np.float64,
+        )
+        per_rank_moe_gpu_ms = np.asarray(
+            [float(record["moe_gpu_ms"]) for record in records],
+            dtype=np.float64,
+        )
+        per_rank_gpu_other_ms = np.asarray(
+            [float(record["gpu_other_ms"]) for record in records],
+            dtype=np.float64,
+        )
+        per_rank_timing_complete = np.asarray(
+            [bool(record["timing_complete"]) for record in records],
+            dtype=np.bool_,
+        )
+        per_rank_layer_moe_gpu_ms = np.stack(
+            [record["layer_moe_gpu_ms"] for record in records],
+            axis=0,
+        ).astype(np.float64)
+        per_rank_layer_routed_expert_gpu_ms = np.stack(
+            [record["layer_routed_expert_gpu_ms"] for record in records],
+            axis=0,
+        ).astype(np.float64)
+        per_rank_layer_shared_expert_gpu_ms = np.stack(
+            [record["layer_shared_expert_gpu_ms"] for record in records],
+            axis=0,
+        ).astype(np.float64)
+        per_rank_layer_routing_gpu_ms = np.stack(
+            [record["layer_routing_gpu_ms"] for record in records],
+            axis=0,
+        ).astype(np.float64)
+        per_rank_layer_prepare_gpu_ms = np.stack(
+            [record["layer_prepare_gpu_ms"] for record in records],
+            axis=0,
+        ).astype(np.float64)
+        per_rank_layer_finalize_gpu_ms = np.stack(
+            [record["layer_finalize_gpu_ms"] for record in records],
+            axis=0,
         ).astype(np.float64)
         per_rank_layer_tokens = np.stack(
             [record["layer_local_routed_tokens"] for record in records], axis=0
@@ -1107,7 +1463,53 @@ def aggregate_global_step_time_components(
                 "candidate_layer_ffn_ms is all zero. Check FusedMoE layer "
                 "context hooks."
             )
+        timing_arrays = (
+            per_rank_execute_wall_ms,
+            per_rank_verification_wall_ms,
+            per_rank_draft_wall_ms,
+            per_rank_iteration_wall_ms,
+            per_rank_execute_gpu_ms,
+            per_rank_verification_gpu_ms,
+            per_rank_draft_gpu_ms,
+            per_rank_iteration_gpu_ms,
+            per_rank_attention_gpu_ms,
+            per_rank_moe_gpu_ms,
+            per_rank_gpu_other_ms,
+            per_rank_layer_moe_gpu_ms,
+            per_rank_layer_routed_expert_gpu_ms,
+            per_rank_layer_shared_expert_gpu_ms,
+            per_rank_layer_routing_gpu_ms,
+            per_rank_layer_prepare_gpu_ms,
+            per_rank_layer_finalize_gpu_ms,
+        )
+        if any(np.any(~np.isfinite(values)) for values in timing_arrays):
+            raise ValueError(
+                f"Barrier {barrier_id} contains non-finite timing values."
+            )
+        if any(np.any(values < -tol_ms) for values in timing_arrays):
+            raise ValueError(f"Barrier {barrier_id} contains negative timing values.")
+        decomposition_error = np.abs(
+            per_rank_attention_gpu_ms
+            + per_rank_moe_gpu_ms
+            + per_rank_gpu_other_ms
+            - per_rank_verification_gpu_ms
+        )
+        if np.any(decomposition_error > tol_ms):
+            bad_rank = int(np.argmax(decomposition_error))
+            raise ValueError(
+                "CUDA Event timing decomposition is incomplete at barrier "
+                f"{barrier_id}, rank {bad_rank}: attention + moe + other != "
+                "verification total."
+            )
+        strict_target = global_step_kind in {"decode_only", "verification_only"}
+        if strict_target and not np.all(per_rank_timing_complete):
+            bad_ranks = np.flatnonzero(~per_rank_timing_complete).tolist()
+            raise ValueError(
+                f"Strict barrier {barrier_id} has incomplete timing on ranks "
+                f"{bad_ranks}."
+            )
         sorted_rank_ffn = []
+        sorted_rank_moe = []
         sorted_rank_tokens = []
         sorted_rank_active = []
         position_sorted_rank_ffn = np.zeros(
@@ -1120,9 +1522,12 @@ def aggregate_global_step_time_components(
         )
         for layer_idx in range(len(layers)):
             order = np.argsort(
-                -per_rank_layer_ffn_ms[:, layer_idx], kind="stable"
+                -per_rank_layer_routed_expert_gpu_ms[:, layer_idx],
+                kind="stable",
             )
-            sorted_rank_ffn.append(per_rank_layer_ffn_ms[order, layer_idx])
+            sorted_rank_ffn.append(
+                per_rank_layer_routed_expert_gpu_ms[order, layer_idx]
+            )
             sorted_rank_tokens.append(per_rank_layer_tokens[order, layer_idx])
             sorted_rank_active.append(per_rank_layer_active[order, layer_idx])
             if max_positions:
@@ -1132,27 +1537,31 @@ def aggregate_global_step_time_components(
                 position_sorted_rank_tokens += (
                     per_rank_position_layer_tokens[order, :, layer_idx].T
                 )
+            moe_order = np.argsort(
+                -per_rank_layer_moe_gpu_ms[:, layer_idx],
+                kind="stable",
+            )
+            sorted_rank_moe.append(
+                per_rank_layer_moe_gpu_ms[moe_order, layer_idx]
+            )
         sorted_rank_ffn_ms = np.sum(np.stack(sorted_rank_ffn, axis=0), axis=0)
+        sorted_rank_moe_ms = np.sum(np.stack(sorted_rank_moe, axis=0), axis=0)
         sorted_rank_routed_tokens = np.sum(
             np.stack(sorted_rank_tokens, axis=0), axis=0
         )
         sorted_rank_active_experts = np.sum(
             np.stack(sorted_rank_active, axis=0), axis=0
         )
-        (
-            _critical_rank_indices,
-            critical_total_ms,
-            critical_ffn_ms,
-            critical_other_ms,
-        ) = compute_critical_rank_step_time_components(
-            per_rank_total_ms[None, :],
-            per_rank_layer_ffn_ms[None, :, :],
-            tol_ms=tol_ms,
+        critical_rank_idx = int(np.argmax(per_rank_verification_wall_ms))
+        total_ms = float(per_rank_verification_wall_ms[critical_rank_idx])
+        draft_ms = float(per_rank_draft_wall_ms[critical_rank_idx])
+        ffn_ms = float(
+            np.sum(
+                per_rank_layer_routed_expert_gpu_ms[critical_rank_idx],
+                dtype=np.float64,
+            )
         )
-        total_ms = float(critical_total_ms[0])
-        draft_ms = float(np.max(per_rank_draft_ms))
-        ffn_ms = float(critical_ffn_ms[0])
-        other_ms = float(critical_other_ms[0])
+        other_ms = float(per_rank_gpu_other_ms[critical_rank_idx])
         mean_rank_ffn_ms = float(np.mean(sorted_rank_ffn_ms))
         max_rank_ffn_ms = (
             float(sorted_rank_ffn_ms[0]) if sorted_rank_ffn_ms.size else 0.0
@@ -1160,6 +1569,15 @@ def aggregate_global_step_time_components(
         ffn_max_mean_ratio = (
             max_rank_ffn_ms / mean_rank_ffn_ms
             if mean_rank_ffn_ms > 0
+            else float("nan")
+        )
+        mean_rank_moe_ms = float(np.mean(sorted_rank_moe_ms))
+        max_rank_moe_ms = (
+            float(sorted_rank_moe_ms[0]) if sorted_rank_moe_ms.size else 0.0
+        )
+        moe_max_mean_ratio = (
+            max_rank_moe_ms / mean_rank_moe_ms
+            if mean_rank_moe_ms > 0
             else float("nan")
         )
 
@@ -1180,8 +1598,30 @@ def aggregate_global_step_time_components(
         rank_step_kinds.append(
             np.asarray([str(record["step_kind"]) for record in records], dtype=np.str_)
         )
+        rank_execute_wall_ms.append(per_rank_execute_wall_ms)
+        rank_verification_wall_ms.append(per_rank_verification_wall_ms)
+        rank_draft_wall_ms.append(per_rank_draft_wall_ms)
+        rank_iteration_wall_ms.append(per_rank_iteration_wall_ms)
+        rank_execute_gpu_ms.append(per_rank_execute_gpu_ms)
+        rank_verification_gpu_ms.append(per_rank_verification_gpu_ms)
+        rank_draft_gpu_ms.append(per_rank_draft_gpu_ms)
+        rank_iteration_gpu_ms.append(per_rank_iteration_gpu_ms)
+        rank_attention_gpu_ms.append(per_rank_attention_gpu_ms)
+        rank_moe_gpu_ms.append(per_rank_moe_gpu_ms)
+        rank_gpu_other_ms.append(per_rank_gpu_other_ms)
+        rank_timing_complete.append(per_rank_timing_complete)
         rank_step_total_ms.append(per_rank_total_ms)
         rank_step_draft_ms.append(per_rank_draft_ms)
+        rank_layer_moe_gpu_ms.append(per_rank_layer_moe_gpu_ms)
+        rank_layer_routed_expert_gpu_ms.append(
+            per_rank_layer_routed_expert_gpu_ms
+        )
+        rank_layer_shared_expert_gpu_ms.append(
+            per_rank_layer_shared_expert_gpu_ms
+        )
+        rank_layer_routing_gpu_ms.append(per_rank_layer_routing_gpu_ms)
+        rank_layer_prepare_gpu_ms.append(per_rank_layer_prepare_gpu_ms)
+        rank_layer_finalize_gpu_ms.append(per_rank_layer_finalize_gpu_ms)
         rank_layer_ffn_ms.append(per_rank_layer_ffn_ms)
         rank_layer_local_routed_tokens.append(per_rank_layer_tokens)
         rank_layer_local_active_experts.append(per_rank_layer_active)
@@ -1192,6 +1632,24 @@ def aggregate_global_step_time_components(
         global_step_total_ms.append(total_ms)
         global_draft_ms.append(draft_ms)
         global_step_ffn_ms.append(ffn_ms)
+        global_critical_rank_indices.append(critical_rank_idx)
+        global_verification_wall_ms.append(total_ms)
+        global_iteration_wall_ms.append(
+            float(per_rank_iteration_wall_ms[critical_rank_idx])
+        )
+        global_draft_wall_ms.append(draft_ms)
+        global_verification_gpu_total_ms.append(
+            float(per_rank_verification_gpu_ms[critical_rank_idx])
+        )
+        global_attention_gpu_ms.append(
+            float(per_rank_attention_gpu_ms[critical_rank_idx])
+        )
+        global_moe_gpu_ms.append(float(per_rank_moe_gpu_ms[critical_rank_idx]))
+        global_gpu_other_ms.append(other_ms)
+        global_step_sorted_rank_routed_expert_gpu_ms.append(sorted_rank_ffn_ms)
+        global_step_sorted_rank_moe_gpu_ms.append(sorted_rank_moe_ms)
+        global_step_routed_expert_max_mean_ratio.append(ffn_max_mean_ratio)
+        global_step_moe_max_mean_ratio.append(moe_max_mean_ratio)
         global_step_sorted_rank_ffn_ms.append(sorted_rank_ffn_ms)
         global_step_sorted_rank_local_routed_tokens.append(sorted_rank_routed_tokens)
         global_step_sorted_rank_local_active_experts.append(sorted_rank_active_experts)
@@ -1226,6 +1684,9 @@ def aggregate_global_step_time_components(
         sorted_rank_ffn_array = np.stack(
             global_step_sorted_rank_ffn_ms, axis=0
         ).astype(np.float64)
+        sorted_rank_moe_array = np.stack(
+            global_step_sorted_rank_moe_gpu_ms, axis=0
+        ).astype(np.float64)
         sorted_rank_tokens_array = np.stack(
             global_step_sorted_rank_local_routed_tokens, axis=0
         ).astype(np.int64)
@@ -1240,6 +1701,9 @@ def aggregate_global_step_time_components(
         ).astype(np.int64)
     else:
         sorted_rank_ffn_array = np.empty(
+            (0, data_parallel_size), dtype=np.float64
+        )
+        sorted_rank_moe_array = np.empty(
             (0, data_parallel_size), dtype=np.float64
         )
         sorted_rank_tokens_array = np.empty(
@@ -1287,6 +1751,66 @@ def aggregate_global_step_time_components(
             if rank_step_kinds
             else np.empty((0, data_parallel_size), dtype=np.str_)
         ),
+        rank_execute_wall_ms=(
+            np.stack(rank_execute_wall_ms, axis=0).astype(np.float64)
+            if rank_execute_wall_ms
+            else np.empty((0, data_parallel_size), dtype=np.float64)
+        ),
+        rank_verification_wall_ms=(
+            np.stack(rank_verification_wall_ms, axis=0).astype(np.float64)
+            if rank_verification_wall_ms
+            else np.empty((0, data_parallel_size), dtype=np.float64)
+        ),
+        rank_draft_wall_ms=(
+            np.stack(rank_draft_wall_ms, axis=0).astype(np.float64)
+            if rank_draft_wall_ms
+            else np.empty((0, data_parallel_size), dtype=np.float64)
+        ),
+        rank_iteration_wall_ms=(
+            np.stack(rank_iteration_wall_ms, axis=0).astype(np.float64)
+            if rank_iteration_wall_ms
+            else np.empty((0, data_parallel_size), dtype=np.float64)
+        ),
+        rank_execute_gpu_ms=(
+            np.stack(rank_execute_gpu_ms, axis=0).astype(np.float64)
+            if rank_execute_gpu_ms
+            else np.empty((0, data_parallel_size), dtype=np.float64)
+        ),
+        rank_verification_gpu_ms=(
+            np.stack(rank_verification_gpu_ms, axis=0).astype(np.float64)
+            if rank_verification_gpu_ms
+            else np.empty((0, data_parallel_size), dtype=np.float64)
+        ),
+        rank_draft_gpu_ms=(
+            np.stack(rank_draft_gpu_ms, axis=0).astype(np.float64)
+            if rank_draft_gpu_ms
+            else np.empty((0, data_parallel_size), dtype=np.float64)
+        ),
+        rank_iteration_gpu_ms=(
+            np.stack(rank_iteration_gpu_ms, axis=0).astype(np.float64)
+            if rank_iteration_gpu_ms
+            else np.empty((0, data_parallel_size), dtype=np.float64)
+        ),
+        rank_attention_gpu_ms=(
+            np.stack(rank_attention_gpu_ms, axis=0).astype(np.float64)
+            if rank_attention_gpu_ms
+            else np.empty((0, data_parallel_size), dtype=np.float64)
+        ),
+        rank_moe_gpu_ms=(
+            np.stack(rank_moe_gpu_ms, axis=0).astype(np.float64)
+            if rank_moe_gpu_ms
+            else np.empty((0, data_parallel_size), dtype=np.float64)
+        ),
+        rank_gpu_other_ms=(
+            np.stack(rank_gpu_other_ms, axis=0).astype(np.float64)
+            if rank_gpu_other_ms
+            else np.empty((0, data_parallel_size), dtype=np.float64)
+        ),
+        rank_timing_complete=(
+            np.stack(rank_timing_complete, axis=0).astype(np.bool_)
+            if rank_timing_complete
+            else np.empty((0, data_parallel_size), dtype=np.bool_)
+        ),
         rank_step_total_ms=(
             np.stack(rank_step_total_ms, axis=0).astype(np.float64)
             if rank_step_total_ms
@@ -1296,6 +1820,36 @@ def aggregate_global_step_time_components(
             np.stack(rank_step_draft_ms, axis=0).astype(np.float64)
             if rank_step_draft_ms
             else np.empty((0, data_parallel_size), dtype=np.float64)
+        ),
+        rank_layer_moe_gpu_ms=(
+            np.stack(rank_layer_moe_gpu_ms, axis=0).astype(np.float64)
+            if rank_layer_moe_gpu_ms
+            else np.empty((0, data_parallel_size, len(layers)), dtype=np.float64)
+        ),
+        rank_layer_routed_expert_gpu_ms=(
+            np.stack(rank_layer_routed_expert_gpu_ms, axis=0).astype(np.float64)
+            if rank_layer_routed_expert_gpu_ms
+            else np.empty((0, data_parallel_size, len(layers)), dtype=np.float64)
+        ),
+        rank_layer_shared_expert_gpu_ms=(
+            np.stack(rank_layer_shared_expert_gpu_ms, axis=0).astype(np.float64)
+            if rank_layer_shared_expert_gpu_ms
+            else np.empty((0, data_parallel_size, len(layers)), dtype=np.float64)
+        ),
+        rank_layer_routing_gpu_ms=(
+            np.stack(rank_layer_routing_gpu_ms, axis=0).astype(np.float64)
+            if rank_layer_routing_gpu_ms
+            else np.empty((0, data_parallel_size, len(layers)), dtype=np.float64)
+        ),
+        rank_layer_prepare_gpu_ms=(
+            np.stack(rank_layer_prepare_gpu_ms, axis=0).astype(np.float64)
+            if rank_layer_prepare_gpu_ms
+            else np.empty((0, data_parallel_size, len(layers)), dtype=np.float64)
+        ),
+        rank_layer_finalize_gpu_ms=(
+            np.stack(rank_layer_finalize_gpu_ms, axis=0).astype(np.float64)
+            if rank_layer_finalize_gpu_ms
+            else np.empty((0, data_parallel_size, len(layers)), dtype=np.float64)
         ),
         rank_layer_ffn_ms=(
             np.stack(rank_layer_ffn_ms, axis=0).astype(np.float64)
@@ -1331,6 +1885,34 @@ def aggregate_global_step_time_components(
         global_step_total_ms=np.asarray(global_step_total_ms, dtype=np.float64),
         global_draft_ms=np.asarray(global_draft_ms, dtype=np.float64),
         global_step_ffn_ms=np.asarray(global_step_ffn_ms, dtype=np.float64),
+        global_critical_rank_indices=np.asarray(
+            global_critical_rank_indices, dtype=np.int64
+        ),
+        global_verification_wall_ms=np.asarray(
+            global_verification_wall_ms, dtype=np.float64
+        ),
+        global_iteration_wall_ms=np.asarray(
+            global_iteration_wall_ms, dtype=np.float64
+        ),
+        global_draft_wall_ms=np.asarray(global_draft_wall_ms, dtype=np.float64),
+        global_verification_gpu_total_ms=np.asarray(
+            global_verification_gpu_total_ms, dtype=np.float64
+        ),
+        global_attention_gpu_ms=np.asarray(
+            global_attention_gpu_ms, dtype=np.float64
+        ),
+        global_moe_gpu_ms=np.asarray(global_moe_gpu_ms, dtype=np.float64),
+        global_gpu_other_ms=np.asarray(global_gpu_other_ms, dtype=np.float64),
+        global_step_sorted_rank_routed_expert_gpu_ms=sorted_rank_ffn_array,
+        global_step_sorted_rank_moe_gpu_ms=sorted_rank_moe_array,
+        global_step_routed_expert_max_mean_ratio=np.asarray(
+            global_step_routed_expert_max_mean_ratio,
+            dtype=np.float64,
+        ),
+        global_step_moe_max_mean_ratio=np.asarray(
+            global_step_moe_max_mean_ratio,
+            dtype=np.float64,
+        ),
         global_step_sorted_rank_ffn_ms=sorted_rank_ffn_array,
         global_step_sorted_rank_local_routed_tokens=sorted_rank_tokens_array,
         global_step_sorted_rank_local_active_experts=sorted_rank_active_array,

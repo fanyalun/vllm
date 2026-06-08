@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -688,24 +689,65 @@ def test_draft_timing_uses_rank_max_and_baseline_zero():
         layers=(0,),
         num_experts=4,
     )
-    np.testing.assert_allclose(drafted.global_draft_ms, np.array([2.5]))
+    np.testing.assert_allclose(drafted.global_draft_ms, np.array([1.5]))
+    np.testing.assert_array_equal(
+        drafted.global_critical_rank_indices,
+        np.array([0]),
+    )
 
 
 def test_pending_draft_timing_is_recorded_after_step_is_queued(monkeypatch):
+    class FakeEvent:
+        def __init__(self, timestamp_ms):
+            self.timestamp_ms = timestamp_ms
+            self.synchronize_calls = 0
+
+        def elapsed_time(self, other):
+            return other.timestamp_ms - self.timestamp_ms
+
+        def synchronize(self):
+            self.synchronize_calls += 1
+
     state = runtime._WORKER_STATE
-    monkeypatch.setattr(runtime, "_synchronize_device", lambda: None)
+    execute_start = FakeEvent(0.0)
+    execute_end = FakeEvent(10.0)
+    draft_events = iter((FakeEvent(12.0), FakeEvent(14.0)))
+    accumulator = runtime.StepAccumulator(
+        step_index=3,
+        execute_wall_start_s=0.0,
+        execute_start_event=execute_start,
+        execute_wall_end_s=0.010,
+        execute_end_event=execute_end,
+        completion_event=execute_end,
+        owned_events=[execute_start, execute_end],
+    )
+
+    def record_fake_event(step):
+        event = next(draft_events)
+        step.owned_events.append(event)
+        return event
+
+    wall_times = iter((0.012, 0.014))
+    monkeypatch.setattr(runtime, "_record_cuda_event", record_fake_event)
+    monkeypatch.setattr(
+        runtime.time,
+        "perf_counter",
+        lambda: next(wall_times, 1.0),
+    )
+    monkeypatch.setattr(runtime, "_push_nvtx_range", lambda *args: False)
     state.enabled = True
     state.pending_step_records.clear()
     state.current_step = None
     state.draft_measure_depth = 0
     pending_record = {
-        "timing": {"draft_ms": 0.0},
-        "trace": {"step_start_time_ms": 0.0, "events": []},
+        "_accumulator": accumulator,
+        "metadata": {"req_ids": [], "has_prefill": False},
     }
     state.pending_step_records.append(pending_record)
 
     try:
         result = runtime._measure_worker_section("draft", lambda: "drafted")
+        resolved = runtime.pop_step_timing_worker(None, timeout_s=0.0)
     finally:
         state.enabled = False
         state.pending_step_records.clear()
@@ -713,8 +755,76 @@ def test_pending_draft_timing_is_recorded_after_step_is_queued(monkeypatch):
         state.draft_measure_depth = 0
 
     assert result == "drafted"
-    assert pending_record["timing"]["draft_ms"] > 0.0
-    assert pending_record["trace"]["events"][-1]["label"] == "draft"
+    assert resolved is not None
+    assert resolved["timing"]["draft_wall_ms"] == 2.0
+    assert resolved["timing"]["draft_gpu_ms"] == 2.0
+    assert resolved["timing"]["verification_wall_ms"] == 10.0
+    assert resolved["timing"]["verification_gpu_ms"] == 10.0
+    assert resolved["trace"]["events"][-1]["label"] == "draft"
+    assert accumulator.completion_event.synchronize_calls == 1
+
+
+def test_cuda_event_pool_reuses_released_events():
+    created = []
+
+    def create_event():
+        event = object()
+        created.append(event)
+        return event
+
+    pool = runtime.CudaEventPool(create_event)
+    first = pool.acquire()
+    second = pool.acquire()
+    assert pool.created == 2
+    pool.release(first)
+    assert pool.acquire() is first
+    assert pool.created == 2
+    pool.release(second)
+    assert pool.available == 1
+
+
+def test_interval_accounting_handles_draft_inside_and_outside_execute():
+    execute = (0.0, 10.0)
+    inside_and_outside_draft = [(2.0, 4.0), (12.0, 15.0)]
+
+    assert (
+        helper.subtract_interval_overlap_ms(
+            execute,
+            inside_and_outside_draft,
+        )
+        == 8.0
+    )
+    assert helper.interval_union_duration_ms(inside_and_outside_draft) == 5.0
+    assert (
+        helper.interval_union_duration_ms(
+            [execute, *inside_and_outside_draft]
+        )
+        == 13.0
+    )
+
+
+def test_stage_wrapper_does_not_synchronize_cuda():
+    source = inspect.getsource(runtime._measure_worker_section)
+    assert ".synchronize(" not in source
+    assert "_synchronize_device" not in source
+
+
+def test_worker_hooks_cover_qwen3_next_top_level_moe():
+    source = inspect.getsource(runtime._install_worker_hooks)
+    assert "Qwen3NextSparseMoeBlock.forward" in source
+    assert "patched_qwen3_next_sparse_moe_forward" in source
+
+
+def test_analysis_rejects_schema_v9_raw(tmp_path):
+    raw_path = tmp_path / "schema_v9.npz"
+    np.savez(raw_path, schema_version=np.array([9], dtype=np.int64))
+
+    try:
+        analysis.load_condition_data(raw_path)
+    except ValueError as exc:
+        assert "Schema v9 and older" in str(exc)
+    else:
+        raise AssertionError("Expected schema v9 raw data to be rejected.")
 
 
 def test_global_step_time_aggregation_keeps_prefill_global_step():
@@ -776,7 +886,7 @@ def test_global_step_time_aggregation_rejects_negative_other_time():
             num_experts=4,
         )
     except ValueError as exc:
-        assert "negative Other time" in str(exc)
+        assert "decomposition is incomplete" in str(exc)
     else:
         raise AssertionError("Expected negative Other time to fail.")
 
@@ -1014,7 +1124,7 @@ def _drop_condition(
     for barrier in range(per_barrier):
         offsets.append(offsets[-1] + tokens_per_barrier)
     return SimpleNamespace(
-        schema_version=9,
+        schema_version=10,
         batch_size=8,
         draft_length=2,
         data_parallel_size=2,
