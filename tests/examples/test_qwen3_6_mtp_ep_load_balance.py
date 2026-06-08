@@ -488,6 +488,26 @@ def test_global_step_time_aggregation_sorts_rank_ffn_times_per_barrier():
     )
 
 
+def test_critical_rank_time_components_use_one_physical_rank():
+    critical_ranks, total_ms, ffn_ms, other_ms = (
+        helper.compute_critical_rank_step_time_components(
+            np.array([[20.0, 18.0], [15.0, 21.0]]),
+            np.array(
+                [
+                    [[10.0, 1.0], [2.0, 8.0]],
+                    [[9.0, 1.0], [3.0, 4.0]],
+                ]
+            ),
+        )
+    )
+
+    np.testing.assert_array_equal(critical_ranks, np.array([0, 1]))
+    np.testing.assert_allclose(total_ms, np.array([20.0, 21.0]))
+    np.testing.assert_allclose(ffn_ms, np.array([11.0, 7.0]))
+    np.testing.assert_allclose(other_ms, np.array([9.0, 14.0]))
+    np.testing.assert_allclose(ffn_ms + other_ms, total_ms)
+
+
 def test_global_step_time_aggregation_rejects_duplicate_span():
     try:
         helper.aggregate_global_step_time_components(
@@ -588,6 +608,8 @@ def test_per_layer_sorted_rank_reorders_tokens_and_active_with_ffn():
         result.global_step_sorted_rank_ffn_ms,
         np.array([[18.0, 3.0]]),
     )
+    np.testing.assert_allclose(result.global_step_ffn_ms, np.array([11.0]))
+    np.testing.assert_allclose(result.global_step_other_ms, np.array([9.0]))
     np.testing.assert_array_equal(
         result.global_step_sorted_rank_local_routed_tokens,
         np.array([[180, 30]]),

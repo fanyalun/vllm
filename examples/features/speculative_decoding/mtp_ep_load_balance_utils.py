@@ -420,6 +420,53 @@ def aggregate_worker_step_timings(
     )
 
 
+def compute_critical_rank_step_time_components(
+    rank_step_total_ms: np.ndarray,
+    rank_layer_ffn_ms: np.ndarray,
+    *,
+    tol_ms: float = 1e-3,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    rank_step_total_ms = np.asarray(rank_step_total_ms, dtype=np.float64)
+    rank_layer_ffn_ms = np.asarray(rank_layer_ffn_ms, dtype=np.float64)
+    if rank_step_total_ms.ndim != 2:
+        raise ValueError("rank_step_total_ms must have shape [step, rank].")
+    if rank_layer_ffn_ms.ndim != 3:
+        raise ValueError(
+            "rank_layer_ffn_ms must have shape [step, rank, layer]."
+        )
+    if rank_layer_ffn_ms.shape[:2] != rank_step_total_ms.shape:
+        raise ValueError(
+            "rank_step_total_ms and rank_layer_ffn_ms must have matching "
+            "step and rank dimensions."
+        )
+    if rank_step_total_ms.shape[1] == 0:
+        raise ValueError("Timing arrays must contain at least one rank.")
+
+    critical_rank_indices = np.argmax(rank_step_total_ms, axis=1)
+    step_indices = np.arange(rank_step_total_ms.shape[0])
+    total_ms = rank_step_total_ms[step_indices, critical_rank_indices]
+    ffn_ms = np.sum(
+        rank_layer_ffn_ms[step_indices, critical_rank_indices],
+        axis=1,
+    )
+    other_ms = total_ms - ffn_ms
+    if np.any(ffn_ms < 0):
+        raise ValueError("Critical-rank FFN time must be non-negative.")
+    if np.any(other_ms < -tol_ms):
+        bad_step = int(np.flatnonzero(other_ms < -tol_ms)[0])
+        raise ValueError(
+            "Critical-rank timing produced negative Other time at step "
+            f"{bad_step}: total={total_ms[bad_step]:.6f} ms, "
+            f"ffn={ffn_ms[bad_step]:.6f} ms."
+        )
+    return (
+        critical_rank_indices.astype(np.int64),
+        total_ms,
+        ffn_ms,
+        np.maximum(other_ms, 0.0),
+    )
+
+
 def compute_balancedness(counts: np.ndarray) -> float:
     counts = np.asarray(counts, dtype=np.float64)
     max_count = counts.max(initial=0.0)
@@ -1092,29 +1139,29 @@ def aggregate_global_step_time_components(
         sorted_rank_active_experts = np.sum(
             np.stack(sorted_rank_active, axis=0), axis=0
         )
-        total_ms = float(np.max(per_rank_total_ms))
+        (
+            _critical_rank_indices,
+            critical_total_ms,
+            critical_ffn_ms,
+            critical_other_ms,
+        ) = compute_critical_rank_step_time_components(
+            per_rank_total_ms[None, :],
+            per_rank_layer_ffn_ms[None, :, :],
+            tol_ms=tol_ms,
+        )
+        total_ms = float(critical_total_ms[0])
         draft_ms = float(np.max(per_rank_draft_ms))
-        ffn_ms = float(sorted_rank_ffn_ms[0]) if sorted_rank_ffn_ms.size else 0.0
-        other_ms = total_ms - ffn_ms
-        if ffn_ms < 0:
-            raise ValueError(
-                f"Captured global barrier {barrier_id} produced negative FFN "
-                "time: "
-                f"{ffn_ms:.6f} ms."
-            )
+        ffn_ms = float(critical_ffn_ms[0])
+        other_ms = float(critical_other_ms[0])
         mean_rank_ffn_ms = float(np.mean(sorted_rank_ffn_ms))
+        max_rank_ffn_ms = (
+            float(sorted_rank_ffn_ms[0]) if sorted_rank_ffn_ms.size else 0.0
+        )
         ffn_max_mean_ratio = (
-            ffn_ms / mean_rank_ffn_ms
+            max_rank_ffn_ms / mean_rank_ffn_ms
             if mean_rank_ffn_ms > 0
             else float("nan")
         )
-        if other_ms < -tol_ms:
-            raise ValueError(
-                f"Captured global barrier {barrier_id} produced negative Other "
-                "time: "
-                f"{other_ms:.6f} ms."
-            )
-        other_ms = max(other_ms, 0.0)
 
         global_barrier_ids.append(barrier_id)
         global_step_indices.append(int(spans[0][0]))

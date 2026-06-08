@@ -16,6 +16,7 @@ from mtp_ep_load_balance_utils import (
     build_condition_metrics,
     build_rank_load_from_histograms,
     build_speedup_rows,
+    compute_critical_rank_step_time_components,
     normalize_global_time_components,
     reorder_histograms_by_expert_order,
     sort_experts_desc,
@@ -328,6 +329,21 @@ def load_condition_data(path: Path) -> LoadedConditionData:
         num_barriers = int(np.asarray(npz["global_barrier_ids"]).shape[0])
         data_parallel_size = _scalar(npz, "data_parallel_size", int)
         layers = np.asarray(npz["layers"])
+        rank_step_total_ms = np.asarray(
+            npz["rank_step_total_ms"], dtype=np.float64
+        )
+        rank_layer_ffn_ms = np.asarray(
+            npz["rank_layer_ffn_ms"], dtype=np.float64
+        )
+        (
+            _critical_rank_indices,
+            critical_step_total_ms,
+            critical_step_ffn_ms,
+            critical_step_other_ms,
+        ) = compute_critical_rank_step_time_components(
+            rank_step_total_ms,
+            rank_layer_ffn_ms,
+        )
         return LoadedConditionData(
             schema_version=schema_version,
             batch_size=_scalar(npz, "batch_size", int),
@@ -404,9 +420,9 @@ def load_condition_data(path: Path) -> LoadedConditionData:
             if "rank_barrier_num_ep_collectives" in npz
             else np.empty((num_barriers, data_parallel_size), dtype=np.int64),
             rank_step_kinds=np.asarray(npz["rank_step_kinds"]),
-            rank_step_total_ms=np.asarray(npz["rank_step_total_ms"]),
+            rank_step_total_ms=rank_step_total_ms,
             rank_step_draft_ms=np.asarray(npz["rank_step_draft_ms"]),
-            rank_layer_ffn_ms=np.asarray(npz["rank_layer_ffn_ms"]),
+            rank_layer_ffn_ms=rank_layer_ffn_ms,
             rank_layer_local_routed_tokens=np.asarray(
                 npz["rank_layer_local_routed_tokens"]
             ),
@@ -414,9 +430,9 @@ def load_condition_data(path: Path) -> LoadedConditionData:
                 npz["rank_layer_local_active_experts"]
             ),
             global_step_indices=np.asarray(npz["global_step_indices"]),
-            global_step_total_ms=np.asarray(npz["global_step_total_ms"]),
+            global_step_total_ms=critical_step_total_ms,
             global_draft_ms=np.asarray(npz["global_draft_ms"]),
-            global_step_ffn_ms=np.asarray(npz["global_step_ffn_ms"]),
+            global_step_ffn_ms=critical_step_ffn_ms,
             global_step_sorted_rank_ffn_ms=np.asarray(
                 npz["global_step_sorted_rank_ffn_ms"]
             ),
@@ -435,7 +451,7 @@ def load_condition_data(path: Path) -> LoadedConditionData:
             global_step_ffn_max_mean_ratio=np.asarray(
                 npz["global_step_ffn_max_mean_ratio"]
             ),
-            global_step_other_ms=np.asarray(npz["global_step_other_ms"]),
+            global_step_other_ms=critical_step_other_ms,
             global_step_kinds=np.asarray(npz["global_step_kinds"]),
             global_token_barrier_offsets=np.asarray(
                 npz["global_token_barrier_offsets"],
@@ -652,6 +668,7 @@ def build_step_time_rows(
             row: dict[str, float | int] = {
                 "batch_size": batch_size,
                 "draft_length": draft_length,
+                "timing_scope": "critical_rank_wall_clock",
                 "decode_step_scope": (
                     "verification_only" if draft_length > 0 else "decode_only"
                 ),
@@ -1930,7 +1947,9 @@ def plot_step_time_breakdown(
     ax.set_xticklabels([str(d) for d in draft_lengths])
     ax.set_xlabel("draft_length")
     ax.set_ylabel("normalized avg decode/verification-only step time")
-    ax.set_title(f"FFN/Other Step Time Breakdown (batch_size={batch_size})")
+    ax.set_title(
+        f"Critical-rank FFN/Other Step Time (batch_size={batch_size})"
+    )
     ax.legend()
     ax.grid(axis="y", alpha=0.25)
     path = plot_dir / f"batch_size_{batch_size:03d}.png"
