@@ -820,6 +820,33 @@ def build_barrier_rank_layer_rows(
     return rows
 
 
+def strict_target_barrier_mask(
+    data: LoadedConditionData,
+    *,
+    draft_length: int,
+) -> np.ndarray:
+    target_kind = "verification_only" if draft_length > 0 else "decode_only"
+    num_barriers = int(data.global_barrier_ids.shape[0])
+    if data.global_step_kinds.shape != (num_barriers,):
+        raise ValueError(
+            "global_step_kinds must align with global barriers: "
+            f"{data.global_step_kinds.shape} vs {(num_barriers,)}."
+        )
+    if data.rank_step_kinds.shape != (
+        num_barriers,
+        data.data_parallel_size,
+    ):
+        raise ValueError(
+            "rank_step_kinds must align with global barriers and ranks: "
+            f"{data.rank_step_kinds.shape} vs "
+            f"{(num_barriers, data.data_parallel_size)}."
+        )
+    return (data.global_step_kinds == target_kind) & np.all(
+        data.rank_step_kinds == target_kind,
+        axis=1,
+    )
+
+
 def build_sorted_rank_ffn_time_rows(
     manifest: dict[str, Any],
     results: dict[tuple[int, int], LoadedConditionData],
@@ -832,6 +859,10 @@ def build_sorted_rank_ffn_time_rows(
     for batch_size in batch_sizes:
         for draft_length in draft_lengths:
             data = results[(batch_size, draft_length)]
+            target_mask = strict_target_barrier_mask(
+                data,
+                draft_length=draft_length,
+            )
             sorted_ffn_ms = np.asarray(
                 data.global_step_sorted_rank_ffn_ms, dtype=np.float64
             )
@@ -859,6 +890,11 @@ def build_sorted_rank_ffn_time_rows(
                     "No globally captured rank-local FFN times for "
                     f"batch_size={batch_size}, draft_length={draft_length}."
                 )
+            if not np.any(target_mask):
+                raise ValueError(
+                    "No strict target barriers for "
+                    f"batch_size={batch_size}, draft_length={draft_length}."
+                )
 
             ratios = np.asarray(
                 data.global_step_ffn_max_mean_ratio, dtype=np.float64
@@ -871,6 +907,9 @@ def build_sorted_rank_ffn_time_rows(
                     f"{(sorted_ffn_ms.shape[0],)}."
                 )
 
+            sorted_ffn_ms = sorted_ffn_ms[target_mask]
+            ratios = ratios[target_mask]
+            num_target_barriers = int(np.count_nonzero(target_mask))
             avg_sorted_ffn_ms = np.mean(sorted_ffn_ms, axis=0)
             heaviest_ffn_ms = float(avg_sorted_ffn_ms[0])
             lightest_ffn_ms = float(avg_sorted_ffn_ms[-1])
@@ -886,9 +925,7 @@ def build_sorted_rank_ffn_time_rows(
                         "decode_step_scope": decode_step_scope,
                         "sorted_rank_position": sorted_rank_position,
                         "avg_local_ffn_ms": float(avg_ffn_ms),
-                        "num_global_captured_steps": (
-                            data.num_global_captured_steps
-                        ),
+                        "num_global_captured_steps": num_target_barriers,
                     }
                 )
 
@@ -897,7 +934,7 @@ def build_sorted_rank_ffn_time_rows(
                     "batch_size": batch_size,
                     "draft_length": draft_length,
                     "decode_step_scope": decode_step_scope,
-                    "num_global_captured_steps": data.num_global_captured_steps,
+                    "num_global_captured_steps": num_target_barriers,
                     "avg_heaviest_local_ffn_ms": heaviest_ffn_ms,
                     "avg_lightest_local_ffn_ms": lightest_ffn_ms,
                     "avg_heaviest_minus_lightest_local_ffn_ms": (
@@ -937,6 +974,15 @@ def build_sorted_rank_summary_rows(
                     "No sorted-rank barrier data for "
                     f"batch_size={batch_size}, draft_length={draft_length}."
                 )
+            target_mask = strict_target_barrier_mask(
+                data,
+                draft_length=draft_length,
+            )
+            if not np.any(target_mask):
+                raise ValueError(
+                    "No strict target barriers for "
+                    f"batch_size={batch_size}, draft_length={draft_length}."
+                )
             for position in range(data.data_parallel_size):
                 rows.append(
                     {
@@ -944,23 +990,27 @@ def build_sorted_rank_summary_rows(
                         "draft_length": draft_length,
                         "sorted_rank_position": position,
                         "avg_ffn_ms": float(
-                            np.mean(data.global_step_sorted_rank_ffn_ms[:, position])
+                            np.mean(
+                                data.global_step_sorted_rank_ffn_ms[
+                                    target_mask, position
+                                ]
+                            )
                         ),
                         "avg_local_routed_tokens": float(
                             np.mean(
                                 data.global_step_sorted_rank_local_routed_tokens[
-                                    :, position
+                                    target_mask, position
                                 ]
                             )
                         ),
                         "avg_local_active_experts": float(
                             np.mean(
                                 data.global_step_sorted_rank_local_active_experts[
-                                    :, position
+                                    target_mask, position
                                 ]
                             )
                         ),
-                        "num_global_barriers": int(data.global_barrier_ids.shape[0]),
+                        "num_global_barriers": int(np.count_nonzero(target_mask)),
                     }
                 )
     return rows
@@ -975,9 +1025,21 @@ def build_active_expert_ratio_rows(
     for batch_size in tuple(manifest["batch_sizes"]):
         for draft_length in tuple(manifest["draft_lengths"]):
             data = results[(batch_size, draft_length)]
+            target_mask = strict_target_barrier_mask(
+                data,
+                draft_length=draft_length,
+            )
+            if not np.any(target_mask):
+                raise ValueError(
+                    "No strict target barriers for "
+                    f"batch_size={batch_size}, draft_length={draft_length}."
+                )
             denominator = data.layers.shape[0] * num_experts
             per_barrier_ratio = (
-                np.sum(data.rank_layer_local_active_experts, axis=(1, 2))
+                np.sum(
+                    data.rank_layer_local_active_experts[target_mask],
+                    axis=(1, 2),
+                )
                 / denominator
             )
             rows.append(
@@ -986,7 +1048,7 @@ def build_active_expert_ratio_rows(
                     "draft_length": draft_length,
                     "num_layers": int(data.layers.shape[0]),
                     "num_experts": num_experts,
-                    "num_global_barriers": int(data.global_barrier_ids.shape[0]),
+                    "num_global_barriers": int(np.count_nonzero(target_mask)),
                     "active_expert_ratio": float(np.mean(per_barrier_ratio)),
                 }
             )

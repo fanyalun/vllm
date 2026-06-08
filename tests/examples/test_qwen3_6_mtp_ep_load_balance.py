@@ -676,6 +676,11 @@ def test_global_step_time_summary_and_normalization_are_correct():
 def test_sorted_rank_ffn_time_rows_average_by_sorted_position():
     condition = SimpleNamespace(
         data_parallel_size=2,
+        global_barrier_ids=np.array([0, 1], dtype=np.int64),
+        global_step_kinds=np.array(["decode_only", "decode_only"]),
+        rank_step_kinds=np.array(
+            [["decode_only", "decode_only"], ["decode_only", "decode_only"]]
+        ),
         global_step_sorted_rank_ffn_ms=np.array(
             [
                 [7.0, 3.0],
@@ -715,6 +720,7 @@ def test_sorted_rank_summary_rows_average_ffn_tokens_and_active():
         data_parallel_size=2,
         layers=np.array([0, 1], dtype=np.int64),
         global_barrier_ids=np.array([0, 1], dtype=np.int64),
+        global_step_kinds=np.array(["decode_only", "decode_only"]),
         rank_step_kinds=np.array(
             [["decode_only", "decode_only"], ["decode_only", "decode_only"]]
         ),
@@ -751,6 +757,47 @@ def test_sorted_rank_summary_rows_average_ffn_tokens_and_active():
     assert rows[1]["avg_ffn_ms"] == 4.5
 
 
+def test_sorted_rank_summaries_exclude_mixed_rank_barriers():
+    condition = SimpleNamespace(
+        data_parallel_size=2,
+        layers=np.array([0], dtype=np.int64),
+        global_barrier_ids=np.array([0, 1], dtype=np.int64),
+        global_step_kinds=np.array(["verification_only", "mixed_rank"]),
+        rank_step_kinds=np.array(
+            [
+                ["verification_only", "verification_only"],
+                ["verification_only", "prefill"],
+            ]
+        ),
+        rank_step_total_ms=np.ones((2, 2), dtype=np.float64),
+        rank_step_draft_ms=np.zeros((2, 2), dtype=np.float64),
+        rank_layer_ffn_ms=np.ones((2, 2, 1), dtype=np.float64),
+        rank_layer_local_routed_tokens=np.ones((2, 2, 1), dtype=np.int64),
+        rank_layer_local_active_experts=np.ones((2, 2, 1), dtype=np.int64),
+        global_step_sorted_rank_ffn_ms=np.array(
+            [[10.0, 5.0], [100.0, 50.0]], dtype=np.float64
+        ),
+        global_step_sorted_rank_local_routed_tokens=np.array(
+            [[20, 10], [2000, 1000]], dtype=np.int64
+        ),
+        global_step_sorted_rank_local_active_experts=np.array(
+            [[4, 2], [40, 20]], dtype=np.int64
+        ),
+        global_step_ffn_max_mean_ratio=np.array([4.0 / 3.0, 4.0 / 3.0]),
+        num_global_captured_steps=2,
+    )
+    manifest = {"batch_sizes": (16,), "draft_lengths": (6,)}
+    results = {(16, 6): condition}
+
+    summary_rows = analysis.build_sorted_rank_summary_rows(manifest, results)
+    ffn_rows, _ = analysis.build_sorted_rank_ffn_time_rows(manifest, results)
+
+    assert summary_rows[0]["avg_local_routed_tokens"] == 20.0
+    assert summary_rows[0]["num_global_barriers"] == 1
+    assert ffn_rows[0]["avg_local_ffn_ms"] == 10.0
+    assert ffn_rows[0]["num_global_captured_steps"] == 1
+
+
 def test_position_metric_matrix_includes_routed_token_distribution():
     rows = [
         {
@@ -776,10 +823,35 @@ def test_position_metric_matrix_includes_routed_token_distribution():
     )
 
 
+def test_position_breakdown_strictly_filters_global_verification_steps():
+    mask = position_breakdown._strict_verification_mask(
+        np.array(
+            ["verification_only", "mixed_rank", "verification_only"],
+            dtype=np.str_,
+        ),
+        np.array(
+            [
+                ["verification_only", "verification_only"],
+                ["verification_only", "prefill"],
+                ["verification_only", "prefill"],
+            ],
+            dtype=np.str_,
+        ),
+        num_steps=3,
+    )
+
+    np.testing.assert_array_equal(mask, np.array([True, False, False]))
+
+
 def test_active_expert_ratio_uses_all_ranks_layers_over_model_experts():
     condition = SimpleNamespace(
+        data_parallel_size=2,
         layers=np.array([0, 1], dtype=np.int64),
         global_barrier_ids=np.array([0, 1], dtype=np.int64),
+        global_step_kinds=np.array(["decode_only", "decode_only"]),
+        rank_step_kinds=np.array(
+            [["decode_only", "decode_only"], ["decode_only", "decode_only"]]
+        ),
         rank_layer_local_active_experts=np.array(
             [
                 [[2, 1], [1, 0]],

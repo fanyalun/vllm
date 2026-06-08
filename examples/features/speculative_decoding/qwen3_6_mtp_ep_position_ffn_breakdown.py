@@ -134,6 +134,28 @@ def _raw_path(input_dir: Path, raw_path: str) -> Path:
     return input_dir / path
 
 
+def _strict_verification_mask(
+    global_step_kinds: np.ndarray,
+    rank_step_kinds: np.ndarray,
+    *,
+    num_steps: int,
+) -> np.ndarray:
+    if global_step_kinds.shape != (num_steps,):
+        raise RuntimeError(
+            "global_step_kinds must align with position-level data: "
+            f"{global_step_kinds.shape} vs {(num_steps,)}."
+        )
+    if rank_step_kinds.ndim != 2 or rank_step_kinds.shape[0] != num_steps:
+        raise RuntimeError(
+            "rank_step_kinds must align with position-level data: "
+            f"{rank_step_kinds.shape} vs ({num_steps}, num_ranks)."
+        )
+    return (global_step_kinds == "verification_only") & np.all(
+        rank_step_kinds == "verification_only",
+        axis=1,
+    )
+
+
 def build_position_rows(input_dir: Path) -> list[dict[str, int | float]]:
     manifest = _read_manifest(input_dir)
     rows: list[dict[str, int | float]] = []
@@ -147,6 +169,8 @@ def build_position_rows(input_dir: Path) -> list[dict[str, int | float]]:
             required_keys = (
                 "global_step_position_sorted_rank_ffn_ms",
                 "global_step_position_sorted_rank_local_routed_tokens",
+                "global_step_kinds",
+                "rank_step_kinds",
             )
             missing_keys = [key for key in required_keys if key not in data]
             if missing_keys:
@@ -163,6 +187,11 @@ def build_position_rows(input_dir: Path) -> list[dict[str, int | float]]:
                 data["global_step_position_sorted_rank_local_routed_tokens"],
                 dtype=np.float64,
             )
+            target_mask = _strict_verification_mask(
+                np.asarray(data["global_step_kinds"], dtype=np.str_),
+                np.asarray(data["rank_step_kinds"], dtype=np.str_),
+                num_steps=int(ffn.shape[0]),
+            )
         position_count = draft_length + 1
         if (
             ffn.ndim != 3
@@ -174,6 +203,12 @@ def build_position_rows(input_dir: Path) -> list[dict[str, int | float]]:
                 f"{tokens.shape}; expected matching 3D arrays with at least "
                 f"{position_count} verification positions."
             )
+        if not np.any(target_mask):
+            raise RuntimeError(
+                f"{path} has no strict global verification-only barriers."
+            )
+        ffn = ffn[target_mask]
+        tokens = tokens[target_mask]
         avg_ffn = ffn[:, :position_count, :].mean(axis=0)
         avg_tokens = tokens[:, :position_count, :].mean(axis=0)
         num_steps = int(ffn.shape[0])
