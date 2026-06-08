@@ -224,7 +224,7 @@ def build_position_rows(input_dir: Path) -> list[dict[str, int | float]]:
                         "avg_attributed_ffn_ms": float(
                             avg_ffn[position, sorted_rank]
                         ),
-                        "avg_local_routed_tokens": float(
+                        "avg_destination_routed_assignments": float(
                             avg_tokens[position, sorted_rank]
                         ),
                     }
@@ -243,7 +243,7 @@ def write_position_csv(rows: list[dict[str, int | float]], output_dir: Path) -> 
         "sorted_rank_position",
         "num_global_steps",
         "avg_attributed_ffn_ms",
-        "avg_local_routed_tokens",
+        "avg_destination_routed_assignments",
     ]
     with csv_path.open("w", encoding="utf-8", newline="") as fp:
         writer = csv.DictWriter(fp, fieldnames=fieldnames)
@@ -330,7 +330,7 @@ def plot_position_breakdown(
                 selected,
                 verification_positions,
                 rank_positions,
-                "avg_local_routed_tokens",
+                "avg_destination_routed_assignments",
             )
             labels = [
                 f"pos {position}" for position in verification_positions
@@ -376,7 +376,7 @@ def plot_position_breakdown(
             "avg attributed FFN time after per-layer sort (ms)"
         )
         axes[1][0].set_ylabel(
-            "avg local routed tokens after per-layer sort"
+            "avg destination-rank routed assignments after per-layer sort"
         )
         handles, labels = axes[0][-1].get_legend_handles_labels()
         fig.legend(handles, labels, loc="upper right")
@@ -401,13 +401,16 @@ def analyze_position_breakdown(input_dir: Path) -> None:
     print(f"[position-analysis] wrote {csv_path}", flush=True)
     for plot_path in plot_paths:
         print(f"[position-analysis] wrote {plot_path}", flush=True)
+    from mtp_ep_experiment_analysis import analyze_draft_drop
+
+    analyze_draft_drop(input_dir)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Collect Qwen3.6 MTP EP verification-position FFN attribution "
-            "and draw stacked sorted-rank breakdown plots."
+            "and routed-token drop oracle outputs."
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)

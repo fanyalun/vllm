@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 DEFAULT_MODEL = "Qwen/Qwen3.6-35B-A3B"
 DEFAULT_DATASET = "likaixin/InstructCoder"
@@ -81,6 +81,9 @@ class GlobalStepTimingAggregation:
     barrier_first_ep_collective_seq_ids: np.ndarray
     barrier_last_ep_collective_seq_ids: np.ndarray
     barrier_num_ep_collectives: np.ndarray
+    rank_barrier_first_ep_collective_seq_ids: np.ndarray
+    rank_barrier_last_ep_collective_seq_ids: np.ndarray
+    rank_barrier_num_ep_collectives: np.ndarray
     rank_step_kinds: np.ndarray
     rank_step_total_ms: np.ndarray
     rank_step_draft_ms: np.ndarray
@@ -102,6 +105,11 @@ class GlobalStepTimingAggregation:
     global_step_kinds: np.ndarray
     global_step_histograms: np.ndarray
     global_step_total_tokens: np.ndarray
+    global_token_barrier_offsets: np.ndarray
+    global_token_source_ranks: np.ndarray
+    global_token_request_ids: np.ndarray
+    global_token_position_ids: np.ndarray
+    global_token_layer_destination_assignment_counts: np.ndarray
     num_global_candidate_steps: int
     num_global_captured_steps: int
     num_global_prefill_dropped_steps: int
@@ -315,6 +323,62 @@ def count_position_layer_local_routed_tokens(
             f"{routing_data.shape[0]} vs {row_offset}."
         )
     return position_layer_tokens
+
+
+def build_token_layer_destination_assignments(
+    routing_data: np.ndarray,
+    request_ids: tuple[str, ...],
+    num_scheduled_tokens: dict[str, int],
+    *,
+    expert_to_ep_rank: np.ndarray,
+    ep_size: int,
+    layers: tuple[int, ...] = DEFAULT_LAYERS,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if routing_data.ndim != 3:
+        raise ValueError(
+            "routing_data must be a rank-3 array shaped as "
+            "(num_tokens, num_layers, topk)."
+        )
+    if expert_to_ep_rank.ndim != 1:
+        raise ValueError("expert_to_ep_rank must be a rank-1 array.")
+    if ep_size <= 0:
+        raise ValueError("ep_size must be positive.")
+
+    token_request_ids: list[str] = []
+    token_position_ids: list[int] = []
+    for request_id in request_ids:
+        scheduled_count = int(num_scheduled_tokens.get(request_id, 0))
+        token_request_ids.extend([str(request_id)] * scheduled_count)
+        token_position_ids.extend(range(scheduled_count))
+    if len(token_request_ids) != routing_data.shape[0]:
+        raise ValueError(
+            "routing_data rows do not match the request scheduling layout: "
+            f"{routing_data.shape[0]} vs {len(token_request_ids)}."
+        )
+
+    selected_routes = np.asarray(routing_data[:, layers, :], dtype=np.int64)
+    if selected_routes.size:
+        if np.min(selected_routes) < 0 or np.max(selected_routes) >= len(
+            expert_to_ep_rank
+        ):
+            raise ValueError("routing_data contains an out-of-range expert ID.")
+        destination_ranks = expert_to_ep_rank[selected_routes]
+    else:
+        destination_ranks = np.empty(selected_routes.shape, dtype=np.int64)
+    assignments = np.zeros(
+        (routing_data.shape[0], len(layers), ep_size),
+        dtype=np.int16,
+    )
+    for destination_rank in range(ep_size):
+        assignments[:, :, destination_rank] = np.count_nonzero(
+            destination_ranks == destination_rank,
+            axis=2,
+        )
+    return (
+        np.asarray(token_request_ids, dtype=np.str_),
+        np.asarray(token_position_ids, dtype=np.int16),
+        assignments,
+    )
 
 
 def average_step_histograms(step_histograms: np.ndarray) -> np.ndarray:
@@ -607,7 +671,7 @@ def aggregate_global_step_time_components(
             f"{len(rank_step_data)} vs {data_parallel_size}."
         )
 
-    per_step_records: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
+    rank_records: list[list[dict[str, Any]]] = []
     for rank_idx, rank_data in enumerate(rank_step_data):
         first_seq_ids = np.asarray(
             rank_data["candidate_first_ep_collective_seq_ids"], dtype=np.int64
@@ -655,6 +719,34 @@ def aggregate_global_step_time_components(
                 np.empty((size, 0, len(layers)), dtype=np.int64),
             ),
             dtype=np.int64,
+        )
+        token_offsets = np.asarray(
+            rank_data.get(
+                "candidate_token_offsets",
+                np.zeros((size + 1,), dtype=np.int64),
+            ),
+            dtype=np.int64,
+        )
+        token_request_ids = np.asarray(
+            rank_data.get("candidate_token_request_ids", np.empty((0,), dtype=np.str_)),
+            dtype=np.str_,
+        )
+        token_position_ids = np.asarray(
+            rank_data.get(
+                "candidate_token_position_ids",
+                np.empty((0,), dtype=np.int16),
+            ),
+            dtype=np.int16,
+        )
+        token_assignments = np.asarray(
+            rank_data.get(
+                "candidate_token_layer_destination_assignment_counts",
+                np.empty(
+                    (0, len(layers), data_parallel_size),
+                    dtype=np.int16,
+                ),
+            ),
+            dtype=np.int16,
         )
         for array_name, array in (
             ("candidate_last_ep_collective_seq_ids", last_seq_ids),
@@ -707,8 +799,41 @@ def aggregate_global_step_time_components(
                 )
             if dtype_name == "int" and not np.issubdtype(array.dtype, np.integer):
                 raise ValueError(f"Rank {rank_idx} {array_name} must be integral.")
+        if token_offsets.shape != (size + 1,):
+            raise ValueError(
+                f"Rank {rank_idx} candidate_token_offsets has shape "
+                f"{token_offsets.shape}; expected {(size + 1,)}."
+            )
+        if token_offsets[0] != 0 or np.any(np.diff(token_offsets) < 0):
+            raise ValueError(
+                f"Rank {rank_idx} candidate_token_offsets must start at zero "
+                "and be non-decreasing."
+            )
+        num_tokens = int(token_offsets[-1])
+        if token_request_ids.shape != (num_tokens,):
+            raise ValueError(
+                f"Rank {rank_idx} candidate_token_request_ids has shape "
+                f"{token_request_ids.shape}; expected {(num_tokens,)}."
+            )
+        if token_position_ids.shape != (num_tokens,):
+            raise ValueError(
+                f"Rank {rank_idx} candidate_token_position_ids has shape "
+                f"{token_position_ids.shape}; expected {(num_tokens,)}."
+            )
+        expected_assignment_shape = (
+            num_tokens,
+            len(layers),
+            data_parallel_size,
+        )
+        if token_assignments.shape != expected_assignment_shape:
+            raise ValueError(
+                f"Rank {rank_idx} token assignment tensor has shape "
+                f"{token_assignments.shape}; expected "
+                f"{expected_assignment_shape}."
+            )
 
         seen_spans: set[tuple[int, int, int]] = set()
+        records: list[dict[str, Any]] = []
         for idx in range(size):
             first_seq_id = int(first_seq_ids[idx])
             last_seq_id = int(last_seq_ids[idx])
@@ -732,29 +857,44 @@ def aggregate_global_step_time_components(
                 )
             seen_spans.add(span)
 
-            record = {
-                "rank_idx": rank_idx,
-                "step_kind": str(step_kinds[idx]),
-                "step_total_ms": float(step_total_ms[idx]),
-                "step_draft_ms": float(step_draft_ms[idx]),
-                "step_ffn_ms": float(step_ffn_ms[idx]),
-                "step_total_tokens": int(step_total_tokens[idx]),
-                "step_histograms": step_histograms[idx],
-                "layer_ffn_ms": layer_ffn_ms[idx],
-                "layer_local_routed_tokens": layer_local_routed_tokens[idx],
-                "layer_local_active_experts": layer_local_active_experts[idx],
-                "position_layer_ffn_ms": position_layer_ffn_ms[idx],
-                "position_layer_local_routed_tokens": (
-                    position_layer_local_routed_tokens[idx]
-                ),
-            }
-            per_step_records.setdefault(span, []).append(record)
+            token_start = int(token_offsets[idx])
+            token_end = int(token_offsets[idx + 1])
+            records.append(
+                {
+                    "rank_idx": rank_idx,
+                    "span": span,
+                    "step_kind": str(step_kinds[idx]),
+                    "step_total_ms": float(step_total_ms[idx]),
+                    "step_draft_ms": float(step_draft_ms[idx]),
+                    "step_ffn_ms": float(step_ffn_ms[idx]),
+                    "step_total_tokens": int(step_total_tokens[idx]),
+                    "step_histograms": step_histograms[idx],
+                    "layer_ffn_ms": layer_ffn_ms[idx],
+                    "layer_local_routed_tokens": layer_local_routed_tokens[idx],
+                    "layer_local_active_experts": layer_local_active_experts[idx],
+                    "position_layer_ffn_ms": position_layer_ffn_ms[idx],
+                    "position_layer_local_routed_tokens": (
+                        position_layer_local_routed_tokens[idx]
+                    ),
+                    "token_request_ids": token_request_ids[token_start:token_end],
+                    "token_position_ids": token_position_ids[token_start:token_end],
+                    "token_assignments": token_assignments[token_start:token_end],
+                }
+            )
+        rank_records.append(records)
+
+    barrier_counts = [len(records) for records in rank_records]
+    num_barriers = min(barrier_counts, default=0)
+    num_global_candidate_steps = max(barrier_counts, default=0)
 
     global_barrier_ids: list[int] = []
     global_step_indices: list[int] = []
     barrier_first_seq_ids: list[int] = []
     barrier_last_seq_ids: list[int] = []
     barrier_num_collectives: list[int] = []
+    rank_barrier_first_seq_ids: list[np.ndarray] = []
+    rank_barrier_last_seq_ids: list[np.ndarray] = []
+    rank_barrier_num_collectives: list[np.ndarray] = []
     rank_step_kinds: list[np.ndarray] = []
     rank_step_total_ms: list[np.ndarray] = []
     rank_step_draft_ms: list[np.ndarray] = []
@@ -776,19 +916,20 @@ def aggregate_global_step_time_components(
     global_step_kinds: list[str] = []
     global_step_histograms: list[np.ndarray] = []
     global_step_total_tokens: list[int] = []
+    global_token_barrier_offsets = [0]
+    global_token_source_ranks: list[np.ndarray] = []
+    global_token_request_ids: list[np.ndarray] = []
+    global_token_position_ids: list[np.ndarray] = []
+    global_token_assignments: list[np.ndarray] = []
     num_global_prefill_dropped_steps = 0
     num_global_mixed_dropped_steps = 0
-    num_global_non_target_dropped_steps = 0
+    num_global_non_target_dropped_steps = (
+        num_global_candidate_steps - num_barriers
+    )
 
-    for barrier_id, span in enumerate(sorted(per_step_records)):
-        records = per_step_records[span]
-        if len(records) != data_parallel_size:
-            num_global_non_target_dropped_steps += 1
-            continue
-        if len({int(record["rank_idx"]) for record in records}) != data_parallel_size:
-            raise ValueError(f"EP collective span {span} has duplicate rank records.")
-        records = sorted(records, key=lambda record: int(record["rank_idx"]))
-
+    for barrier_id in range(num_barriers):
+        records = [records[barrier_id] for records in rank_records]
+        spans = [record["span"] for record in records]
         step_kind_set = {str(record["step_kind"]) for record in records}
         global_step_kind = (
             next(iter(step_kind_set)) if len(step_kind_set) == 1 else "mixed_rank"
@@ -833,24 +974,89 @@ def aggregate_global_step_time_components(
         }
         if len(position_counts) != 1:
             raise ValueError(
-                f"EP collective span {span} has inconsistent position counts: "
+                f"EP collective span {spans} has inconsistent position counts: "
                 f"{sorted(position_counts)}."
             )
         max_positions = next(iter(position_counts))
-        per_rank_position_layer_ffn_ms = np.stack(
-            [record["position_layer_ffn_ms"] for record in records], axis=0
-        ).astype(np.float64)
-        per_rank_position_layer_tokens = np.stack(
-            [record["position_layer_local_routed_tokens"] for record in records],
+        barrier_token_request_ids = np.concatenate(
+            [record["token_request_ids"] for record in records],
             axis=0,
-        ).astype(np.int64)
+        )
+        barrier_token_position_ids = np.concatenate(
+            [record["token_position_ids"] for record in records],
+            axis=0,
+        )
+        barrier_token_assignments = np.concatenate(
+            [record["token_assignments"] for record in records],
+            axis=0,
+        )
+        barrier_token_source_ranks = np.concatenate(
+            [
+                np.full(
+                    (record["token_position_ids"].shape[0],),
+                    int(record["rank_idx"]),
+                    dtype=np.int16,
+                )
+                for record in records
+            ],
+            axis=0,
+        )
+        if barrier_token_assignments.shape[0] > 0:
+            complete_layer_destination_tokens = np.sum(
+                barrier_token_assignments,
+                axis=0,
+                dtype=np.int64,
+            )
+            per_rank_layer_tokens = complete_layer_destination_tokens.T
+            position_layer_destination_tokens = np.zeros(
+                (max_positions, len(layers), data_parallel_size),
+                dtype=np.int64,
+            )
+            for position in range(max_positions):
+                position_layer_destination_tokens[position] = np.sum(
+                    barrier_token_assignments[
+                        barrier_token_position_ids == position
+                    ],
+                    axis=0,
+                    dtype=np.int64,
+                )
+            per_rank_position_layer_tokens = np.transpose(
+                position_layer_destination_tokens,
+                (2, 0, 1),
+            )
+            per_rank_position_layer_ffn_ms = np.zeros_like(
+                per_rank_position_layer_tokens,
+                dtype=np.float64,
+            )
+            for rank_idx in range(data_parallel_size):
+                totals = per_rank_position_layer_tokens[rank_idx].sum(axis=0)
+                for layer_idx in np.flatnonzero(totals > 0):
+                    per_rank_position_layer_ffn_ms[
+                        rank_idx, :, layer_idx
+                    ] = (
+                        per_rank_position_layer_tokens[
+                            rank_idx, :, layer_idx
+                        ].astype(np.float64)
+                        / float(totals[layer_idx])
+                    ) * per_rank_layer_ffn_ms[rank_idx, layer_idx]
+        else:
+            per_rank_position_layer_ffn_ms = np.stack(
+                [record["position_layer_ffn_ms"] for record in records], axis=0
+            ).astype(np.float64)
+            per_rank_position_layer_tokens = np.stack(
+                [
+                    record["position_layer_local_routed_tokens"]
+                    for record in records
+                ],
+                axis=0,
+            ).astype(np.int64)
         if (
             np.max(per_rank_layer_ffn_ms) <= tol_ms
             and np.max(per_rank_step_ffn_ms) > tol_ms
         ):
             raise RuntimeError(
                 "Layer-level FFN timings are missing for EP collective span "
-                f"{span}: candidate_step_ffn_ms is non-zero but "
+                f"{spans}: candidate_step_ffn_ms is non-zero but "
                 "candidate_layer_ffn_ms is all zero. Check FusedMoE layer "
                 "context hooks."
             )
@@ -892,7 +1098,8 @@ def aggregate_global_step_time_components(
         other_ms = total_ms - ffn_ms
         if ffn_ms < 0:
             raise ValueError(
-                f"Captured EP collective span {span} produced negative FFN time: "
+                f"Captured global barrier {barrier_id} produced negative FFN "
+                "time: "
                 f"{ffn_ms:.6f} ms."
             )
         mean_rank_ffn_ms = float(np.mean(sorted_rank_ffn_ms))
@@ -903,16 +1110,26 @@ def aggregate_global_step_time_components(
         )
         if other_ms < -tol_ms:
             raise ValueError(
-                f"Captured EP collective span {span} produced negative Other time: "
+                f"Captured global barrier {barrier_id} produced negative Other "
+                "time: "
                 f"{other_ms:.6f} ms."
             )
         other_ms = max(other_ms, 0.0)
 
         global_barrier_ids.append(barrier_id)
-        global_step_indices.append(int(span[0]))
-        barrier_first_seq_ids.append(int(span[0]))
-        barrier_last_seq_ids.append(int(span[1]))
-        barrier_num_collectives.append(int(span[2]))
+        global_step_indices.append(int(spans[0][0]))
+        barrier_first_seq_ids.append(int(spans[0][0]))
+        barrier_last_seq_ids.append(int(spans[0][1]))
+        barrier_num_collectives.append(int(spans[0][2]))
+        rank_barrier_first_seq_ids.append(
+            np.asarray([span[0] for span in spans], dtype=np.int64)
+        )
+        rank_barrier_last_seq_ids.append(
+            np.asarray([span[1] for span in spans], dtype=np.int64)
+        )
+        rank_barrier_num_collectives.append(
+            np.asarray([span[2] for span in spans], dtype=np.int64)
+        )
         rank_step_kinds.append(
             np.asarray([str(record["step_kind"]) for record in records], dtype=np.str_)
         )
@@ -943,6 +1160,14 @@ def aggregate_global_step_time_components(
         )
         global_step_total_tokens.append(
             sum(int(record["step_total_tokens"]) for record in records)
+        )
+        global_token_source_ranks.append(barrier_token_source_ranks)
+        global_token_request_ids.append(barrier_token_request_ids)
+        global_token_position_ids.append(barrier_token_position_ids)
+        global_token_assignments.append(barrier_token_assignments)
+        global_token_barrier_offsets.append(
+            global_token_barrier_offsets[-1]
+            + int(barrier_token_position_ids.shape[0])
         )
 
     if global_step_histograms:
@@ -994,6 +1219,21 @@ def aggregate_global_step_time_components(
         ),
         barrier_num_ep_collectives=np.asarray(
             barrier_num_collectives, dtype=np.int64
+        ),
+        rank_barrier_first_ep_collective_seq_ids=(
+            np.stack(rank_barrier_first_seq_ids, axis=0)
+            if rank_barrier_first_seq_ids
+            else np.empty((0, data_parallel_size), dtype=np.int64)
+        ),
+        rank_barrier_last_ep_collective_seq_ids=(
+            np.stack(rank_barrier_last_seq_ids, axis=0)
+            if rank_barrier_last_seq_ids
+            else np.empty((0, data_parallel_size), dtype=np.int64)
+        ),
+        rank_barrier_num_ep_collectives=(
+            np.stack(rank_barrier_num_collectives, axis=0)
+            if rank_barrier_num_collectives
+            else np.empty((0, data_parallel_size), dtype=np.int64)
         ),
         rank_step_kinds=(
             np.stack(rank_step_kinds, axis=0).astype(np.str_)
@@ -1060,7 +1300,34 @@ def aggregate_global_step_time_components(
         global_step_kinds=np.asarray(global_step_kinds, dtype=np.str_),
         global_step_histograms=histogram_array,
         global_step_total_tokens=np.asarray(global_step_total_tokens, dtype=np.int64),
-        num_global_candidate_steps=len(per_step_records),
+        global_token_barrier_offsets=np.asarray(
+            global_token_barrier_offsets,
+            dtype=np.int64,
+        ),
+        global_token_source_ranks=(
+            np.concatenate(global_token_source_ranks, axis=0)
+            if global_token_source_ranks
+            else np.empty((0,), dtype=np.int16)
+        ),
+        global_token_request_ids=(
+            np.concatenate(global_token_request_ids, axis=0)
+            if global_token_request_ids
+            else np.empty((0,), dtype=np.str_)
+        ),
+        global_token_position_ids=(
+            np.concatenate(global_token_position_ids, axis=0)
+            if global_token_position_ids
+            else np.empty((0,), dtype=np.int16)
+        ),
+        global_token_layer_destination_assignment_counts=(
+            np.concatenate(global_token_assignments, axis=0)
+            if global_token_assignments
+            else np.empty(
+                (0, len(layers), data_parallel_size),
+                dtype=np.int16,
+            )
+        ),
+        num_global_candidate_steps=num_global_candidate_steps,
         num_global_captured_steps=len(global_step_indices),
         num_global_prefill_dropped_steps=num_global_prefill_dropped_steps,
         num_global_mixed_dropped_steps=num_global_mixed_dropped_steps,

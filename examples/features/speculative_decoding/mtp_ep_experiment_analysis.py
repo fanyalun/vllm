@@ -27,6 +27,7 @@ PLOT_MODULE = None
 
 @dataclass
 class LoadedConditionData:
+    schema_version: int
     batch_size: int
     draft_length: int
     data_parallel_size: int
@@ -65,6 +66,9 @@ class LoadedConditionData:
     barrier_first_ep_collective_seq_ids: np.ndarray
     barrier_last_ep_collective_seq_ids: np.ndarray
     barrier_num_ep_collectives: np.ndarray
+    rank_barrier_first_ep_collective_seq_ids: np.ndarray
+    rank_barrier_last_ep_collective_seq_ids: np.ndarray
+    rank_barrier_num_ep_collectives: np.ndarray
     rank_step_kinds: np.ndarray
     rank_step_total_ms: np.ndarray
     rank_step_draft_ms: np.ndarray
@@ -81,6 +85,11 @@ class LoadedConditionData:
     global_step_ffn_max_mean_ratio: np.ndarray
     global_step_other_ms: np.ndarray
     global_step_kinds: np.ndarray
+    global_token_barrier_offsets: np.ndarray
+    global_token_source_ranks: np.ndarray
+    global_token_request_ids: np.ndarray
+    global_token_position_ids: np.ndarray
+    global_token_layer_destination_assignment_counts: np.ndarray
     expert_to_ep_rank: np.ndarray
     layers: np.ndarray
     avg_histograms: np.ndarray
@@ -117,6 +126,7 @@ def ensure_analysis_dirs(output_dir: Path) -> dict[str, Path]:
     rank_load_dir = plots_dir / "rank_load"
     sorted_rank_ffn_dir = plots_dir / "sorted_rank"
     rank_traces_dir = plots_dir / "rank_traces"
+    draft_drop_dir = plots_dir / "draft_drop"
     for path in (
         tables_dir,
         speedup_dir,
@@ -125,6 +135,7 @@ def ensure_analysis_dirs(output_dir: Path) -> dict[str, Path]:
         rank_load_dir,
         sorted_rank_ffn_dir,
         rank_traces_dir,
+        draft_drop_dir,
     ):
         path.mkdir(parents=True, exist_ok=True)
     return {
@@ -135,6 +146,7 @@ def ensure_analysis_dirs(output_dir: Path) -> dict[str, Path]:
         "rank_load": rank_load_dir,
         "rank_ffn_time_sorted": sorted_rank_ffn_dir,
         "rank_traces": rank_traces_dir,
+        "draft_drop": draft_drop_dir,
     }
 
 
@@ -302,16 +314,20 @@ def _scalar(npz: Any, key: str, cast: type) -> Any:
 def load_condition_data(path: Path) -> LoadedConditionData:
     with np.load(path, allow_pickle=False) as npz:
         schema_version = _scalar(npz, "schema_version", int)
-        if schema_version != SCHEMA_VERSION:
+        if schema_version not in (8, SCHEMA_VERSION):
             raise ValueError(
                 "Unsupported raw schema_version="
                 f"{schema_version} for {path}. Re-run `collect` with the current "
                 "runtime before `analyze`."
             )
+        num_barriers = int(np.asarray(npz["global_barrier_ids"]).shape[0])
+        data_parallel_size = _scalar(npz, "data_parallel_size", int)
+        layers = np.asarray(npz["layers"])
         return LoadedConditionData(
+            schema_version=schema_version,
             batch_size=_scalar(npz, "batch_size", int),
             draft_length=_scalar(npz, "draft_length", int),
-            data_parallel_size=_scalar(npz, "data_parallel_size", int),
+            data_parallel_size=data_parallel_size,
             num_samples=_scalar(npz, "num_samples", int),
             batch_size_scope=_scalar(npz, "batch_size_scope", str),
             mixed_step_policy=_scalar(npz, "mixed_step_policy", str),
@@ -367,6 +383,21 @@ def load_condition_data(path: Path) -> LoadedConditionData:
             barrier_num_ep_collectives=np.asarray(
                 npz["barrier_num_ep_collectives"]
             ),
+            rank_barrier_first_ep_collective_seq_ids=np.asarray(
+                npz["rank_barrier_first_ep_collective_seq_ids"]
+            )
+            if "rank_barrier_first_ep_collective_seq_ids" in npz
+            else np.empty((num_barriers, data_parallel_size), dtype=np.int64),
+            rank_barrier_last_ep_collective_seq_ids=np.asarray(
+                npz["rank_barrier_last_ep_collective_seq_ids"]
+            )
+            if "rank_barrier_last_ep_collective_seq_ids" in npz
+            else np.empty((num_barriers, data_parallel_size), dtype=np.int64),
+            rank_barrier_num_ep_collectives=np.asarray(
+                npz["rank_barrier_num_ep_collectives"]
+            )
+            if "rank_barrier_num_ep_collectives" in npz
+            else np.empty((num_barriers, data_parallel_size), dtype=np.int64),
             rank_step_kinds=np.asarray(npz["rank_step_kinds"]),
             rank_step_total_ms=np.asarray(npz["rank_step_total_ms"]),
             rank_step_draft_ms=np.asarray(npz["rank_step_draft_ms"]),
@@ -395,8 +426,41 @@ def load_condition_data(path: Path) -> LoadedConditionData:
             ),
             global_step_other_ms=np.asarray(npz["global_step_other_ms"]),
             global_step_kinds=np.asarray(npz["global_step_kinds"]),
+            global_token_barrier_offsets=np.asarray(
+                npz["global_token_barrier_offsets"],
+                dtype=np.int64,
+            )
+            if "global_token_barrier_offsets" in npz
+            else np.zeros((num_barriers + 1,), dtype=np.int64),
+            global_token_source_ranks=np.asarray(
+                npz["global_token_source_ranks"],
+                dtype=np.int16,
+            )
+            if "global_token_source_ranks" in npz
+            else np.empty((0,), dtype=np.int16),
+            global_token_request_ids=np.asarray(
+                npz["global_token_request_ids"],
+                dtype=np.str_,
+            )
+            if "global_token_request_ids" in npz
+            else np.empty((0,), dtype=np.str_),
+            global_token_position_ids=np.asarray(
+                npz["global_token_position_ids"],
+                dtype=np.int16,
+            )
+            if "global_token_position_ids" in npz
+            else np.empty((0,), dtype=np.int16),
+            global_token_layer_destination_assignment_counts=np.asarray(
+                npz["global_token_layer_destination_assignment_counts"],
+                dtype=np.int16,
+            )
+            if "global_token_layer_destination_assignment_counts" in npz
+            else np.empty(
+                (0, layers.shape[0], data_parallel_size),
+                dtype=np.int16,
+            ),
             expert_to_ep_rank=np.asarray(npz["expert_to_ep_rank"]),
-            layers=np.asarray(npz["layers"]),
+            layers=layers,
             avg_histograms=np.asarray(npz["avg_histograms"]),
             num_forward_steps_total=_scalar(npz, "num_forward_steps_total", int),
             num_captured_steps=_scalar(npz, "num_captured_steps", int),
@@ -427,7 +491,7 @@ def load_manifest(output_dir: Path) -> dict[str, Any]:
         return synthesize_manifest(output_dir)
     with manifest_path.open("r", encoding="utf-8") as fp:
         manifest = json.load(fp)
-    if manifest["schema_version"] != SCHEMA_VERSION:
+    if manifest["schema_version"] not in (8, SCHEMA_VERSION):
         raise ValueError(
             "Unsupported manifest schema_version="
             f"{manifest['schema_version']}. Re-run `collect` with the current "
@@ -847,6 +911,252 @@ def strict_target_barrier_mask(
     )
 
 
+def build_draft_drop_rows(
+    manifest: dict[str, Any],
+    results: dict[tuple[int, int], LoadedConditionData],
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    cutoff_rows: list[dict[str, Any]] = []
+    layer_rows: list[dict[str, Any]] = []
+    step_rows: list[dict[str, Any]] = []
+    condition_rows: list[dict[str, Any]] = []
+    for batch_size in tuple(manifest["batch_sizes"]):
+        for draft_length in tuple(manifest["draft_lengths"]):
+            if draft_length <= 0:
+                continue
+            data = results[(batch_size, draft_length)]
+            if data.schema_version < 9:
+                raise RuntimeError(
+                    "Draft-token drop analysis requires raw schema v9 with "
+                    "token identities and complete destination-rank routing. "
+                    f"{batch_size=}, {draft_length=} uses schema "
+                    f"v{data.schema_version}; re-run collect."
+                )
+            assignments = np.asarray(
+                data.global_token_layer_destination_assignment_counts,
+                dtype=np.int64,
+            )
+            offsets = np.asarray(
+                data.global_token_barrier_offsets,
+                dtype=np.int64,
+            )
+            expected_shape = (
+                data.global_token_position_ids.shape[0],
+                data.layers.shape[0],
+                data.data_parallel_size,
+            )
+            if assignments.shape != expected_shape:
+                raise RuntimeError(
+                    "Token assignment tensor has shape "
+                    f"{assignments.shape}; expected {expected_shape} for "
+                    f"{batch_size=}, {draft_length=}."
+                )
+            if offsets.shape != (data.global_barrier_ids.shape[0] + 1,):
+                raise RuntimeError(
+                    "global_token_barrier_offsets must contain one boundary "
+                    "per global barrier."
+                )
+
+            target_mask = strict_target_barrier_mask(
+                data,
+                draft_length=draft_length,
+            )
+            condition_step_ratios: list[float] = []
+            condition_dropped = 0
+            condition_draft = 0
+            for barrier_idx in np.flatnonzero(target_mask):
+                token_start = int(offsets[barrier_idx])
+                token_end = int(offsets[barrier_idx + 1])
+                positions = np.asarray(
+                    data.global_token_position_ids[token_start:token_end],
+                    dtype=np.int64,
+                )
+                source_ranks = np.asarray(
+                    data.global_token_source_ranks[token_start:token_end],
+                    dtype=np.int64,
+                )
+                request_ids = np.asarray(
+                    data.global_token_request_ids[token_start:token_end],
+                    dtype=np.str_,
+                )
+                barrier_assignments = assignments[token_start:token_end]
+                num_draft_tokens = int(np.count_nonzero(positions > 0))
+                if num_draft_tokens == 0:
+                    continue
+
+                max_position = int(np.max(positions, initial=0))
+                position_load = np.zeros(
+                    (
+                        max_position + 1,
+                        data.layers.shape[0],
+                        data.data_parallel_size,
+                    ),
+                    dtype=np.int64,
+                )
+                for position in range(max_position + 1):
+                    position_load[position] = np.sum(
+                        barrier_assignments[positions == position],
+                        axis=0,
+                        dtype=np.int64,
+                    )
+                layer_rank_load = np.sum(
+                    barrier_assignments,
+                    axis=0,
+                    dtype=np.int64,
+                )
+                baselines = np.min(layer_rank_load, axis=1)
+                cutoffs = np.zeros_like(layer_rank_load, dtype=np.int64)
+                for layer_row, layer in enumerate(data.layers):
+                    for destination_rank in range(data.data_parallel_size):
+                        cumulative = np.cumsum(
+                            position_load[:, layer_row, destination_rank]
+                        )
+                        reached = np.flatnonzero(
+                            cumulative >= baselines[layer_row]
+                        )
+                        cutoff = int(reached[0]) if reached.size else max_position
+                        cutoffs[layer_row, destination_rank] = cutoff
+                        cutoff_rows.append(
+                            {
+                                "batch_size": batch_size,
+                                "draft_length": draft_length,
+                                "global_barrier_id": int(
+                                    data.global_barrier_ids[barrier_idx]
+                                ),
+                                "layer": int(layer),
+                                "destination_rank": destination_rank,
+                                "baseline_assignments": int(
+                                    baselines[layer_row]
+                                ),
+                                "total_assignments": int(
+                                    layer_rank_load[
+                                        layer_row, destination_rank
+                                    ]
+                                ),
+                                "cutoff_position": cutoff,
+                                "cutoff_position_assignments": int(
+                                    position_load[
+                                        cutoff, layer_row, destination_rank
+                                    ]
+                                ),
+                                "assignments_through_cutoff": int(
+                                    cumulative[cutoff]
+                                ),
+                                "assignments_after_cutoff": int(
+                                    layer_rank_load[
+                                        layer_row, destination_rank
+                                    ]
+                                    - cumulative[cutoff]
+                                ),
+                            }
+                        )
+
+                token_layer_dropped = np.zeros(
+                    (positions.shape[0], data.layers.shape[0]),
+                    dtype=np.bool_,
+                )
+                for layer_row, layer in enumerate(data.layers):
+                    for destination_rank in range(data.data_parallel_size):
+                        token_layer_dropped[:, layer_row] |= (
+                            (positions > cutoffs[layer_row, destination_rank])
+                            & (positions > 0)
+                            & (
+                                barrier_assignments[
+                                    :, layer_row, destination_rank
+                                ]
+                                > 0
+                            )
+                        )
+                    layer_dropped = int(
+                        np.count_nonzero(token_layer_dropped[:, layer_row])
+                    )
+                    layer_rows.append(
+                        {
+                            "batch_size": batch_size,
+                            "draft_length": draft_length,
+                            "global_barrier_id": int(
+                                data.global_barrier_ids[barrier_idx]
+                            ),
+                            "layer": int(layer),
+                            "scheduled_draft_tokens": num_draft_tokens,
+                            "unique_dropped_draft_tokens": layer_dropped,
+                            "drop_ratio": layer_dropped / num_draft_tokens,
+                        }
+                    )
+
+                directly_dropped = np.any(token_layer_dropped, axis=1)
+                suffix_dropped = np.zeros_like(directly_dropped)
+                sequence_keys = sorted(
+                    {
+                        (int(source_rank), str(request_id))
+                        for source_rank, request_id in zip(
+                            source_ranks,
+                            request_ids,
+                        )
+                    }
+                )
+                for source_rank, request_id in sequence_keys:
+                    sequence_mask = (
+                        (source_ranks == source_rank)
+                        & (request_ids == request_id)
+                        & (positions > 0)
+                    )
+                    triggering_positions = positions[
+                        sequence_mask & directly_dropped
+                    ]
+                    if triggering_positions.size:
+                        first_drop = int(np.min(triggering_positions))
+                        suffix_dropped |= sequence_mask & (
+                            positions >= first_drop
+                        )
+                dropped_count = int(np.count_nonzero(suffix_dropped))
+                drop_ratio = dropped_count / num_draft_tokens
+                step_rows.append(
+                    {
+                        "batch_size": batch_size,
+                        "draft_length": draft_length,
+                        "global_barrier_id": int(
+                            data.global_barrier_ids[barrier_idx]
+                        ),
+                        "scheduled_draft_tokens": num_draft_tokens,
+                        "directly_dropped_unique_draft_tokens": int(
+                            np.count_nonzero(directly_dropped)
+                        ),
+                        "global_suffix_dropped_draft_tokens": dropped_count,
+                        "global_suffix_drop_ratio": drop_ratio,
+                    }
+                )
+                condition_step_ratios.append(drop_ratio)
+                condition_dropped += dropped_count
+                condition_draft += num_draft_tokens
+
+            if not condition_step_ratios:
+                raise RuntimeError(
+                    "No strict verification-only barriers with draft tokens for "
+                    f"{batch_size=}, {draft_length=}."
+                )
+            condition_rows.append(
+                {
+                    "batch_size": batch_size,
+                    "draft_length": draft_length,
+                    "num_verification_steps": len(condition_step_ratios),
+                    "mean_step_drop_ratio": float(
+                        np.mean(condition_step_ratios)
+                    ),
+                    "weighted_drop_ratio": (
+                        condition_dropped / condition_draft
+                    ),
+                    "total_dropped_draft_tokens": condition_dropped,
+                    "total_scheduled_draft_tokens": condition_draft,
+                }
+            )
+    return cutoff_rows, layer_rows, step_rows, condition_rows
+
+
 def build_sorted_rank_ffn_time_rows(
     manifest: dict[str, Any],
     results: dict[tuple[int, int], LoadedConditionData],
@@ -1221,6 +1531,113 @@ def plot_acceptance_rate_vs_draft_length(
     path = plot_dir / "acceptance_rate_vs_draft_length.png"
     fig.tight_layout()
     fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return path
+
+
+def plot_layer_drop_ratio(
+    plot_dir: Path,
+    layer_rows: list[dict[str, Any]],
+) -> Path:
+    plt = import_plot_module()
+    fig, ax = plt.subplots(figsize=(10, 5.5))
+    conditions = sorted(
+        {
+            (int(row["batch_size"]), int(row["draft_length"]))
+            for row in layer_rows
+        }
+    )
+    for batch_size, draft_length in conditions:
+        selected = [
+            row
+            for row in layer_rows
+            if int(row["batch_size"]) == batch_size
+            and int(row["draft_length"]) == draft_length
+        ]
+        layers = sorted({int(row["layer"]) for row in selected})
+        values = [
+            float(
+                np.mean(
+                    [
+                        row["drop_ratio"]
+                        for row in selected
+                        if int(row["layer"]) == layer
+                    ]
+                )
+            )
+            for layer in layers
+        ]
+        ax.plot(
+            layers,
+            values,
+            marker="o",
+            markersize=3,
+            linewidth=1.5,
+            label=f"bs={batch_size}, d={draft_length}",
+        )
+    ax.set_xlabel("layer")
+    ax.set_ylabel("mean unique draft-token drop ratio")
+    ax.set_title("Layer-local routing-oracle draft-token drop ratio")
+    ax.grid(True, alpha=0.25)
+    ax.legend(ncol=2)
+    fig.tight_layout()
+    path = plot_dir / "layer_mean_drop_ratio.png"
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+    return path
+
+
+def plot_step_drop_distribution(
+    plot_dir: Path,
+    step_rows: list[dict[str, Any]],
+    condition_rows: list[dict[str, Any]],
+) -> Path:
+    plt = import_plot_module()
+    conditions = sorted(
+        {
+            (int(row["batch_size"]), int(row["draft_length"]))
+            for row in step_rows
+        }
+    )
+    values = [
+        [
+            float(row["global_suffix_drop_ratio"])
+            for row in step_rows
+            if int(row["batch_size"]) == batch_size
+            and int(row["draft_length"]) == draft_length
+        ]
+        for batch_size, draft_length in conditions
+    ]
+    labels = [
+        f"bs={batch_size}\nd={draft_length}"
+        for batch_size, draft_length in conditions
+    ]
+    means = [
+        next(
+            float(row["mean_step_drop_ratio"])
+            for row in condition_rows
+            if int(row["batch_size"]) == batch_size
+            and int(row["draft_length"]) == draft_length
+        )
+        for batch_size, draft_length in conditions
+    ]
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+    ax.boxplot(values, tick_labels=labels, showfliers=False)
+    ax.scatter(
+        np.arange(1, len(conditions) + 1),
+        means,
+        color="#E45756",
+        marker="D",
+        label="arithmetic mean",
+        zorder=3,
+    )
+    ax.set_ylabel("global suffix draft-token drop ratio per step")
+    ax.set_title("Per-step routing-oracle draft-token drop distribution")
+    ax.grid(True, axis="y", alpha=0.25)
+    ax.legend()
+    fig.tight_layout()
+    path = plot_dir / "step_drop_ratio_distribution.png"
+    fig.savefig(path, dpi=180)
     plt.close(fig)
     return path
 
@@ -1789,6 +2206,33 @@ def build_report(
     return "\n".join(lines) + "\n"
 
 
+def analyze_draft_drop(
+    input_dir: Path,
+    *,
+    skip_plots: bool = False,
+) -> None:
+    manifest, results = load_all_conditions(input_dir)
+    cutoff_rows, layer_rows, step_rows, condition_rows = build_draft_drop_rows(
+        manifest,
+        results,
+    )
+    dirs = ensure_analysis_dirs(input_dir)
+    save_csv(dirs["tables"] / "draft_drop_cutoffs.csv", cutoff_rows)
+    save_csv(dirs["tables"] / "draft_drop_layer_steps.csv", layer_rows)
+    save_csv(dirs["tables"] / "draft_drop_step_summary.csv", step_rows)
+    save_csv(
+        dirs["tables"] / "draft_drop_condition_summary.csv",
+        condition_rows,
+    )
+    if not skip_plots:
+        plot_layer_drop_ratio(dirs["draft_drop"], layer_rows)
+        plot_step_drop_distribution(
+            dirs["draft_drop"],
+            step_rows,
+            condition_rows,
+        )
+
+
 def analyze_experiment(
     input_dir: Path,
     *,
@@ -1844,6 +2288,24 @@ def analyze_experiment(
     barrier_rank_layer_rows = build_barrier_rank_layer_rows(manifest, results)
     sorted_rank_summary_rows = build_sorted_rank_summary_rows(manifest, results)
     active_expert_ratio_rows = build_active_expert_ratio_rows(manifest, results)
+    speculative_conditions = [
+        data for data in results.values() if data.draft_length > 0
+    ]
+    drop_rows = None
+    if speculative_conditions and all(
+        data.schema_version >= 9 for data in speculative_conditions
+    ):
+        drop_rows = build_draft_drop_rows(manifest, results)
+    elif speculative_conditions:
+        versions = sorted(
+            {data.schema_version for data in speculative_conditions}
+        )
+        print(
+            "[drop-analysis] skipped: draft-token drop analysis requires "
+            "schema v9 token identities and complete destination routing; "
+            f"found schema versions {versions}. Re-run collect.",
+            flush=True,
+        )
 
     save_csv(dirs["tables"] / "speedup_metrics.csv", speedup_rows)
     save_csv(dirs["tables"] / "acceptance_metrics.csv", acceptance_rows)
@@ -1875,6 +2337,18 @@ def analyze_experiment(
         dirs["tables"] / "rank_ffn_imbalance_metrics.csv",
         rank_ffn_imbalance_rows,
     )
+    if drop_rows is not None:
+        cutoff_rows, layer_rows, drop_step_rows, condition_drop_rows = drop_rows
+        save_csv(dirs["tables"] / "draft_drop_cutoffs.csv", cutoff_rows)
+        save_csv(dirs["tables"] / "draft_drop_layer_steps.csv", layer_rows)
+        save_csv(
+            dirs["tables"] / "draft_drop_step_summary.csv",
+            drop_step_rows,
+        )
+        save_csv(
+            dirs["tables"] / "draft_drop_condition_summary.csv",
+            condition_drop_rows,
+        )
 
     rank_trace_rows: list[dict[str, Any]] = []
     for condition in manifest["conditions"]:
@@ -1963,6 +2437,14 @@ def analyze_experiment(
             batch_sizes,
             draft_lengths,
         )
+        if drop_rows is not None:
+            _, layer_rows, drop_step_rows, condition_drop_rows = drop_rows
+            plot_layer_drop_ratio(dirs["draft_drop"], layer_rows)
+            plot_step_drop_distribution(
+                dirs["draft_drop"],
+                drop_step_rows,
+                condition_drop_rows,
+            )
 
     if not skip_report:
         report = build_report(

@@ -175,6 +175,29 @@ def test_counting_and_descending_reorder_are_correct():
     np.testing.assert_array_equal(sorted_ids[1, :2], np.array([7, 3]))
 
 
+def test_token_destination_assignment_counts_topk_assignments():
+    routing_data = np.array([[[0, 1, 1]], [[2, 3, 2]]], dtype=np.int64)
+    expert_to_ep_rank = np.array([0, 1, 0, 1], dtype=np.int64)
+
+    request_ids, position_ids, assignments = (
+        helper.build_token_layer_destination_assignments(
+            routing_data,
+            ("req_a",),
+            {"req_a": 2},
+            expert_to_ep_rank=expert_to_ep_rank,
+            ep_size=2,
+            layers=(0,),
+        )
+    )
+
+    np.testing.assert_array_equal(request_ids, np.array(["req_a", "req_a"]))
+    np.testing.assert_array_equal(position_ids, np.array([0, 1], dtype=np.int16))
+    np.testing.assert_array_equal(
+        assignments[:, 0, :],
+        np.array([[1, 2], [2, 1]], dtype=np.int16),
+    )
+
+
 def test_metric_logic_matches_balancedness_gini_and_relative_change():
     avg_histograms = np.array([[10.0, 3.0, 2.0, 1.0]])
     baseline_histograms = np.array([[4.0, 4.0, 4.0, 4.0]])
@@ -290,6 +313,45 @@ def _rank_candidate_data(
             layer_local_active_experts, dtype=np.int64
         ),
     }
+
+
+def _add_token_routes(rank_data, per_step_assignments):
+    counts = np.asarray(
+        [assignments.shape[0] for assignments in per_step_assignments],
+        dtype=np.int64,
+    )
+    num_steps = len(per_step_assignments)
+    num_layers = per_step_assignments[0].shape[1]
+    max_positions = max(assignments.shape[0] for assignments in per_step_assignments)
+    rank_data["candidate_position_layer_ffn_ms"] = np.zeros(
+        (num_steps, max_positions, num_layers),
+        dtype=np.float64,
+    )
+    rank_data["candidate_position_layer_local_routed_tokens"] = np.zeros(
+        (num_steps, max_positions, num_layers),
+        dtype=np.int64,
+    )
+    rank_data["candidate_token_offsets"] = np.concatenate(
+        (np.zeros((1,), dtype=np.int64), np.cumsum(counts))
+    )
+    rank_data["candidate_token_request_ids"] = np.concatenate(
+        [
+            np.asarray([f"req_{idx}"] * assignments.shape[0], dtype=np.str_)
+            for idx, assignments in enumerate(per_step_assignments)
+        ],
+        axis=0,
+    )
+    rank_data["candidate_token_position_ids"] = np.concatenate(
+        [
+            np.arange(assignments.shape[0], dtype=np.int16)
+            for assignments in per_step_assignments
+        ],
+        axis=0,
+    )
+    rank_data["candidate_token_layer_destination_assignment_counts"] = (
+        np.concatenate(per_step_assignments, axis=0).astype(np.int16)
+    )
+    return rank_data
 
 
 def test_global_step_time_aggregation_aligns_rank_barriers_by_ordinal():
@@ -472,26 +534,26 @@ def test_global_step_time_aggregation_rejects_span_count_mismatch():
         raise AssertionError("Expected span count mismatch to fail.")
 
 
-def test_global_step_time_aggregation_rejects_rank_barrier_count_mismatch():
-    try:
-        helper.aggregate_global_step_time_components(
-            [
-                _rank_candidate_data(
-                    [7, 8],
-                    ["decode_only", "decode_only"],
-                    [1, 1],
-                    [1, 1],
-                ),
-                _rank_candidate_data([108], ["decode_only"], [1], [1]),
-            ],
-            data_parallel_size=2,
-            layers=(0,),
-            num_experts=4,
-        )
-    except ValueError as exc:
-        assert "different numbers of EP collective spans" in str(exc)
-    else:
-        raise AssertionError("Expected rank barrier count mismatch to fail.")
+def test_global_step_time_aggregation_drops_unmatched_rank_tail():
+    result = helper.aggregate_global_step_time_components(
+        [
+            _rank_candidate_data(
+                [7, 8],
+                ["decode_only", "decode_only"],
+                [1, 1],
+                [1, 1],
+            ),
+            _rank_candidate_data([108], ["decode_only"], [1], [1]),
+        ],
+        data_parallel_size=2,
+        layers=(0,),
+        num_experts=4,
+    )
+
+    np.testing.assert_array_equal(result.global_barrier_ids, np.array([0]))
+    assert result.num_global_candidate_steps == 2
+    assert result.num_global_captured_steps == 1
+    assert result.num_global_non_target_dropped_steps == 1
 
 
 def test_per_layer_sorted_rank_reorders_tokens_and_active_with_ffn():
@@ -533,6 +595,49 @@ def test_per_layer_sorted_rank_reorders_tokens_and_active_with_ffn():
     np.testing.assert_array_equal(
         result.global_step_sorted_rank_local_active_experts,
         np.array([[7, 3]]),
+    )
+
+
+def test_position_destination_routes_sum_all_source_ranks():
+    result = helper.aggregate_global_step_time_components(
+        [
+            _add_token_routes(
+                _rank_candidate_data(
+                    [7],
+                    ["verification_only"],
+                    [10.0],
+                    [1.0],
+                    layer_ffn_ms=[[1.0]],
+                ),
+                [np.array([[[0, 2]]], dtype=np.int16)],
+            ),
+            _add_token_routes(
+                _rank_candidate_data(
+                    [107],
+                    ["verification_only"],
+                    [11.0],
+                    [10.0],
+                    layer_ffn_ms=[[10.0]],
+                ),
+                [np.array([[[0, 3]]], dtype=np.int16)],
+            ),
+        ],
+        data_parallel_size=2,
+        layers=(0,),
+        num_experts=4,
+    )
+
+    np.testing.assert_array_equal(
+        result.rank_position_layer_local_routed_tokens[0, :, 0, 0],
+        np.array([0, 5]),
+    )
+    np.testing.assert_array_equal(
+        result.global_step_sorted_rank_local_routed_tokens,
+        np.array([[5, 0]]),
+    )
+    np.testing.assert_array_equal(
+        result.global_step_position_sorted_rank_local_routed_tokens[0, 0],
+        np.array([5, 0]),
     )
 
 
@@ -804,7 +909,7 @@ def test_position_metric_matrix_includes_routed_token_distribution():
             "verification_position": position,
             "sorted_rank_position": rank,
             "avg_attributed_ffn_ms": float(10 * position + rank),
-            "avg_local_routed_tokens": float(100 * position + rank),
+            "avg_destination_routed_assignments": float(100 * position + rank),
         }
         for position in range(3)
         for rank in range(2)
@@ -814,7 +919,7 @@ def test_position_metric_matrix_includes_routed_token_distribution():
         rows,
         verification_positions=[0, 1, 2],
         rank_positions=[0, 1],
-        metric_key="avg_local_routed_tokens",
+        metric_key="avg_destination_routed_assignments",
     )
 
     np.testing.assert_allclose(
@@ -841,6 +946,124 @@ def test_position_breakdown_strictly_filters_global_verification_steps():
     )
 
     np.testing.assert_array_equal(mask, np.array([True, False, False]))
+
+
+def _drop_condition(
+    assignments,
+    positions,
+    *,
+    global_step_kinds=None,
+    rank_step_kinds=None,
+    layers=(0,),
+):
+    assignments = np.asarray(assignments, dtype=np.int16)
+    positions = np.asarray(positions, dtype=np.int16)
+    if global_step_kinds is None:
+        global_step_kinds = ["verification_only"]
+    if rank_step_kinds is None:
+        rank_step_kinds = [["verification_only", "verification_only"]]
+    offsets = [0]
+    per_barrier = len(global_step_kinds)
+    tokens_per_barrier = positions.shape[0] // per_barrier
+    for barrier in range(per_barrier):
+        offsets.append(offsets[-1] + tokens_per_barrier)
+    return SimpleNamespace(
+        schema_version=9,
+        batch_size=8,
+        draft_length=2,
+        data_parallel_size=2,
+        layers=np.asarray(layers, dtype=np.int64),
+        global_barrier_ids=np.arange(per_barrier, dtype=np.int64),
+        global_step_kinds=np.asarray(global_step_kinds, dtype=np.str_),
+        rank_step_kinds=np.asarray(rank_step_kinds, dtype=np.str_),
+        global_token_barrier_offsets=np.asarray(offsets, dtype=np.int64),
+        global_token_source_ranks=np.zeros((positions.shape[0],), dtype=np.int16),
+        global_token_request_ids=np.asarray(
+            ["req_a"] * positions.shape[0],
+            dtype=np.str_,
+        ),
+        global_token_position_ids=positions,
+        global_token_layer_destination_assignment_counts=assignments,
+    )
+
+
+def test_draft_drop_keeps_cutoff_position_and_closes_suffix():
+    condition = _drop_condition(
+        [
+            [[2, 0]],
+            [[0, 2]],
+            [[0, 2]],
+        ],
+        [0, 1, 2],
+    )
+
+    cutoff_rows, layer_rows, step_rows, condition_rows = (
+        analysis.build_draft_drop_rows(
+            {"batch_sizes": (8,), "draft_lengths": (2,)},
+            {(8, 2): condition},
+        )
+    )
+
+    dest1_cutoff = next(
+        row for row in cutoff_rows if row["destination_rank"] == 1
+    )
+    assert dest1_cutoff["baseline_assignments"] == 2
+    assert dest1_cutoff["cutoff_position"] == 1
+    assert layer_rows[0]["unique_dropped_draft_tokens"] == 1
+    assert step_rows[0]["global_suffix_dropped_draft_tokens"] == 1
+    assert step_rows[0]["global_suffix_drop_ratio"] == 0.5
+    assert condition_rows[0]["mean_step_drop_ratio"] == 0.5
+    assert condition_rows[0]["weighted_drop_ratio"] == 0.5
+
+
+def test_draft_drop_counts_topk_assignments_but_deduplicates_tokens():
+    condition = _drop_condition(
+        [
+            [[1, 1]],
+            [[0, 2]],
+        ],
+        [0, 1],
+        global_step_kinds=["verification_only"],
+        rank_step_kinds=[["verification_only", "verification_only"]],
+    )
+
+    cutoff_rows, layer_rows, step_rows, _ = analysis.build_draft_drop_rows(
+        {"batch_sizes": (8,), "draft_lengths": (2,)},
+        {(8, 2): condition},
+    )
+
+    assert next(
+        row for row in cutoff_rows if row["destination_rank"] == 1
+    )["total_assignments"] == 3
+    assert layer_rows[0]["unique_dropped_draft_tokens"] == 1
+    assert step_rows[0]["global_suffix_dropped_draft_tokens"] == 1
+
+
+def test_draft_drop_filters_mixed_global_barriers():
+    condition = _drop_condition(
+        [
+            [[2, 0]],
+            [[0, 2]],
+            [[0, 2]],
+            [[100, 0]],
+            [[0, 100]],
+            [[0, 100]],
+        ],
+        [0, 1, 2, 0, 1, 2],
+        global_step_kinds=["verification_only", "mixed_rank"],
+        rank_step_kinds=[
+            ["verification_only", "verification_only"],
+            ["verification_only", "prefill"],
+        ],
+    )
+
+    _, _, step_rows, condition_rows = analysis.build_draft_drop_rows(
+        {"batch_sizes": (8,), "draft_lengths": (2,)},
+        {(8, 2): condition},
+    )
+
+    assert [row["global_barrier_id"] for row in step_rows] == [0]
+    assert condition_rows[0]["num_verification_steps"] == 1
 
 
 def test_active_expert_ratio_uses_all_ranks_layers_over_model_experts():

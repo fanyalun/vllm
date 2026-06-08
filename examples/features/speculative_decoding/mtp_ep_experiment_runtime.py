@@ -30,6 +30,7 @@ from mtp_ep_load_balance_utils import (
     aggregate_global_step_time_components,
     aggregate_worker_step_timings,
     average_step_histograms,
+    build_token_layer_destination_assignments,
     classify_step_capture,
     compute_decode_throughput_tok_s,
     compute_num_output_tokens_excluding_first,
@@ -276,6 +277,9 @@ class ConditionRawData:
     barrier_first_ep_collective_seq_ids: np.ndarray
     barrier_last_ep_collective_seq_ids: np.ndarray
     barrier_num_ep_collectives: np.ndarray
+    rank_barrier_first_ep_collective_seq_ids: np.ndarray
+    rank_barrier_last_ep_collective_seq_ids: np.ndarray
+    rank_barrier_num_ep_collectives: np.ndarray
     rank_step_kinds: np.ndarray
     rank_step_total_ms: np.ndarray
     rank_step_draft_ms: np.ndarray
@@ -296,6 +300,11 @@ class ConditionRawData:
     global_step_ffn_max_mean_ratio: np.ndarray
     global_step_other_ms: np.ndarray
     global_step_kinds: np.ndarray
+    global_token_barrier_offsets: np.ndarray
+    global_token_source_ranks: np.ndarray
+    global_token_request_ids: np.ndarray
+    global_token_position_ids: np.ndarray
+    global_token_layer_destination_assignment_counts: np.ndarray
     expert_to_ep_rank: np.ndarray
     layers: np.ndarray
     avg_histograms: np.ndarray
@@ -411,6 +420,15 @@ class ConditionRawData:
                 self.barrier_last_ep_collective_seq_ids
             ),
             "barrier_num_ep_collectives": self.barrier_num_ep_collectives,
+            "rank_barrier_first_ep_collective_seq_ids": (
+                self.rank_barrier_first_ep_collective_seq_ids
+            ),
+            "rank_barrier_last_ep_collective_seq_ids": (
+                self.rank_barrier_last_ep_collective_seq_ids
+            ),
+            "rank_barrier_num_ep_collectives": (
+                self.rank_barrier_num_ep_collectives
+            ),
             "rank_step_kinds": self.rank_step_kinds,
             "rank_step_total_ms": self.rank_step_total_ms,
             "rank_step_draft_ms": self.rank_step_draft_ms,
@@ -446,6 +464,13 @@ class ConditionRawData:
             "global_step_ffn_max_mean_ratio": self.global_step_ffn_max_mean_ratio,
             "global_step_other_ms": self.global_step_other_ms,
             "global_step_kinds": self.global_step_kinds,
+            "global_token_barrier_offsets": self.global_token_barrier_offsets,
+            "global_token_source_ranks": self.global_token_source_ranks,
+            "global_token_request_ids": self.global_token_request_ids,
+            "global_token_position_ids": self.global_token_position_ids,
+            "global_token_layer_destination_assignment_counts": (
+                self.global_token_layer_destination_assignment_counts
+            ),
             "expert_to_ep_rank": self.expert_to_ep_rank,
             "layers": self.layers,
             "avg_histograms": self.avg_histograms,
@@ -554,6 +579,10 @@ class RankConditionData:
     candidate_layer_local_active_experts: np.ndarray
     candidate_position_layer_ffn_ms: np.ndarray
     candidate_position_layer_local_routed_tokens: np.ndarray
+    candidate_token_offsets: np.ndarray
+    candidate_token_request_ids: np.ndarray
+    candidate_token_position_ids: np.ndarray
+    candidate_token_layer_destination_assignment_counts: np.ndarray
     expert_to_ep_rank: np.ndarray
     condition_latency_ms: float
     decode_time_total_ms: float
@@ -623,6 +652,12 @@ class RankConditionData:
             ),
             "candidate_position_layer_local_routed_tokens": (
                 self.candidate_position_layer_local_routed_tokens
+            ),
+            "candidate_token_offsets": self.candidate_token_offsets,
+            "candidate_token_request_ids": self.candidate_token_request_ids,
+            "candidate_token_position_ids": self.candidate_token_position_ids,
+            "candidate_token_layer_destination_assignment_counts": (
+                self.candidate_token_layer_destination_assignment_counts
             ),
             "expert_to_ep_rank": self.expert_to_ep_rank,
             "condition_latency_ms": np.asarray(
@@ -715,6 +750,7 @@ class WorkerInstrumentationState:
     enabled: bool = False
     pending_step_records: deque[dict[str, Any]] = field(default_factory=deque)
     current_step: StepAccumulator | None = None
+    draft_measure_depth: int = 0
     enter_step_logs: int = 0
     queued_step_logs: int = 0
     next_step_index: int = 0
@@ -1212,10 +1248,37 @@ def _measure_worker_section(
     **kwargs: Any,
 ):
     current_step = _WORKER_STATE.current_step
-    if not _WORKER_STATE.enabled or current_step is None:
+    pending_record = (
+        _WORKER_STATE.pending_step_records[-1]
+        if _WORKER_STATE.pending_step_records
+        else None
+    )
+    can_measure_pending_draft = (
+        label == "draft" and current_step is None and pending_record is not None
+    )
+    if not _WORKER_STATE.enabled or (
+        current_step is None and not can_measure_pending_draft
+    ):
         return fn(*args, **kwargs)
 
     is_draft_section = label == "draft"
+    if is_draft_section:
+        if _WORKER_STATE.draft_measure_depth > 0:
+            return fn(*args, **kwargs)
+        _WORKER_STATE.draft_measure_depth += 1
+    if can_measure_pending_draft:
+        try:
+            _synchronize_device()
+            start = time.perf_counter()
+            result = fn(*args, **kwargs)
+            _synchronize_device()
+            end = time.perf_counter()
+            _record_pending_draft_timing(start, end, pending_record)
+            return result
+        finally:
+            _WORKER_STATE.draft_measure_depth -= 1
+
+    assert current_step is not None
     if is_draft_section:
         current_step.draft_depth += 1
     try:
@@ -1237,6 +1300,7 @@ def _measure_worker_section(
     finally:
         if is_draft_section:
             current_step.draft_depth -= 1
+            _WORKER_STATE.draft_measure_depth -= 1
 
     elapsed_ms = (end - start) * 1000.0
     start_ms = start * 1000.0 - current_step.step_start_time_ms
@@ -1274,6 +1338,28 @@ def _measure_worker_section(
     else:
         raise ValueError(f"Unknown measured label: {label}")
     return result
+
+
+def _record_pending_draft_timing(
+    start: float,
+    end: float,
+    pending_record: dict[str, Any],
+) -> None:
+    elapsed_ms = (end - start) * 1000.0
+    timing = pending_record["timing"]
+    trace = pending_record["trace"]
+    timing["draft_ms"] = float(timing.get("draft_ms", 0.0)) + elapsed_ms
+    step_start_time_ms = float(trace.get("step_start_time_ms", start * 1000.0))
+    trace.setdefault("events", []).append(
+        {
+            "label": "draft",
+            "start_ms": start * 1000.0 - step_start_time_ms,
+            "end_ms": end * 1000.0 - step_start_time_ms,
+            "duration_ms": elapsed_ms,
+            "ep_collective_seq_id": None,
+            "in_draft_section": False,
+        }
+    )
 
 
 def _extract_layer_index_from_module(module: Any) -> int | None:
@@ -1653,6 +1739,7 @@ def install_experiment_hooks_worker(worker: Any) -> bool:
     _WORKER_STATE.enabled = False
     _WORKER_STATE.pending_step_records.clear()
     _WORKER_STATE.current_step = None
+    _WORKER_STATE.draft_measure_depth = 0
     _WORKER_STATE.enter_step_logs = 0
     _WORKER_STATE.queued_step_logs = 0
     _WORKER_STATE.next_step_index = 0
@@ -1664,6 +1751,7 @@ def start_condition_collection_worker(worker: Any) -> bool:
     _WORKER_STATE.enabled = True
     _WORKER_STATE.pending_step_records.clear()
     _WORKER_STATE.current_step = None
+    _WORKER_STATE.draft_measure_depth = 0
     _WORKER_STATE.enter_step_logs = 0
     _WORKER_STATE.queued_step_logs = 0
     return True
@@ -1674,6 +1762,7 @@ def stop_condition_collection_worker(worker: Any) -> dict[str, int]:
     pending = len(_WORKER_STATE.pending_step_records)
     _WORKER_STATE.pending_step_records.clear()
     _WORKER_STATE.current_step = None
+    _WORKER_STATE.draft_measure_depth = 0
     return {"pending_timings": pending}
 
 
@@ -1802,6 +1891,11 @@ class SchedulerStepRecorder:
         self.candidate_layer_local_active_experts: list[np.ndarray] = []
         self.candidate_position_layer_ffn_ms: list[np.ndarray] = []
         self.candidate_position_layer_local_routed_tokens: list[np.ndarray] = []
+        self.candidate_token_request_ids: list[np.ndarray] = []
+        self.candidate_token_position_ids: list[np.ndarray] = []
+        self.candidate_token_layer_destination_assignment_counts: list[
+            np.ndarray
+        ] = []
         self.num_forward_steps_total = 0
         self.num_dropped_steps = 0
         self.num_prefill_dropped_steps = 0
@@ -1912,6 +2006,36 @@ class SchedulerStepRecorder:
             / routed_totals[nonzero].astype(np.float64)
         ) * layer_ffn_ms[nonzero]
         return position_layer_ffn_ms
+
+    def _build_token_assignments(
+        self,
+        scheduler_output: Any,
+        model_runner_output: Any,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        routed_experts = getattr(model_runner_output, "routed_experts", None)
+        if routed_experts is None:
+            return (
+                np.empty((0,), dtype=np.str_),
+                np.empty((0,), dtype=np.int16),
+                np.empty(
+                    (0, len(self.layers), int(self.expert_to_ep_rank.max()) + 1),
+                    dtype=np.int16,
+                ),
+            )
+        routing_data = np.asarray(routed_experts.routing_data)
+        request_ids = tuple(getattr(model_runner_output, "req_ids", ()))
+        num_scheduled_tokens = dict(
+            getattr(scheduler_output, "num_scheduled_tokens", {})
+        )
+        ep_size = int(self.expert_to_ep_rank.max()) + 1
+        return build_token_layer_destination_assignments(
+            routing_data,
+            request_ids,
+            num_scheduled_tokens,
+            expert_to_ep_rank=self.expert_to_ep_rank,
+            ep_size=ep_size,
+            layers=self.layers,
+        )
 
     def __enter__(self) -> SchedulerStepRecorder:
         self._original_update = self.scheduler.update_from_output
@@ -2024,6 +2148,14 @@ class SchedulerStepRecorder:
                 layer_ffn_ms,
                 position_local_routed_tokens,
             )
+            (
+                token_request_ids,
+                token_position_ids,
+                token_assignments,
+            ) = self._build_token_assignments(
+                scheduler_output,
+                model_runner_output,
+            )
 
             self.candidate_first_ep_collective_seq_ids.append(
                 first_ep_collective_seq_id
@@ -2045,6 +2177,11 @@ class SchedulerStepRecorder:
             self.candidate_position_layer_ffn_ms.append(position_layer_ffn_ms)
             self.candidate_position_layer_local_routed_tokens.append(
                 position_local_routed_tokens
+            )
+            self.candidate_token_request_ids.append(token_request_ids)
+            self.candidate_token_position_ids.append(token_position_ids)
+            self.candidate_token_layer_destination_assignment_counts.append(
+                token_assignments
             )
 
             if captured_step is None:
@@ -2372,6 +2509,10 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
     candidate_layer_local_active_experts_parts: list[np.ndarray] = []
     candidate_position_layer_ffn_ms_parts: list[np.ndarray] = []
     candidate_position_layer_local_routed_tokens_parts: list[np.ndarray] = []
+    candidate_token_count_parts: list[np.ndarray] = []
+    candidate_token_request_id_parts: list[np.ndarray] = []
+    candidate_token_position_id_parts: list[np.ndarray] = []
+    candidate_token_assignment_parts: list[np.ndarray] = []
     trace_samples: list[dict[str, Any]] = []
     condition_latency_ms = 0.0
     num_forward_steps_total = 0
@@ -2507,6 +2648,24 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
                         axis=0,
                     ).astype(np.int64)
                 )
+                candidate_token_count_parts.append(
+                    np.asarray(
+                        [
+                            positions.shape[0]
+                            for positions in recorder.candidate_token_position_ids
+                        ],
+                        dtype=np.int64,
+                    )
+                )
+                candidate_token_request_id_parts.extend(
+                    recorder.candidate_token_request_ids
+                )
+                candidate_token_position_id_parts.extend(
+                    recorder.candidate_token_position_ids
+                )
+                candidate_token_assignment_parts.extend(
+                    recorder.candidate_token_layer_destination_assignment_counts
+                )
             if recorder.step_histograms:
                 step_histograms_parts.append(
                     np.stack(recorder.step_histograms, axis=0).astype(np.int64)
@@ -2641,6 +2800,35 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         if candidate_position_layer_local_routed_tokens_parts
         else np.empty((0, 0, len(args.layers)), dtype=np.int64)
     )
+    candidate_token_counts = (
+        np.concatenate(candidate_token_count_parts, axis=0)
+        if candidate_token_count_parts
+        else np.empty((0,), dtype=np.int64)
+    )
+    candidate_token_offsets = np.concatenate(
+        (
+            np.zeros((1,), dtype=np.int64),
+            np.cumsum(candidate_token_counts, dtype=np.int64),
+        )
+    )
+    candidate_token_request_ids = (
+        np.concatenate(candidate_token_request_id_parts, axis=0)
+        if candidate_token_request_id_parts
+        else np.empty((0,), dtype=np.str_)
+    )
+    candidate_token_position_ids = (
+        np.concatenate(candidate_token_position_id_parts, axis=0)
+        if candidate_token_position_id_parts
+        else np.empty((0,), dtype=np.int16)
+    )
+    candidate_token_layer_destination_assignment_counts = (
+        np.concatenate(candidate_token_assignment_parts, axis=0)
+        if candidate_token_assignment_parts
+        else np.empty(
+            (0, len(args.layers), args.data_parallel_size),
+            dtype=np.int16,
+        )
+    )
 
     if not step_histograms_parts:
         return RankConditionData(
@@ -2689,6 +2877,12 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
             candidate_position_layer_ffn_ms=candidate_position_layer_ffn_ms,
             candidate_position_layer_local_routed_tokens=(
                 candidate_position_layer_local_routed_tokens
+            ),
+            candidate_token_offsets=candidate_token_offsets,
+            candidate_token_request_ids=candidate_token_request_ids,
+            candidate_token_position_ids=candidate_token_position_ids,
+            candidate_token_layer_destination_assignment_counts=(
+                candidate_token_layer_destination_assignment_counts
             ),
             expert_to_ep_rank=expert_to_ep_rank,
             condition_latency_ms=condition_latency_ms,
@@ -2771,6 +2965,12 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         candidate_position_layer_ffn_ms=candidate_position_layer_ffn_ms,
         candidate_position_layer_local_routed_tokens=(
             candidate_position_layer_local_routed_tokens
+        ),
+        candidate_token_offsets=candidate_token_offsets,
+        candidate_token_request_ids=candidate_token_request_ids,
+        candidate_token_position_ids=candidate_token_position_ids,
+        candidate_token_layer_destination_assignment_counts=(
+            candidate_token_layer_destination_assignment_counts
         ),
         expert_to_ep_rank=expert_to_ep_rank,
         condition_latency_ms=condition_latency_ms,
@@ -2906,6 +3106,40 @@ def load_rank_condition_data(path: Path) -> RankConditionData:
             )
             if "candidate_position_layer_local_routed_tokens" in data
             else np.empty(candidate_position_shape, dtype=np.int64),
+            candidate_token_offsets=np.asarray(
+                data["candidate_token_offsets"],
+                dtype=np.int64,
+            )
+            if "candidate_token_offsets" in data
+            else np.zeros(
+                (candidate_layer_ffn_ms.shape[0] + 1,),
+                dtype=np.int64,
+            ),
+            candidate_token_request_ids=np.asarray(
+                data["candidate_token_request_ids"],
+                dtype=np.str_,
+            )
+            if "candidate_token_request_ids" in data
+            else np.empty((0,), dtype=np.str_),
+            candidate_token_position_ids=np.asarray(
+                data["candidate_token_position_ids"],
+                dtype=np.int16,
+            )
+            if "candidate_token_position_ids" in data
+            else np.empty((0,), dtype=np.int16),
+            candidate_token_layer_destination_assignment_counts=np.asarray(
+                data["candidate_token_layer_destination_assignment_counts"],
+                dtype=np.int16,
+            )
+            if "candidate_token_layer_destination_assignment_counts" in data
+            else np.empty(
+                (
+                    0,
+                    candidate_layer_ffn_ms.shape[1],
+                    int(np.max(data["expert_to_ep_rank"])) + 1,
+                ),
+                dtype=np.int16,
+            ),
             expert_to_ep_rank=np.asarray(data["expert_to_ep_rank"]),
             condition_latency_ms=float(data["condition_latency_ms"][0]),
             decode_time_total_ms=float(data["decode_time_total_ms"][0]),
@@ -3053,6 +3287,16 @@ def _aggregate_rank_condition_data(
                 "candidate_position_layer_local_routed_tokens": (
                     partial.candidate_position_layer_local_routed_tokens
                 ),
+                "candidate_token_offsets": partial.candidate_token_offsets,
+                "candidate_token_request_ids": (
+                    partial.candidate_token_request_ids
+                ),
+                "candidate_token_position_ids": (
+                    partial.candidate_token_position_ids
+                ),
+                "candidate_token_layer_destination_assignment_counts": (
+                    partial.candidate_token_layer_destination_assignment_counts
+                ),
             }
             for partial in partials
         ],
@@ -3184,6 +3428,15 @@ def _aggregate_rank_condition_data(
             global_steps.barrier_last_ep_collective_seq_ids
         ),
         barrier_num_ep_collectives=global_steps.barrier_num_ep_collectives,
+        rank_barrier_first_ep_collective_seq_ids=(
+            global_steps.rank_barrier_first_ep_collective_seq_ids
+        ),
+        rank_barrier_last_ep_collective_seq_ids=(
+            global_steps.rank_barrier_last_ep_collective_seq_ids
+        ),
+        rank_barrier_num_ep_collectives=(
+            global_steps.rank_barrier_num_ep_collectives
+        ),
         rank_step_kinds=global_steps.rank_step_kinds,
         rank_step_total_ms=global_steps.rank_step_total_ms,
         rank_step_draft_ms=global_steps.rank_step_draft_ms,
@@ -3222,6 +3475,13 @@ def _aggregate_rank_condition_data(
         ),
         global_step_other_ms=global_steps.global_step_other_ms,
         global_step_kinds=global_steps.global_step_kinds,
+        global_token_barrier_offsets=global_steps.global_token_barrier_offsets,
+        global_token_source_ranks=global_steps.global_token_source_ranks,
+        global_token_request_ids=global_steps.global_token_request_ids,
+        global_token_position_ids=global_steps.global_token_position_ids,
+        global_token_layer_destination_assignment_counts=(
+            global_steps.global_token_layer_destination_assignment_counts
+        ),
         expert_to_ep_rank=expert_to_ep_rank,
         layers=np.asarray(args.layers, dtype=np.int64),
         avg_histograms=average_step_histograms(global_steps.global_step_histograms),
