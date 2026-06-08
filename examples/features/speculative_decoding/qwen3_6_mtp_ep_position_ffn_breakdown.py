@@ -144,10 +144,16 @@ def build_position_rows(input_dir: Path) -> list[dict[str, int | float]]:
             continue
         path = _raw_path(input_dir, str(condition["raw_path"]))
         with np.load(path, allow_pickle=False) as data:
-            if "global_step_position_sorted_rank_ffn_ms" not in data:
+            required_keys = (
+                "global_step_position_sorted_rank_ffn_ms",
+                "global_step_position_sorted_rank_local_routed_tokens",
+            )
+            missing_keys = [key for key in required_keys if key not in data]
+            if missing_keys:
                 raise RuntimeError(
-                    f"{path} has no position-level FFN data. Re-run collect "
-                    "with qwen3_6_mtp_ep_position_ffn_breakdown.py."
+                    f"{path} has no position-level data for "
+                    f"{', '.join(missing_keys)}. Re-run collect with "
+                    "qwen3_6_mtp_ep_position_ffn_breakdown.py."
                 )
             ffn = np.asarray(
                 data["global_step_position_sorted_rank_ffn_ms"],
@@ -158,9 +164,14 @@ def build_position_rows(input_dir: Path) -> list[dict[str, int | float]]:
                 dtype=np.float64,
             )
         position_count = draft_length + 1
-        if ffn.ndim != 3 or ffn.shape[1] < position_count:
+        if (
+            ffn.ndim != 3
+            or ffn.shape[1] < position_count
+            or tokens.shape != ffn.shape
+        ):
             raise RuntimeError(
-                f"{path} has shape {ffn.shape}, expected at least "
+                f"{path} has FFN shape {ffn.shape} and token shape "
+                f"{tokens.shape}; expected matching 3D arrays with at least "
                 f"{position_count} verification positions."
             )
         avg_ffn = ffn[:, :position_count, :].mean(axis=0)
@@ -206,6 +217,24 @@ def write_position_csv(rows: list[dict[str, int | float]], output_dir: Path) -> 
     return csv_path
 
 
+def _build_position_metric_matrix(
+    selected: list[dict[str, int | float]],
+    verification_positions: list[int],
+    rank_positions: list[int],
+    metric_key: str,
+) -> np.ndarray:
+    values = np.zeros((len(verification_positions), len(rank_positions)))
+    rank_indices = {
+        rank_position: index
+        for index, rank_position in enumerate(rank_positions)
+    }
+    for row in selected:
+        position = int(row["verification_position"])
+        rank_index = rank_indices[int(row["sorted_rank_position"])]
+        values[position, rank_index] = float(row[metric_key])
+    return values
+
+
 def plot_position_breakdown(
     rows: list[dict[str, int | float]],
     output_dir: Path,
@@ -231,13 +260,16 @@ def plot_position_breakdown(
     plot_paths: list[Path] = []
     for draft_length in draft_lengths:
         fig, axes = plt.subplots(
-            1,
+            2,
             len(batch_sizes),
-            figsize=(7.0 * len(batch_sizes), 4.8),
+            figsize=(7.0 * len(batch_sizes), 8.6),
             squeeze=False,
-            sharey=True,
+            sharex="col",
+            sharey="row",
         )
-        for axis, batch_size in zip(axes[0], batch_sizes, strict=True):
+        for column, batch_size in enumerate(batch_sizes):
+            ffn_axis = axes[0][column]
+            token_axis = axes[1][column]
             selected = [
                 row
                 for row in rows
@@ -245,46 +277,77 @@ def plot_position_breakdown(
                 and int(row["draft_length"]) == draft_length
             ]
             if not selected:
-                axis.set_axis_off()
+                ffn_axis.set_axis_off()
+                token_axis.set_axis_off()
                 continue
             rank_positions = sorted(
                 {int(row["sorted_rank_position"]) for row in selected}
             )
             verification_positions = list(range(draft_length + 1))
             x = np.asarray(rank_positions, dtype=np.int64)
-            y = np.zeros((len(verification_positions), len(rank_positions)))
-            for row in selected:
-                position = int(row["verification_position"])
-                rank_index = rank_positions.index(
-                    int(row["sorted_rank_position"])
-                )
-                y[position, rank_index] = float(row["avg_attributed_ffn_ms"])
-            axis.stackplot(
+            ffn_values = _build_position_metric_matrix(
+                selected,
+                verification_positions,
+                rank_positions,
+                "avg_attributed_ffn_ms",
+            )
+            token_values = _build_position_metric_matrix(
+                selected,
+                verification_positions,
+                rank_positions,
+                "avg_local_routed_tokens",
+            )
+            labels = [
+                f"pos {position}" for position in verification_positions
+            ]
+            ffn_axis.stackplot(
                 x,
-                y,
-                labels=[f"pos {position}" for position in verification_positions],
+                ffn_values,
+                labels=labels,
                 colors=colors[: len(verification_positions)],
                 alpha=0.85,
             )
-            axis.plot(
+            ffn_axis.plot(
                 x,
-                y.sum(axis=0),
+                ffn_values.sum(axis=0),
                 color="black",
                 linewidth=1.5,
                 marker="o",
                 label="total",
             )
-            axis.set_title(f"batch_size={batch_size}")
-            axis.set_xlabel("sorted rank position (0 = heaviest per layer)")
-            axis.grid(True, alpha=0.25)
-            axis.set_xticks(rank_positions)
+            token_axis.stackplot(
+                x,
+                token_values,
+                labels=labels,
+                colors=colors[: len(verification_positions)],
+                alpha=0.85,
+            )
+            token_axis.plot(
+                x,
+                token_values.sum(axis=0),
+                color="black",
+                linewidth=1.5,
+                marker="o",
+                label="total",
+            )
+            ffn_axis.set_title(f"batch_size={batch_size}")
+            token_axis.set_xlabel(
+                "sorted rank position (0 = heaviest per layer)"
+            )
+            for axis in (ffn_axis, token_axis):
+                axis.grid(True, alpha=0.25)
+                axis.set_xticks(rank_positions)
         axes[0][0].set_ylabel(
             "avg attributed FFN time after per-layer sort (ms)"
+        )
+        axes[1][0].set_ylabel(
+            "avg local routed tokens after per-layer sort"
         )
         handles, labels = axes[0][-1].get_legend_handles_labels()
         fig.legend(handles, labels, loc="upper right")
         fig.suptitle(
-            f"draft_length={draft_length} verification-position FFN breakdown"
+            f"draft_length={draft_length} verification-position FFN and "
+            "routed-token breakdown"
         )
         fig.tight_layout(rect=(0, 0, 0.9, 0.92))
         plot_path = plot_dir / f"draft_{draft_length:02d}.png"

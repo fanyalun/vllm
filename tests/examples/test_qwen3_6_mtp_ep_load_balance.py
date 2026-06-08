@@ -41,6 +41,10 @@ analysis = _load_module(
     "mtp_ep_experiment_analysis",
     "mtp_ep_experiment_analysis.py",
 )
+position_breakdown = _load_module(
+    "qwen3_6_mtp_ep_position_ffn_breakdown",
+    "qwen3_6_mtp_ep_position_ffn_breakdown.py",
+)
 
 
 def _scheduler_output(num_scheduled_tokens, scheduled_spec_decode_tokens):
@@ -745,6 +749,31 @@ def test_sorted_rank_summary_rows_average_ffn_tokens_and_active():
     assert rows[0]["avg_local_routed_tokens"] == 140.0
     assert rows[0]["avg_local_active_experts"] == 6.0
     assert rows[1]["avg_ffn_ms"] == 4.5
+
+
+def test_position_metric_matrix_includes_routed_token_distribution():
+    rows = [
+        {
+            "verification_position": position,
+            "sorted_rank_position": rank,
+            "avg_attributed_ffn_ms": float(10 * position + rank),
+            "avg_local_routed_tokens": float(100 * position + rank),
+        }
+        for position in range(3)
+        for rank in range(2)
+    ]
+
+    token_values = position_breakdown._build_position_metric_matrix(
+        rows,
+        verification_positions=[0, 1, 2],
+        rank_positions=[0, 1],
+        metric_key="avg_local_routed_tokens",
+    )
+
+    np.testing.assert_allclose(
+        token_values,
+        np.array([[0.0, 1.0], [100.0, 101.0], [200.0, 201.0]]),
+    )
 
 
 def test_active_expert_ratio_uses_all_ranks_layers_over_model_experts():
