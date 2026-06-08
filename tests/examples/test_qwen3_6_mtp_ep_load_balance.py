@@ -41,9 +41,9 @@ analysis = _load_module(
     "mtp_ep_experiment_analysis",
     "mtp_ep_experiment_analysis.py",
 )
-position_breakdown = _load_module(
-    "qwen3_6_mtp_ep_position_ffn_breakdown",
-    "qwen3_6_mtp_ep_position_ffn_breakdown.py",
+experiment = _load_module(
+    "qwen3_6_mtp_ep_load_balance_experiment",
+    "qwen3_6_mtp_ep_load_balance_experiment.py",
 )
 
 
@@ -915,7 +915,7 @@ def test_position_metric_matrix_includes_routed_token_distribution():
         for rank in range(2)
     ]
 
-    token_values = position_breakdown._build_position_metric_matrix(
+    token_values = analysis._build_position_metric_matrix(
         rows,
         verification_positions=[0, 1, 2],
         rank_positions=[0, 1],
@@ -929,12 +929,14 @@ def test_position_metric_matrix_includes_routed_token_distribution():
 
 
 def test_position_breakdown_strictly_filters_global_verification_steps():
-    mask = position_breakdown._strict_verification_mask(
-        np.array(
+    condition = _drop_condition(
+        np.zeros((3, 1, 2), dtype=np.int16),
+        np.array([0, 1, 2], dtype=np.int16),
+        global_step_kinds=np.array(
             ["verification_only", "mixed_rank", "verification_only"],
             dtype=np.str_,
         ),
-        np.array(
+        rank_step_kinds=np.array(
             [
                 ["verification_only", "verification_only"],
                 ["verification_only", "prefill"],
@@ -942,10 +944,32 @@ def test_position_breakdown_strictly_filters_global_verification_steps():
             ],
             dtype=np.str_,
         ),
-        num_steps=3,
     )
+    mask = analysis.strict_target_barrier_mask(condition, draft_length=2)
 
     np.testing.assert_array_equal(mask, np.array([True, False, False]))
+    condition.global_step_position_sorted_rank_ffn_ms = np.array(
+        [
+            [[1.0, 0.5], [2.0, 1.0], [3.0, 1.5]],
+            [[100.0, 50.0], [200.0, 100.0], [300.0, 150.0]],
+            [[1000.0, 500.0], [2000.0, 1000.0], [3000.0, 1500.0]],
+        ]
+    )
+    condition.global_step_position_sorted_rank_local_routed_tokens = np.array(
+        [
+            [[8, 4], [7, 5], [6, 6]],
+            [[800, 400], [700, 500], [600, 600]],
+            [[8000, 4000], [7000, 5000], [6000, 6000]],
+        ]
+    )
+    rows = analysis.build_position_breakdown_rows(
+        {"batch_sizes": (8,), "draft_lengths": (2,)},
+        {(8, 2): condition},
+    )
+
+    assert all(row["num_global_steps"] == 1 for row in rows)
+    assert rows[0]["avg_attributed_ffn_ms"] == 1.0
+    assert rows[0]["avg_destination_routed_assignments"] == 8.0
 
 
 def _drop_condition(
@@ -1218,6 +1242,17 @@ def test_collect_one_command_includes_prompt_cache_and_warmup(tmp_path):
     assert command[command.index("--data-parallel-size") + 1] == "4"
     assert command[command.index("--num-samples") + 1] == "1024"
     assert command[command.index("--max-num-batched-tokens") + 1] == "49152"
+    assert command[2:5] == ["collect", "--internal-stage", "condition"]
+
+
+def test_unified_cli_defaults_to_four_gpu_full_output_matrix():
+    args = experiment.parse_args(["collect"])
+
+    assert args.batch_sizes == [8, 16]
+    assert args.draft_lengths == [0, 2, 4, 6]
+    assert args.data_parallel_size == 4
+    assert args.max_model_len == 768
+    assert args.max_num_batched_tokens == 8192
 
 
 def test_scheduler_capacity_helpers_use_local_batch_budget():

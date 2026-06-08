@@ -82,6 +82,8 @@ class LoadedConditionData:
     global_step_sorted_rank_ffn_ms: np.ndarray
     global_step_sorted_rank_local_routed_tokens: np.ndarray
     global_step_sorted_rank_local_active_experts: np.ndarray
+    global_step_position_sorted_rank_ffn_ms: np.ndarray
+    global_step_position_sorted_rank_local_routed_tokens: np.ndarray
     global_step_ffn_max_mean_ratio: np.ndarray
     global_step_other_ms: np.ndarray
     global_step_kinds: np.ndarray
@@ -127,6 +129,7 @@ def ensure_analysis_dirs(output_dir: Path) -> dict[str, Path]:
     sorted_rank_ffn_dir = plots_dir / "sorted_rank"
     rank_traces_dir = plots_dir / "rank_traces"
     draft_drop_dir = plots_dir / "draft_drop"
+    position_ffn_dir = plots_dir / "position_ffn_breakdown"
     for path in (
         tables_dir,
         speedup_dir,
@@ -136,6 +139,7 @@ def ensure_analysis_dirs(output_dir: Path) -> dict[str, Path]:
         sorted_rank_ffn_dir,
         rank_traces_dir,
         draft_drop_dir,
+        position_ffn_dir,
     ):
         path.mkdir(parents=True, exist_ok=True)
     return {
@@ -147,6 +151,7 @@ def ensure_analysis_dirs(output_dir: Path) -> dict[str, Path]:
         "rank_ffn_time_sorted": sorted_rank_ffn_dir,
         "rank_traces": rank_traces_dir,
         "draft_drop": draft_drop_dir,
+        "position_ffn": position_ffn_dir,
     }
 
 
@@ -421,6 +426,12 @@ def load_condition_data(path: Path) -> LoadedConditionData:
             global_step_sorted_rank_local_active_experts=np.asarray(
                 npz["global_step_sorted_rank_local_active_experts"]
             ),
+            global_step_position_sorted_rank_ffn_ms=np.asarray(
+                npz["global_step_position_sorted_rank_ffn_ms"]
+            ),
+            global_step_position_sorted_rank_local_routed_tokens=np.asarray(
+                npz["global_step_position_sorted_rank_local_routed_tokens"]
+            ),
             global_step_ffn_max_mean_ratio=np.asarray(
                 npz["global_step_ffn_max_mean_ratio"]
             ),
@@ -624,10 +635,19 @@ def build_step_time_rows(
     for batch_size in batch_sizes:
         for draft_length in draft_lengths:
             data = results[(batch_size, draft_length)]
+            target_mask = strict_target_barrier_mask(
+                data,
+                draft_length=draft_length,
+            )
+            if not np.any(target_mask):
+                raise ValueError(
+                    "No strict target barriers for "
+                    f"batch_size={batch_size}, draft_length={draft_length}."
+                )
             summary = summarize_global_step_time_components(
-                data.global_step_total_ms,
-                data.global_step_ffn_ms,
-                data.global_step_other_ms,
+                data.global_step_total_ms[target_mask],
+                data.global_step_ffn_ms[target_mask],
+                data.global_step_other_ms[target_mask],
             )
             row: dict[str, float | int] = {
                 "batch_size": batch_size,
@@ -635,7 +655,7 @@ def build_step_time_rows(
                 "decode_step_scope": (
                     "verification_only" if draft_length > 0 else "decode_only"
                 ),
-                "num_steps": int(data.global_step_indices.shape[0]),
+                "num_steps": int(np.count_nonzero(target_mask)),
                 "num_forward_steps_total": data.num_forward_steps_total,
                 "num_captured_steps": data.num_captured_steps,
                 "num_global_candidate_steps": data.num_global_candidate_steps,
@@ -692,30 +712,45 @@ def build_load_distribution_rows(
 
     for batch_size in batch_sizes:
         baseline_data = results[(batch_size, 0)]
-        baseline_avg = baseline_data.avg_histograms
+        baseline_avg = strict_average_histograms(
+            baseline_data,
+            draft_length=0,
+        )
         _, baseline_order = sort_experts_desc(baseline_avg)
         for draft_length in draft_lengths:
             data = results[(batch_size, draft_length)]
+            condition_avg = strict_average_histograms(
+                data,
+                draft_length=draft_length,
+            )
+            num_steps = int(
+                np.count_nonzero(
+                    strict_target_barrier_mask(
+                        data,
+                        draft_length=draft_length,
+                    )
+                )
+            )
             metrics_rows = build_condition_metrics(
                 batch_size=batch_size,
                 draft_length=draft_length,
-                num_steps=data.num_global_captured_steps,
+                num_steps=num_steps,
                 layers=layers,
-                avg_histograms=data.avg_histograms,
+                avg_histograms=condition_avg,
                 baseline_histograms=baseline_avg,
             )
             load_metric_rows.extend(metrics_rows)
             rank_load = build_rank_load_from_histograms(
-                data.avg_histograms,
+                condition_avg,
                 data.expert_to_ep_rank,
                 data.data_parallel_size,
             )
 
             condition_sorted_counts, condition_order = sort_experts_desc(
-                data.avg_histograms
+                condition_avg
             )
             baseline_sorted_counts = reorder_histograms_by_expert_order(
-                data.avg_histograms,
+                condition_avg,
                 baseline_order,
             )
 
@@ -909,6 +944,213 @@ def strict_target_barrier_mask(
         data.rank_step_kinds == target_kind,
         axis=1,
     )
+
+
+def strict_average_histograms(
+    data: LoadedConditionData,
+    *,
+    draft_length: int,
+) -> np.ndarray:
+    target_mask = strict_target_barrier_mask(
+        data,
+        draft_length=draft_length,
+    )
+    if data.step_histograms.shape[0] != target_mask.shape[0]:
+        raise ValueError(
+            "step_histograms must align with global barriers: "
+            f"{data.step_histograms.shape[0]} vs {target_mask.shape[0]}."
+        )
+    if not np.any(target_mask):
+        raise ValueError(
+            f"No strict target barriers for draft_length={draft_length}."
+        )
+    return np.mean(data.step_histograms[target_mask], axis=0)
+
+
+def build_position_breakdown_rows(
+    manifest: dict[str, Any],
+    results: dict[tuple[int, int], LoadedConditionData],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for batch_size in tuple(manifest["batch_sizes"]):
+        for draft_length in tuple(manifest["draft_lengths"]):
+            if draft_length <= 0:
+                continue
+            data = results[(batch_size, draft_length)]
+            if data.schema_version < 9:
+                raise RuntimeError(
+                    "Position breakdown requires schema v9 complete "
+                    "destination-rank routing. Re-run collect."
+                )
+            ffn = np.asarray(
+                data.global_step_position_sorted_rank_ffn_ms,
+                dtype=np.float64,
+            )
+            assignments = np.asarray(
+                data.global_step_position_sorted_rank_local_routed_tokens,
+                dtype=np.float64,
+            )
+            target_mask = strict_target_barrier_mask(
+                data,
+                draft_length=draft_length,
+            )
+            position_count = draft_length + 1
+            if (
+                ffn.ndim != 3
+                or ffn.shape[1] < position_count
+                or assignments.shape != ffn.shape
+            ):
+                raise RuntimeError(
+                    "Position arrays must be matching rank-3 arrays with at "
+                    f"least {position_count} positions for batch_size="
+                    f"{batch_size}, draft_length={draft_length}; got "
+                    f"{ffn.shape} and {assignments.shape}."
+                )
+            if not np.any(target_mask):
+                raise RuntimeError(
+                    "No strict global verification-only barriers for "
+                    f"batch_size={batch_size}, draft_length={draft_length}."
+                )
+            ffn = ffn[target_mask, :position_count]
+            assignments = assignments[target_mask, :position_count]
+            avg_ffn = ffn.mean(axis=0)
+            avg_assignments = assignments.mean(axis=0)
+            for position in range(position_count):
+                for sorted_rank in range(avg_ffn.shape[1]):
+                    rows.append(
+                        {
+                            "batch_size": batch_size,
+                            "draft_length": draft_length,
+                            "verification_position": position,
+                            "sorted_rank_position": sorted_rank,
+                            "num_global_steps": int(ffn.shape[0]),
+                            "avg_attributed_ffn_ms": float(
+                                avg_ffn[position, sorted_rank]
+                            ),
+                            "avg_destination_routed_assignments": float(
+                                avg_assignments[position, sorted_rank]
+                            ),
+                        }
+                    )
+    return rows
+
+
+def _build_position_metric_matrix(
+    selected: list[dict[str, Any]],
+    verification_positions: list[int],
+    rank_positions: list[int],
+    metric_key: str,
+) -> np.ndarray:
+    values = np.zeros((len(verification_positions), len(rank_positions)))
+    rank_indices = {
+        rank_position: index
+        for index, rank_position in enumerate(rank_positions)
+    }
+    for row in selected:
+        position = int(row["verification_position"])
+        rank_index = rank_indices[int(row["sorted_rank_position"])]
+        values[position, rank_index] = float(row[metric_key])
+    return values
+
+
+def plot_position_breakdown(
+    plot_dir: Path,
+    rows: list[dict[str, Any]],
+) -> list[Path]:
+    plt = import_plot_module()
+    batch_sizes = sorted({int(row["batch_size"]) for row in rows})
+    draft_lengths = sorted({int(row["draft_length"]) for row in rows})
+    colors = [
+        "#4C78A8",
+        "#F58518",
+        "#54A24B",
+        "#E45756",
+        "#72B7B2",
+        "#B279A2",
+        "#FF9DA6",
+    ]
+    plot_paths: list[Path] = []
+    for draft_length in draft_lengths:
+        fig, axes = plt.subplots(
+            2,
+            len(batch_sizes),
+            figsize=(7.0 * len(batch_sizes), 8.6),
+            squeeze=False,
+            sharex="col",
+            sharey="row",
+        )
+        for column, batch_size in enumerate(batch_sizes):
+            ffn_axis = axes[0][column]
+            assignment_axis = axes[1][column]
+            selected = [
+                row
+                for row in rows
+                if int(row["batch_size"]) == batch_size
+                and int(row["draft_length"]) == draft_length
+            ]
+            rank_positions = sorted(
+                {int(row["sorted_rank_position"]) for row in selected}
+            )
+            verification_positions = list(range(draft_length + 1))
+            x = np.asarray(rank_positions, dtype=np.int64)
+            ffn_values = _build_position_metric_matrix(
+                selected,
+                verification_positions,
+                rank_positions,
+                "avg_attributed_ffn_ms",
+            )
+            assignment_values = _build_position_metric_matrix(
+                selected,
+                verification_positions,
+                rank_positions,
+                "avg_destination_routed_assignments",
+            )
+            labels = [
+                f"pos {position}" for position in verification_positions
+            ]
+            for axis, values in (
+                (ffn_axis, ffn_values),
+                (assignment_axis, assignment_values),
+            ):
+                axis.stackplot(
+                    x,
+                    values,
+                    labels=labels,
+                    colors=colors[: len(verification_positions)],
+                    alpha=0.85,
+                )
+                axis.plot(
+                    x,
+                    values.sum(axis=0),
+                    color="black",
+                    linewidth=1.5,
+                    marker="o",
+                    label="total",
+                )
+                axis.grid(True, alpha=0.25)
+                axis.set_xticks(rank_positions)
+            ffn_axis.set_title(f"batch_size={batch_size}")
+            assignment_axis.set_xlabel(
+                "sorted destination rank position (0 = heaviest per layer)"
+            )
+        axes[0][0].set_ylabel(
+            "avg attributed FFN time after per-layer sort (ms)"
+        )
+        axes[1][0].set_ylabel(
+            "avg destination-rank routed assignments after per-layer sort"
+        )
+        handles, labels = axes[0][-1].get_legend_handles_labels()
+        fig.legend(handles, labels, loc="upper right")
+        fig.suptitle(
+            f"draft_length={draft_length} verification-position FFN and "
+            "destination-rank assignment breakdown"
+        )
+        fig.tight_layout(rect=(0, 0, 0.9, 0.92))
+        plot_path = plot_dir / f"draft_{draft_length:02d}.png"
+        fig.savefig(plot_path, dpi=160)
+        plt.close(fig)
+        plot_paths.append(plot_path)
+    return plot_paths
 
 
 def build_draft_drop_rows(
@@ -1761,7 +2003,11 @@ def plot_condition_grid(
         for col_idx, draft_length in enumerate(draft_lengths):
             ax = axes[row_idx][col_idx]
             data = results[(batch_size, draft_length)]
-            sorted_counts, sorted_ids = sort_experts_desc(data.avg_histograms)
+            avg_histograms = strict_average_histograms(
+                data,
+                draft_length=draft_length,
+            )
+            sorted_counts, sorted_ids = sort_experts_desc(avg_histograms)
             counts = sorted_counts[row_idx]
             expert_ids = sorted_ids[row_idx]
             metrics_row = next(
@@ -1805,7 +2051,8 @@ def plot_expert_load(
     plt = import_plot_module()
     baseline = results[(batch_size, 0)]
     layers = tuple(baseline.layers.tolist())
-    _, baseline_order = sort_experts_desc(baseline.avg_histograms)
+    baseline_avg = strict_average_histograms(baseline, draft_length=0)
+    _, baseline_order = sort_experts_desc(baseline_avg)
     colors = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759"]
     fig, axes = plt.subplots(len(layers), 1, figsize=(10, 3.0 * len(layers)))
     if len(layers) == 1:
@@ -1821,8 +2068,12 @@ def plot_expert_load(
         tick_labels = [str(baseline_order[row_idx, pos]) for pos in tick_positions]
         for color, draft_length in zip(colors[: len(draft_lengths)], draft_lengths):
             data = results[(batch_size, draft_length)]
+            avg_histograms = strict_average_histograms(
+                data,
+                draft_length=draft_length,
+            )
             counts = reorder_histograms_by_expert_order(
-                data.avg_histograms,
+                avg_histograms,
                 baseline_order,
             )[row_idx]
             ax.plot(
@@ -2240,8 +2491,20 @@ def analyze_experiment(
     skip_report: bool = False,
 ) -> None:
     manifest, results = load_all_conditions(input_dir)
+    schema_versions = sorted({data.schema_version for data in results.values()})
+    if schema_versions != [SCHEMA_VERSION]:
+        raise RuntimeError(
+            "Unified analysis requires schema v9 raw data for complete "
+            "destination-rank routing and draft-token identities; found "
+            f"schema versions {schema_versions}. Re-run collect."
+        )
     batch_sizes = tuple(manifest["batch_sizes"])
     draft_lengths = tuple(manifest["draft_lengths"])
+    if 0 not in draft_lengths:
+        raise RuntimeError(
+            "Unified analysis requires draft_length=0 baseline data. Re-run "
+            "collect with --draft-lengths 0 2 4 6."
+        )
     dirs = ensure_analysis_dirs(input_dir)
 
     decode_time_ms_by_condition = {
@@ -2288,24 +2551,8 @@ def analyze_experiment(
     barrier_rank_layer_rows = build_barrier_rank_layer_rows(manifest, results)
     sorted_rank_summary_rows = build_sorted_rank_summary_rows(manifest, results)
     active_expert_ratio_rows = build_active_expert_ratio_rows(manifest, results)
-    speculative_conditions = [
-        data for data in results.values() if data.draft_length > 0
-    ]
-    drop_rows = None
-    if speculative_conditions and all(
-        data.schema_version >= 9 for data in speculative_conditions
-    ):
-        drop_rows = build_draft_drop_rows(manifest, results)
-    elif speculative_conditions:
-        versions = sorted(
-            {data.schema_version for data in speculative_conditions}
-        )
-        print(
-            "[drop-analysis] skipped: draft-token drop analysis requires "
-            "schema v9 token identities and complete destination routing; "
-            f"found schema versions {versions}. Re-run collect.",
-            flush=True,
-        )
+    position_rows = build_position_breakdown_rows(manifest, results)
+    drop_rows = build_draft_drop_rows(manifest, results)
 
     save_csv(dirs["tables"] / "speedup_metrics.csv", speedup_rows)
     save_csv(dirs["tables"] / "acceptance_metrics.csv", acceptance_rows)
@@ -2337,18 +2584,18 @@ def analyze_experiment(
         dirs["tables"] / "rank_ffn_imbalance_metrics.csv",
         rank_ffn_imbalance_rows,
     )
-    if drop_rows is not None:
-        cutoff_rows, layer_rows, drop_step_rows, condition_drop_rows = drop_rows
-        save_csv(dirs["tables"] / "draft_drop_cutoffs.csv", cutoff_rows)
-        save_csv(dirs["tables"] / "draft_drop_layer_steps.csv", layer_rows)
-        save_csv(
-            dirs["tables"] / "draft_drop_step_summary.csv",
-            drop_step_rows,
-        )
-        save_csv(
-            dirs["tables"] / "draft_drop_condition_summary.csv",
-            condition_drop_rows,
-        )
+    save_csv(dirs["tables"] / "position_ffn_breakdown.csv", position_rows)
+    cutoff_rows, layer_rows, drop_step_rows, condition_drop_rows = drop_rows
+    save_csv(dirs["tables"] / "draft_drop_cutoffs.csv", cutoff_rows)
+    save_csv(dirs["tables"] / "draft_drop_layer_steps.csv", layer_rows)
+    save_csv(
+        dirs["tables"] / "draft_drop_step_summary.csv",
+        drop_step_rows,
+    )
+    save_csv(
+        dirs["tables"] / "draft_drop_condition_summary.csv",
+        condition_drop_rows,
+    )
 
     rank_trace_rows: list[dict[str, Any]] = []
     for condition in manifest["conditions"]:
@@ -2437,14 +2684,13 @@ def analyze_experiment(
             batch_sizes,
             draft_lengths,
         )
-        if drop_rows is not None:
-            _, layer_rows, drop_step_rows, condition_drop_rows = drop_rows
-            plot_layer_drop_ratio(dirs["draft_drop"], layer_rows)
-            plot_step_drop_distribution(
-                dirs["draft_drop"],
-                drop_step_rows,
-                condition_drop_rows,
-            )
+        plot_position_breakdown(dirs["position_ffn"], position_rows)
+        plot_layer_drop_ratio(dirs["draft_drop"], layer_rows)
+        plot_step_drop_distribution(
+            dirs["draft_drop"],
+            drop_step_rows,
+            condition_drop_rows,
+        )
 
     if not skip_report:
         report = build_report(

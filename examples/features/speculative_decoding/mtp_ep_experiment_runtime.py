@@ -3562,7 +3562,7 @@ def collect_one_condition(
         if proc.returncode:
             exit_code = proc.returncode
     if exit_code:
-        raise subprocess.CalledProcessError(exit_code, "collect-one-rank")
+        raise subprocess.CalledProcessError(exit_code, "collect --internal-stage rank")
 
     partials = [load_rank_condition_data(path) for path in partial_paths]
     raw_data = _aggregate_rank_condition_data(
@@ -3587,7 +3587,9 @@ def _build_collect_one_command(
     command = [
         sys.executable,
         str(entrypoint),
-        "collect-one",
+        "collect",
+        "--internal-stage",
+        "condition",
         "--model",
         args.model,
         "--dataset",
@@ -3656,7 +3658,8 @@ def _build_collect_one_rank_command(
         draft_length=args.draft_length,
         prompt_cache=Path(args.prompt_cache_path),
     )
-    command[2] = "collect-one-rank"
+    internal_stage_index = command.index("--internal-stage") + 1
+    command[internal_stage_index] = "rank"
     command.extend(
         [
             "--dp-rank",
