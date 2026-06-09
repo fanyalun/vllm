@@ -765,6 +765,7 @@ def build_step_time_rows(
             attention_gpu = data.global_attention_gpu_ms[target_mask]
             moe_gpu = data.global_moe_gpu_ms[target_mask]
             other_gpu = data.global_gpu_other_ms[target_mask]
+            routed_expert_gpu = data.global_step_ffn_ms[target_mask]
             if not np.allclose(
                 attention_gpu + moe_gpu + other_gpu,
                 verification_gpu,
@@ -780,6 +781,7 @@ def build_step_time_rows(
             avg_attention_gpu_ms = float(np.mean(attention_gpu))
             avg_moe_gpu_ms = float(np.mean(moe_gpu))
             avg_other_gpu_ms = float(np.mean(other_gpu))
+            avg_routed_expert_gpu_ms = float(np.mean(routed_expert_gpu))
             row: dict[str, float | int] = {
                 "batch_size": batch_size,
                 "draft_length": draft_length,
@@ -822,6 +824,7 @@ def build_step_time_rows(
                 "avg_verification_gpu_total_ms": avg_verification_gpu_ms,
                 "avg_attention_gpu_ms": avg_attention_gpu_ms,
                 "avg_moe_gpu_ms": avg_moe_gpu_ms,
+                "avg_routed_expert_gpu_ms": avg_routed_expert_gpu_ms,
                 "avg_gpu_other_ms": avg_other_gpu_ms,
                 "attention_gpu_share": (
                     avg_attention_gpu_ms / avg_verification_gpu_ms
@@ -833,12 +836,11 @@ def build_step_time_rows(
                     if avg_verification_gpu_ms > 0
                     else 0.0
                 ),
-                # Compatibility aliases for existing plotting/report helpers.
                 "avg_step_total_ms": avg_verification_wall_ms,
-                "avg_ffn_ms": avg_moe_gpu_ms,
+                "avg_ffn_ms": avg_routed_expert_gpu_ms,
                 "avg_other_ms": avg_other_gpu_ms,
                 "ffn_share": (
-                    avg_moe_gpu_ms / avg_verification_gpu_ms
+                    avg_routed_expert_gpu_ms / avg_verification_gpu_ms
                     if avg_verification_gpu_ms > 0
                     else 0.0
                 ),
@@ -873,13 +875,18 @@ def build_step_time_rows(
                 if baseline_gpu > 0
                 else 0.0
             )
+            row["normalized_routed_expert_gpu"] = (
+                float(row["avg_routed_expert_gpu_ms"]) / baseline_gpu
+                if baseline_gpu > 0
+                else 0.0
+            )
             row["normalized_gpu_other"] = (
                 float(row["avg_gpu_other_ms"]) / baseline_gpu
                 if baseline_gpu > 0
                 else 0.0
             )
             row["normalized_total_ms"] = row["normalized_verification_wall"]
-            row["normalized_ffn_ms"] = row["normalized_moe_gpu"]
+            row["normalized_ffn_ms"] = row["normalized_routed_expert_gpu"]
             row["normalized_other_ms"] = row["normalized_gpu_other"]
             rows.append(row)
     return rows
@@ -1473,7 +1480,8 @@ def plot_position_breakdown(
                 "sorted destination rank position (0 = heaviest per layer)"
             )
         axes[0][0].set_ylabel(
-            "avg attributed FFN time after per-layer sort (ms)"
+            "avg attributed routed-expert/FFN GPU time "
+            "after per-layer sort (ms)"
         )
         axes[1][0].set_ylabel(
             "avg destination-rank routed assignments after per-layer sort"
@@ -1481,8 +1489,8 @@ def plot_position_breakdown(
         handles, labels = axes[0][-1].get_legend_handles_labels()
         fig.legend(handles, labels, loc="upper right")
         fig.suptitle(
-            f"draft_length={draft_length} verification-position FFN and "
-            "destination-rank assignment breakdown"
+            f"draft_length={draft_length} verification-position routed-expert/"
+            "FFN GPU time and destination-rank assignment breakdown"
         )
         fig.tight_layout(rect=(0, 0, 0.9, 0.92))
         plot_path = plot_dir / f"draft_{draft_length:02d}.png"
@@ -2395,8 +2403,10 @@ def plot_ffn_vs_draft_length(
         ax.plot(draft_lengths, y, marker="o", linewidth=2, label=f"bs={batch_size}")
     ax.axhline(1.0, color="#666666", linewidth=1, linestyle="--")
     ax.set_xlabel("draft_length")
-    ax.set_ylabel("avg_ffn_ms / avg_ffn_ms(d=0)")
-    ax.set_title("FFN vs Draft Length")
+    ax.set_ylabel(
+        "avg routed-expert/FFN GPU ms / avg routed-expert/FFN GPU ms(d=0)"
+    )
+    ax.set_title("Routed Expert/FFN GPU Time vs Draft Length")
     ax.legend()
     ax.grid(alpha=0.25)
     path = plot_dir / "ffn_vs_draft_length.png"
@@ -2618,9 +2628,13 @@ def plot_sorted_rank_ffn_time(
             color=colors[draft_idx % len(colors)],
             label=f"d={draft_length}",
         )
-    ax.set_title(f"batch_size={batch_size} sorted rank-local FFN time")
+    ax.set_title(
+        f"batch_size={batch_size} sorted rank-local routed-expert/FFN GPU time"
+    )
     ax.set_xlabel("sorted rank position (0 = heaviest per barrier)")
-    ax.set_ylabel("avg local FFN time after per-barrier sort (ms)")
+    ax.set_ylabel(
+        "avg local routed-expert/FFN GPU time after per-barrier sort (ms)"
+    )
     ax.set_xticks(positions)
     ax.grid(alpha=0.25)
     ax.legend()
@@ -2708,8 +2722,8 @@ def plot_sorted_rank0_ffn_vs_batch_size(
     ax.set_xticks(x)
     ax.set_xticklabels([str(batch_size) for batch_size in batch_sizes])
     ax.set_xlabel("batch_size")
-    ax.set_ylabel("avg sorted-rank0 FFN time (ms)")
-    ax.set_title("Sorted-rank0 FFN vs Global Batch Size")
+    ax.set_ylabel("avg sorted-rank0 routed-expert/FFN GPU time (ms)")
+    ax.set_title("Sorted-rank0 Routed Expert/FFN GPU Time vs Global Batch Size")
     ax.grid(axis="y", alpha=0.25)
     ax.legend()
     path = plot_dir / "sorted_rank0_ffn_vs_batch_size.png"
@@ -2843,7 +2857,10 @@ def build_report(
                 f"- draft_length={row['draft_length']}: "
                 "verification_wall="
                 f"{float(row['avg_verification_wall_ms']):.2f} ms, "
-                f"moe_gpu={float(row['avg_moe_gpu_ms']):.2f} ms, "
+                "moe_gpu="
+                f"{float(row['avg_moe_gpu_ms']):.2f} ms, "
+                "routed_expert_gpu="
+                f"{float(row['avg_routed_expert_gpu_ms']):.2f} ms, "
                 f"gpu_other={float(row['avg_gpu_other_ms']):.2f} ms, "
                 "moe_gpu_share="
                 f"{float(row['moe_gpu_share']) * 100:.1f}%, "
@@ -2884,7 +2901,8 @@ def build_report(
         summaries = ", ".join(
             f"d={row['draft_length']}: "
             f"max/mean={float(row['avg_step_ffn_max_mean_ratio']):.3f}, "
-            f"gap={float(row['avg_heaviest_minus_lightest_local_ffn_ms']):.2f} ms"
+            "routed_expert_gap="
+            f"{float(row['avg_heaviest_minus_lightest_local_ffn_ms']):.2f} ms"
             for row in rows
         )
         lines.append(f"- batch_size={batch_size}: {summaries}")
@@ -3121,7 +3139,7 @@ def analyze_experiment(
                 draft_lengths=draft_lengths,
                 sorted_rank_rows=sorted_rank_summary_rows,
                 metric_key="avg_ffn_ms",
-                ylabel="avg FFN time after per-layer sort (ms)",
+                ylabel="avg routed-expert/FFN GPU time after per-layer sort (ms)",
                 output_name="sorted_rank_ffn_batch_{batch_size:03d}.png",
             )
             plot_sorted_rank_metric_by_batch(

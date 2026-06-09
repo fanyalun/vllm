@@ -910,6 +910,70 @@ def test_global_step_time_summary_and_normalization_are_correct():
     assert normalized["other_share"] == 7.0 / 12.0
 
 
+def test_step_time_rows_use_routed_expert_gpu_for_ffn_aliases():
+    def condition(draft_length, *, kind, gpu_total, moe_gpu, routed_expert_gpu):
+        return SimpleNamespace(
+            data_parallel_size=2,
+            timing_scope="global_cuda_event",
+            timing_backend="cuda_event",
+            global_barrier_ids=np.array([0], dtype=np.int64),
+            global_step_kinds=np.array([kind], dtype=np.str_),
+            rank_step_kinds=np.array([[kind, kind]], dtype=np.str_),
+            global_verification_wall_ms=np.array([100.0], dtype=np.float64),
+            global_iteration_wall_ms=np.array([110.0], dtype=np.float64),
+            global_draft_wall_ms=np.array([0.0], dtype=np.float64),
+            global_verification_gpu_total_ms=np.array(
+                [gpu_total], dtype=np.float64
+            ),
+            global_attention_gpu_ms=np.array([20.0], dtype=np.float64),
+            global_moe_gpu_ms=np.array([moe_gpu], dtype=np.float64),
+            global_gpu_other_ms=np.array(
+                [gpu_total - moe_gpu - 20.0], dtype=np.float64
+            ),
+            global_step_ffn_ms=np.array(
+                [routed_expert_gpu], dtype=np.float64
+            ),
+            num_forward_steps_total=1,
+            num_captured_steps=1,
+            num_global_candidate_steps=1,
+            num_global_captured_steps=1,
+            num_dropped_steps=0,
+            num_prefill_dropped_steps=0,
+            num_mixed_dropped_steps=0,
+            num_global_prefill_dropped_steps=0,
+            num_global_mixed_dropped_steps=0,
+            num_global_non_target_dropped_steps=0,
+        )
+
+    rows = analysis.build_step_time_rows(
+        {"batch_sizes": (8,), "draft_lengths": (0, 2)},
+        {
+            (8, 0): condition(
+                0,
+                kind="decode_only",
+                gpu_total=100.0,
+                moe_gpu=70.0,
+                routed_expert_gpu=10.0,
+            ),
+            (8, 2): condition(
+                2,
+                kind="verification_only",
+                gpu_total=200.0,
+                moe_gpu=150.0,
+                routed_expert_gpu=40.0,
+            ),
+        },
+    )
+
+    draft_row = next(row for row in rows if row["draft_length"] == 2)
+    assert draft_row["avg_moe_gpu_ms"] == 150.0
+    assert draft_row["avg_routed_expert_gpu_ms"] == 40.0
+    assert draft_row["avg_ffn_ms"] == 40.0
+    assert draft_row["ffn_share"] == 40.0 / 200.0
+    assert draft_row["normalized_moe_gpu"] == 150.0 / 100.0
+    assert draft_row["normalized_ffn_ms"] == 40.0 / 100.0
+
+
 def test_sorted_rank_ffn_time_rows_average_by_sorted_position():
     condition = SimpleNamespace(
         data_parallel_size=2,
