@@ -1207,6 +1207,149 @@ def _drop_condition(
     )
 
 
+def _audit_condition(
+    assignments,
+    source_ranks,
+    *,
+    offsets,
+    global_step_kinds,
+    rank_step_kinds,
+    rank_layer_routed_expert_gpu_ms,
+    rank_layer_local_routed_tokens,
+    step_histograms,
+    global_step_sorted_rank_local_routed_tokens,
+    rank_layer_local_active_experts=None,
+    layers=(0,),
+):
+    assignments = np.asarray(assignments, dtype=np.int64)
+    num_tokens, num_layers, num_ranks = assignments.shape
+    num_barriers = len(global_step_kinds)
+    if rank_layer_local_active_experts is None:
+        rank_layer_local_active_experts = np.ones(
+            (num_barriers, num_ranks, num_layers),
+            dtype=np.int64,
+        )
+    return SimpleNamespace(
+        schema_version=10,
+        batch_size=8,
+        draft_length=2,
+        data_parallel_size=num_ranks,
+        layers=np.asarray(layers, dtype=np.int64),
+        global_barrier_ids=np.arange(num_barriers, dtype=np.int64),
+        global_step_kinds=np.asarray(global_step_kinds, dtype=np.str_),
+        rank_step_kinds=np.asarray(rank_step_kinds, dtype=np.str_),
+        rank_layer_routed_expert_gpu_ms=np.asarray(
+            rank_layer_routed_expert_gpu_ms,
+            dtype=np.float64,
+        ),
+        rank_layer_local_routed_tokens=np.asarray(
+            rank_layer_local_routed_tokens,
+            dtype=np.int64,
+        ),
+        rank_layer_local_active_experts=np.asarray(
+            rank_layer_local_active_experts,
+            dtype=np.int64,
+        ),
+        step_histograms=np.asarray(step_histograms, dtype=np.int64),
+        global_step_sorted_rank_local_routed_tokens=np.asarray(
+            global_step_sorted_rank_local_routed_tokens,
+            dtype=np.int64,
+        ),
+        global_token_barrier_offsets=np.asarray(offsets, dtype=np.int64),
+        global_token_source_ranks=np.asarray(source_ranks, dtype=np.int64),
+        global_token_request_ids=np.asarray(["req"] * num_tokens, dtype=np.str_),
+        global_token_position_ids=np.zeros((num_tokens,), dtype=np.int16),
+        global_token_layer_destination_assignment_counts=assignments,
+    )
+
+
+def test_routing_time_audit_sums_v10_destination_assignments_from_all_sources():
+    condition = _audit_condition(
+        [
+            [[0, 2]],
+            [[0, 3]],
+            [[99, 0]],
+            [[0, 99]],
+        ],
+        [0, 1, 0, 1],
+        offsets=[0, 2, 4],
+        global_step_kinds=["verification_only", "mixed_rank"],
+        rank_step_kinds=[
+            ["verification_only", "verification_only"],
+            ["verification_only", "prefill"],
+        ],
+        rank_layer_routed_expert_gpu_ms=[
+            [[1.0], [10.0]],
+            [[1000.0], [1000.0]],
+        ],
+        rank_layer_local_routed_tokens=[
+            [[0], [5]],
+            [[99], [99]],
+        ],
+        step_histograms=[
+            [[1, 1, 1, 2]],
+            [[99, 99, 0, 0]],
+        ],
+        global_step_sorted_rank_local_routed_tokens=[
+            [5, 0],
+            [99, 99],
+        ],
+    )
+
+    condition_rows, layer_rank_rows, sorted_rows = (
+        analysis.build_routing_time_audit_rows(
+            {"batch_sizes": (8,), "draft_lengths": (2,)},
+            {(8, 2): condition},
+        )
+    )
+
+    rank_1 = next(row for row in layer_rank_rows if row["physical_rank"] == 1)
+    assert rank_1["avg_v10_destination_assignments"] == 5.0
+    assert rank_1["avg_v8_emulated_self_assignments"] == 3.0
+    assert condition_rows[0]["num_global_barriers"] == 1
+    assert sorted_rows[0]["avg_ffn_sorted_v10_destination_tokens"] == 5.0
+    assert sorted_rows[0]["avg_ffn_sorted_v8_emulated_self_tokens"] == 3.0
+
+
+def test_routing_time_audit_keeps_ffn_sort_and_token_sort_independent():
+    condition = _audit_condition(
+        [
+            [[3, 0], [8, 0]],
+            [[0, 7], [0, 4]],
+        ],
+        [0, 1],
+        offsets=[0, 2],
+        global_step_kinds=["decode_only"],
+        rank_step_kinds=[["decode_only", "decode_only"]],
+        rank_layer_routed_expert_gpu_ms=[
+            [[10.0, 2.0], [1.0, 9.0]],
+        ],
+        rank_layer_local_routed_tokens=[
+            [[3, 8], [7, 4]],
+        ],
+        step_histograms=[
+            [[10, 0], [12, 0]],
+        ],
+        global_step_sorted_rank_local_routed_tokens=[
+            [7, 15],
+        ],
+        layers=(0, 1),
+    )
+
+    _, _, sorted_rows = analysis.build_routing_time_audit_rows(
+        {"batch_sizes": (8,), "draft_lengths": (0,)},
+        {(8, 0): condition},
+    )
+
+    first = next(row for row in sorted_rows if row["sorted_rank_position"] == 0)
+    second = next(row for row in sorted_rows if row["sorted_rank_position"] == 1)
+    assert first["avg_ffn_sorted_routed_expert_gpu_ms"] == 19.0
+    assert first["avg_ffn_sorted_v10_destination_tokens"] == 7.0
+    assert second["avg_ffn_sorted_v10_destination_tokens"] == 15.0
+    assert first["avg_token_sorted_v10_destination_tokens"] == 15.0
+    assert first["avg_token_sorted_routed_expert_gpu_ms"] == 3.0
+
+
 def test_draft_drop_keeps_cutoff_position_and_closes_suffix():
     condition = _drop_condition(
         [

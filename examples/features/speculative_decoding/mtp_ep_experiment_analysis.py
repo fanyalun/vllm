@@ -160,6 +160,7 @@ def ensure_analysis_dirs(output_dir: Path) -> dict[str, Path]:
     rank_traces_dir = plots_dir / "rank_traces"
     draft_drop_dir = plots_dir / "draft_drop"
     position_ffn_dir = plots_dir / "position_ffn_breakdown"
+    routing_time_audit_dir = plots_dir / "routing_time_audit"
     for path in (
         tables_dir,
         speedup_dir,
@@ -170,6 +171,7 @@ def ensure_analysis_dirs(output_dir: Path) -> dict[str, Path]:
         rank_traces_dir,
         draft_drop_dir,
         position_ffn_dir,
+        routing_time_audit_dir,
     ):
         path.mkdir(parents=True, exist_ok=True)
     return {
@@ -182,6 +184,7 @@ def ensure_analysis_dirs(output_dir: Path) -> dict[str, Path]:
         "rank_traces": rank_traces_dir,
         "draft_drop": draft_drop_dir,
         "position_ffn": position_ffn_dir,
+        "routing_time_audit": routing_time_audit_dir,
     }
 
 
@@ -1013,6 +1016,581 @@ def _finite_percentile(values: np.ndarray, percentile: float) -> float:
     if finite_values.size == 0:
         return float("nan")
     return float(np.percentile(finite_values, percentile))
+
+
+def _max_min_ratio(values: np.ndarray) -> float:
+    finite_values = values[np.isfinite(values)]
+    if finite_values.size == 0:
+        return float("nan")
+    min_value = float(np.min(finite_values))
+    max_value = float(np.max(finite_values))
+    if min_value <= 0.0:
+        return float("nan")
+    return max_value / min_value
+
+
+def _rankdata(values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float64)
+    order = np.argsort(values, kind="mergesort")
+    ranks = np.empty(values.shape[0], dtype=np.float64)
+    sorted_values = values[order]
+    start = 0
+    while start < values.shape[0]:
+        end = start + 1
+        while end < values.shape[0] and sorted_values[end] == sorted_values[start]:
+            end += 1
+        ranks[order[start:end]] = (start + end - 1) / 2.0
+        start = end
+    return ranks
+
+
+def _pearson_corr(left: np.ndarray, right: np.ndarray) -> float:
+    left = np.asarray(left, dtype=np.float64).reshape(-1)
+    right = np.asarray(right, dtype=np.float64).reshape(-1)
+    mask = np.isfinite(left) & np.isfinite(right)
+    left = left[mask]
+    right = right[mask]
+    if left.size < 2:
+        return float("nan")
+    left_centered = left - np.mean(left)
+    right_centered = right - np.mean(right)
+    denominator = float(
+        np.sqrt(np.sum(left_centered**2) * np.sum(right_centered**2))
+    )
+    if denominator == 0.0:
+        return float("nan")
+    return float(np.sum(left_centered * right_centered) / denominator)
+
+
+def _spearman_corr(left: np.ndarray, right: np.ndarray) -> float:
+    left = np.asarray(left, dtype=np.float64).reshape(-1)
+    right = np.asarray(right, dtype=np.float64).reshape(-1)
+    mask = np.isfinite(left) & np.isfinite(right)
+    left = left[mask]
+    right = right[mask]
+    if left.size < 2:
+        return float("nan")
+    return _pearson_corr(_rankdata(left), _rankdata(right))
+
+
+def _decode_step_scope(draft_length: int) -> str:
+    return "verification_only" if draft_length > 0 else "decode_only"
+
+
+def _validate_assignment_tensor(
+    data: LoadedConditionData,
+    *,
+    batch_size: int,
+    draft_length: int,
+) -> None:
+    if data.schema_version != SCHEMA_VERSION:
+        raise RuntimeError(
+            "Routing-time audit requires schema v10 raw data for "
+            f"batch_size={batch_size}, draft_length={draft_length}; found "
+            f"schema v{data.schema_version}."
+        )
+    assignments = np.asarray(
+        data.global_token_layer_destination_assignment_counts,
+        dtype=np.int64,
+    )
+    expected_shape = (
+        data.global_token_position_ids.shape[0],
+        data.layers.shape[0],
+        data.data_parallel_size,
+    )
+    if assignments.shape != expected_shape:
+        raise RuntimeError(
+            "global_token_layer_destination_assignment_counts has shape "
+            f"{assignments.shape}; expected {expected_shape} for "
+            f"batch_size={batch_size}, draft_length={draft_length}."
+        )
+    offsets = np.asarray(data.global_token_barrier_offsets, dtype=np.int64)
+    if offsets.shape != (data.global_barrier_ids.shape[0] + 1,):
+        raise RuntimeError(
+            "global_token_barrier_offsets must contain one boundary per "
+            f"global barrier for batch_size={batch_size}, "
+            f"draft_length={draft_length}."
+        )
+    if offsets.size and (offsets[0] != 0 or offsets[-1] != assignments.shape[0]):
+        raise RuntimeError(
+            "global_token_barrier_offsets must span all token assignment rows "
+            f"for batch_size={batch_size}, draft_length={draft_length}."
+        )
+
+
+def _condition_assignment_summaries(
+    data: LoadedConditionData,
+) -> tuple[np.ndarray, np.ndarray]:
+    offsets = np.asarray(data.global_token_barrier_offsets, dtype=np.int64)
+    assignments = np.asarray(
+        data.global_token_layer_destination_assignment_counts,
+        dtype=np.int64,
+    )
+    source_ranks = np.asarray(data.global_token_source_ranks, dtype=np.int64)
+    num_barriers = data.global_barrier_ids.shape[0]
+    destination_assignments = np.zeros(
+        (
+            num_barriers,
+            data.layers.shape[0],
+            data.data_parallel_size,
+        ),
+        dtype=np.int64,
+    )
+    self_assignments = np.zeros_like(destination_assignments)
+    lengths = np.diff(offsets)
+    nonempty = np.flatnonzero(lengths > 0)
+    if nonempty.size == 0:
+        return destination_assignments, self_assignments
+
+    starts = offsets[nonempty]
+    destination_assignments[nonempty] = np.add.reduceat(
+        assignments,
+        starts,
+        axis=0,
+    )
+    for destination_rank in range(data.data_parallel_size):
+        self_rank_assignments = (
+            assignments[:, :, destination_rank]
+            * (source_ranks == destination_rank)[:, None]
+        )
+        self_assignments[nonempty, :, destination_rank] = np.add.reduceat(
+            self_rank_assignments,
+            starts,
+            axis=0,
+        )
+    return destination_assignments, self_assignments
+
+
+def _ffn_sorted_destination_tokens_for_steps(
+    data: LoadedConditionData,
+    barrier_indices: np.ndarray,
+    destination_assignments: np.ndarray,
+) -> np.ndarray:
+    sorted_tokens = np.zeros(
+        (barrier_indices.shape[0], data.data_parallel_size),
+        dtype=np.int64,
+    )
+    ffn = np.asarray(
+        data.rank_layer_routed_expert_gpu_ms[barrier_indices],
+        dtype=np.float64,
+    )
+    for layer_idx in range(data.layers.shape[0]):
+        order = np.argsort(-ffn[:, :, layer_idx], axis=1, kind="stable")
+        sorted_tokens += np.take_along_axis(
+            destination_assignments[:, layer_idx, :],
+            order,
+            axis=1,
+        )
+    return sorted_tokens
+
+
+def validate_routing_time_audit_invariants(
+    data: LoadedConditionData,
+    *,
+    batch_size: int,
+    draft_length: int,
+    target_mask: np.ndarray,
+    destination_assignments: np.ndarray,
+) -> None:
+    _validate_assignment_tensor(
+        data,
+        batch_size=batch_size,
+        draft_length=draft_length,
+    )
+    if data.step_histograms.shape[0] != target_mask.shape[0]:
+        raise RuntimeError(
+            "step_histograms must align with global barriers for "
+            f"batch_size={batch_size}, draft_length={draft_length}."
+        )
+    expected_layer_rank_shape = (
+        data.global_barrier_ids.shape[0],
+        data.data_parallel_size,
+        data.layers.shape[0],
+    )
+    for name in (
+        "rank_layer_local_routed_tokens",
+        "rank_layer_routed_expert_gpu_ms",
+        "rank_layer_local_active_experts",
+    ):
+        array = np.asarray(getattr(data, name))
+        if array.shape != expected_layer_rank_shape:
+            raise RuntimeError(
+                f"{name} has shape {array.shape}; expected "
+                f"{expected_layer_rank_shape} for batch_size={batch_size}, "
+                f"draft_length={draft_length}."
+            )
+    sorted_tokens = np.asarray(
+        data.global_step_sorted_rank_local_routed_tokens,
+        dtype=np.int64,
+    )
+    expected_sorted_shape = (
+        data.global_barrier_ids.shape[0],
+        data.data_parallel_size,
+    )
+    if sorted_tokens.shape != expected_sorted_shape:
+        raise RuntimeError(
+            "global_step_sorted_rank_local_routed_tokens has shape "
+            f"{sorted_tokens.shape}; expected {expected_sorted_shape} for "
+            f"batch_size={batch_size}, draft_length={draft_length}."
+        )
+
+    target_indices = np.flatnonzero(target_mask)
+    np.testing.assert_array_equal(
+        np.transpose(destination_assignments[target_indices], (0, 2, 1)),
+        data.rank_layer_local_routed_tokens[target_indices],
+        err_msg=(
+            "v10 token-level destination assignments must equal "
+            "rank_layer_local_routed_tokens for "
+            f"batch_size={batch_size}, draft_length={draft_length}."
+        ),
+    )
+    histogram_layer_totals = np.sum(
+        data.step_histograms[target_indices],
+        axis=2,
+        dtype=np.int64,
+    )
+    np.testing.assert_array_equal(
+        np.sum(destination_assignments[target_indices], axis=2, dtype=np.int64),
+        histogram_layer_totals,
+        err_msg=(
+            "v10 destination assignments must equal step_histograms layer "
+            f"totals for batch_size={batch_size}, draft_length={draft_length}."
+        ),
+    )
+    recomputed_sorted = _ffn_sorted_destination_tokens_for_steps(
+        data,
+        target_indices,
+        destination_assignments[target_indices],
+    )
+    np.testing.assert_array_equal(
+        recomputed_sorted,
+        sorted_tokens[target_indices],
+        err_msg=(
+            "Current sorted-rank token data must equal recomputed v10 "
+            "destination tokens after FFN sort for "
+            f"batch_size={batch_size}, draft_length={draft_length}."
+        ),
+    )
+
+
+def build_routing_time_audit_rows(
+    manifest: dict[str, Any],
+    results: dict[tuple[int, int], LoadedConditionData],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    condition_rows: list[dict[str, Any]] = []
+    layer_rank_rows: list[dict[str, Any]] = []
+    sorted_rank_rows: list[dict[str, Any]] = []
+
+    for batch_size in tuple(manifest["batch_sizes"]):
+        for draft_length in tuple(manifest["draft_lengths"]):
+            data = results[(batch_size, draft_length)]
+            target_mask = strict_target_barrier_mask(
+                data,
+                draft_length=draft_length,
+            )
+            if not np.any(target_mask):
+                raise RuntimeError(
+                    "No strict target barriers for routing-time audit: "
+                    f"batch_size={batch_size}, draft_length={draft_length}."
+                )
+            (
+                destination_assignments_by_barrier,
+                self_assignments_by_barrier,
+            ) = _condition_assignment_summaries(data)
+            validate_routing_time_audit_invariants(
+                data,
+                batch_size=batch_size,
+                draft_length=draft_length,
+                target_mask=target_mask,
+                destination_assignments=destination_assignments_by_barrier,
+            )
+
+            num_layers = int(data.layers.shape[0])
+            num_ranks = int(data.data_parallel_size)
+            num_steps = int(np.count_nonzero(target_mask))
+            decode_step_scope = _decode_step_scope(draft_length)
+            target_indices = np.flatnonzero(target_mask)
+            target_destination = destination_assignments_by_barrier[
+                target_indices
+            ].astype(np.float64)
+            target_self = self_assignments_by_barrier[target_indices].astype(
+                np.float64
+            )
+            target_ffn = np.transpose(
+                np.asarray(
+                    data.rank_layer_routed_expert_gpu_ms[target_indices],
+                    dtype=np.float64,
+                ),
+                (0, 2, 1),
+            )
+            target_active = np.transpose(
+                np.asarray(
+                    data.rank_layer_local_active_experts[target_indices],
+                    dtype=np.float64,
+                ),
+                (0, 2, 1),
+            )
+            ffn_sum = np.sum(target_ffn, axis=0)
+            destination_sum = np.sum(target_destination, axis=0)
+            self_sum = np.sum(target_self, axis=0)
+            active_sum = np.sum(target_active, axis=0)
+            physical_ffn_sum = np.sum(target_ffn, axis=(0, 1))
+            physical_destination_sum = np.sum(target_destination, axis=(0, 1))
+            physical_self_sum = np.sum(target_self, axis=(0, 1))
+            ffn_sorted_ffn_sum = np.zeros((num_ranks,), dtype=np.float64)
+            ffn_sorted_destination_sum = np.zeros((num_ranks,), dtype=np.float64)
+            ffn_sorted_self_sum = np.zeros((num_ranks,), dtype=np.float64)
+            ffn_sorted_active_sum = np.zeros((num_ranks,), dtype=np.float64)
+            token_sorted_destination_sum = np.zeros((num_ranks,), dtype=np.float64)
+            token_sorted_ffn_sum = np.zeros((num_ranks,), dtype=np.float64)
+            token_sorted_self_sum = np.zeros((num_ranks,), dtype=np.float64)
+            token_sorted_active_sum = np.zeros((num_ranks,), dtype=np.float64)
+
+            for layer_idx in range(num_layers):
+                ffn_order = np.argsort(
+                    -target_ffn[:, layer_idx, :],
+                    axis=1,
+                    kind="stable",
+                )
+                ffn_sorted_ffn_sum += np.sum(
+                    np.take_along_axis(
+                        target_ffn[:, layer_idx, :],
+                        ffn_order,
+                        axis=1,
+                    ),
+                    axis=0,
+                )
+                ffn_sorted_destination_sum += np.sum(
+                    np.take_along_axis(
+                        target_destination[:, layer_idx, :],
+                        ffn_order,
+                        axis=1,
+                    ),
+                    axis=0,
+                )
+                ffn_sorted_self_sum += np.sum(
+                    np.take_along_axis(
+                        target_self[:, layer_idx, :],
+                        ffn_order,
+                        axis=1,
+                    ),
+                    axis=0,
+                )
+                ffn_sorted_active_sum += np.sum(
+                    np.take_along_axis(
+                        target_active[:, layer_idx, :],
+                        ffn_order,
+                        axis=1,
+                    ),
+                    axis=0,
+                )
+
+                token_order = np.argsort(
+                    -target_destination[:, layer_idx, :],
+                    axis=1,
+                    kind="stable",
+                )
+                token_sorted_destination_sum += np.sum(
+                    np.take_along_axis(
+                        target_destination[:, layer_idx, :],
+                        token_order,
+                        axis=1,
+                    ),
+                    axis=0,
+                )
+                token_sorted_ffn_sum += np.sum(
+                    np.take_along_axis(
+                        target_ffn[:, layer_idx, :],
+                        token_order,
+                        axis=1,
+                    ),
+                    axis=0,
+                )
+                token_sorted_self_sum += np.sum(
+                    np.take_along_axis(
+                        target_self[:, layer_idx, :],
+                        token_order,
+                        axis=1,
+                    ),
+                    axis=0,
+                )
+                token_sorted_active_sum += np.sum(
+                    np.take_along_axis(
+                        target_active[:, layer_idx, :],
+                        token_order,
+                        axis=1,
+                    ),
+                    axis=0,
+                )
+
+            avg_ffn = ffn_sum / num_steps
+            avg_destination = destination_sum / num_steps
+            avg_self = self_sum / num_steps
+            avg_active = active_sum / num_steps
+            avg_physical_ffn = physical_ffn_sum / num_steps
+            avg_physical_destination = physical_destination_sum / num_steps
+            avg_physical_self = physical_self_sum / num_steps
+            ms_per_destination = np.divide(
+                avg_physical_ffn,
+                avg_physical_destination,
+                out=np.full_like(avg_physical_ffn, np.nan, dtype=np.float64),
+                where=avg_physical_destination > 0.0,
+            )
+            ms_per_self = np.divide(
+                avg_physical_ffn,
+                avg_physical_self,
+                out=np.full_like(avg_physical_ffn, np.nan, dtype=np.float64),
+                where=avg_physical_self > 0.0,
+            )
+            ffn_destination_pearson = _pearson_corr(
+                avg_ffn,
+                avg_destination,
+            )
+            ffn_destination_spearman = _spearman_corr(
+                avg_ffn,
+                avg_destination,
+            )
+            ffn_self_pearson = _pearson_corr(avg_ffn, avg_self)
+            ffn_self_spearman = _spearman_corr(avg_ffn, avg_self)
+            destination_ratio = _max_min_ratio(avg_physical_destination)
+            ffn_ratio = _max_min_ratio(avg_physical_ffn)
+            self_ratio = _max_min_ratio(avg_physical_self)
+            ms_per_destination_ratio = _max_min_ratio(ms_per_destination)
+            ms_per_self_ratio = _max_min_ratio(ms_per_self)
+            hypothesis_supported = (
+                np.isfinite(destination_ratio)
+                and np.isfinite(ffn_ratio)
+                and np.isfinite(ffn_destination_pearson)
+                and destination_ratio >= 1.10
+                and ffn_destination_pearson >= 0.70
+                and (
+                    not np.isfinite(ms_per_destination_ratio)
+                    or ms_per_destination_ratio < 1.50
+                )
+            )
+            if hypothesis_supported:
+                interpretation = (
+                    "v10_destination_tokens_correlate_with_ffn_time"
+                )
+            elif (
+                np.isfinite(ffn_self_pearson)
+                and (
+                    not np.isfinite(ffn_destination_pearson)
+                    or ffn_self_pearson > ffn_destination_pearson
+                )
+            ):
+                interpretation = (
+                    "v8_self_tokens_match_better_than_v10_destination_tokens"
+                )
+            else:
+                interpretation = (
+                    "v10_data_does_not_explain_ffn_time_by_destination_tokens"
+                )
+
+            for layer_row, layer in enumerate(data.layers):
+                for rank in range(num_ranks):
+                    destination_assignments = float(
+                        avg_destination[layer_row, rank]
+                    )
+                    self_assignments = float(avg_self[layer_row, rank])
+                    routed_expert_ms = float(avg_ffn[layer_row, rank])
+                    layer_rank_rows.append(
+                        {
+                            "batch_size": batch_size,
+                            "draft_length": draft_length,
+                            "decode_step_scope": decode_step_scope,
+                            "layer": int(layer),
+                            "physical_rank": rank,
+                            "avg_routed_expert_gpu_ms": routed_expert_ms,
+                            "avg_v10_destination_assignments": (
+                                destination_assignments
+                            ),
+                            "avg_v8_emulated_self_assignments": (
+                                self_assignments
+                            ),
+                            "avg_active_experts": float(
+                                avg_active[layer_row, rank]
+                            ),
+                            "ms_per_destination_assignment": (
+                                routed_expert_ms / destination_assignments
+                                if destination_assignments > 0.0
+                                else float("nan")
+                            ),
+                            "ms_per_v8_self_assignment": (
+                                routed_expert_ms / self_assignments
+                                if self_assignments > 0.0
+                                else float("nan")
+                            ),
+                            "num_global_barriers": num_steps,
+                        }
+                    )
+
+            condition_rows.append(
+                {
+                    "batch_size": batch_size,
+                    "draft_length": draft_length,
+                    "decode_step_scope": decode_step_scope,
+                    "num_global_barriers": num_steps,
+                    "num_layers": num_layers,
+                    "data_parallel_size": num_ranks,
+                    "ffn_max_min_ratio": ffn_ratio,
+                    "v10_destination_token_max_min_ratio": destination_ratio,
+                    "v8_emulated_self_token_max_min_ratio": self_ratio,
+                    "pearson_ffn_v10_destination_tokens": (
+                        ffn_destination_pearson
+                    ),
+                    "spearman_ffn_v10_destination_tokens": (
+                        ffn_destination_spearman
+                    ),
+                    "pearson_ffn_v8_emulated_self_tokens": ffn_self_pearson,
+                    "spearman_ffn_v8_emulated_self_tokens": ffn_self_spearman,
+                    "physical_rank_ms_per_destination_assignment_max_min_ratio": (
+                        ms_per_destination_ratio
+                    ),
+                    "physical_rank_ms_per_v8_self_assignment_max_min_ratio": (
+                        ms_per_self_ratio
+                    ),
+                    "hypothesis_supported": bool(hypothesis_supported),
+                    "interpretation": interpretation,
+                }
+            )
+
+            for position in range(num_ranks):
+                sorted_rank_rows.append(
+                    {
+                        "batch_size": batch_size,
+                        "draft_length": draft_length,
+                        "decode_step_scope": decode_step_scope,
+                        "sorted_rank_position": position,
+                        "avg_ffn_sorted_routed_expert_gpu_ms": float(
+                            ffn_sorted_ffn_sum[position] / num_steps
+                        ),
+                        "avg_ffn_sorted_v10_destination_tokens": float(
+                            ffn_sorted_destination_sum[position] / num_steps
+                        ),
+                        "avg_ffn_sorted_v8_emulated_self_tokens": float(
+                            ffn_sorted_self_sum[position] / num_steps
+                        ),
+                        "avg_ffn_sorted_active_experts": float(
+                            ffn_sorted_active_sum[position] / num_steps
+                        ),
+                        "avg_token_sorted_v10_destination_tokens": float(
+                            token_sorted_destination_sum[position] / num_steps
+                        ),
+                        "avg_token_sorted_routed_expert_gpu_ms": float(
+                            token_sorted_ffn_sum[position] / num_steps
+                        ),
+                        "avg_token_sorted_v8_emulated_self_tokens": float(
+                            token_sorted_self_sum[position] / num_steps
+                        ),
+                        "avg_token_sorted_active_experts": float(
+                            token_sorted_active_sum[position] / num_steps
+                        ),
+                        "num_global_barriers": num_steps,
+                    }
+                )
+
+    return condition_rows, layer_rank_rows, sorted_rank_rows
 
 
 def validate_barrier_shapes(
@@ -2733,6 +3311,126 @@ def plot_sorted_rank0_ffn_vs_batch_size(
     return path
 
 
+def plot_routing_time_audit(
+    plot_dir: Path,
+    condition_rows: list[dict[str, Any]],
+    layer_rank_rows: list[dict[str, Any]],
+    sorted_rank_rows: list[dict[str, Any]],
+    batch_sizes: tuple[int, ...],
+    draft_lengths: tuple[int, ...],
+) -> list[Path]:
+    plt = import_plot_module()
+    paths: list[Path] = []
+    colors = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759"]
+    for batch_size in batch_sizes:
+        fig, axes = plt.subplots(1, 2, figsize=(12.0, 4.6))
+        positions = sorted(
+            {
+                int(row["sorted_rank_position"])
+                for row in sorted_rank_rows
+                if int(row["batch_size"]) == batch_size
+            }
+        )
+        for draft_idx, draft_length in enumerate(draft_lengths):
+            selected = [
+                row
+                for row in sorted_rank_rows
+                if int(row["batch_size"]) == batch_size
+                and int(row["draft_length"]) == draft_length
+            ]
+            if not selected:
+                continue
+            ffn_values = [
+                next(
+                    float(row["avg_ffn_sorted_routed_expert_gpu_ms"])
+                    for row in selected
+                    if int(row["sorted_rank_position"]) == position
+                )
+                for position in positions
+            ]
+            destination_values = [
+                next(
+                    float(row["avg_ffn_sorted_v10_destination_tokens"])
+                    for row in selected
+                    if int(row["sorted_rank_position"]) == position
+                )
+                for position in positions
+            ]
+            color = colors[draft_idx % len(colors)]
+            axes[0].plot(
+                positions,
+                ffn_values,
+                marker="o",
+                color=color,
+                label=f"d={draft_length}",
+            )
+            axes[1].plot(
+                positions,
+                destination_values,
+                marker="o",
+                color=color,
+                label=f"d={draft_length}",
+            )
+        axes[0].set_title("FFN-sorted routed-expert GPU time")
+        axes[0].set_ylabel("avg routed-expert GPU ms")
+        axes[1].set_title("FFN-sorted v10 destination assignments")
+        axes[1].set_ylabel("avg destination assignments")
+        for axis in axes:
+            axis.set_xlabel("sorted rank position")
+            axis.set_xticks(positions)
+            axis.grid(alpha=0.25)
+            axis.legend()
+        fig.suptitle(f"batch_size={batch_size} routing-time audit")
+        fig.tight_layout(rect=(0, 0, 1, 0.94))
+        path = plot_dir / f"batch_{batch_size:03d}_ffn_sorted_audit.png"
+        fig.savefig(path, dpi=180)
+        plt.close(fig)
+        paths.append(path)
+
+    for row in condition_rows:
+        batch_size = int(row["batch_size"])
+        draft_length = int(row["draft_length"])
+        selected = [
+            layer_row
+            for layer_row in layer_rank_rows
+            if int(layer_row["batch_size"]) == batch_size
+            and int(layer_row["draft_length"]) == draft_length
+        ]
+        if not selected:
+            continue
+        fig, ax = plt.subplots(figsize=(5.8, 4.8))
+        x = [
+            float(layer_row["avg_v10_destination_assignments"])
+            for layer_row in selected
+        ]
+        y = [
+            float(layer_row["avg_routed_expert_gpu_ms"])
+            for layer_row in selected
+        ]
+        ranks = [
+            int(layer_row["physical_rank"])
+            for layer_row in selected
+        ]
+        scatter = ax.scatter(x, y, c=ranks, cmap="tab10", s=42, alpha=0.85)
+        ax.set_xlabel("avg v10 destination assignments")
+        ax.set_ylabel("avg routed-expert GPU ms")
+        ax.set_title(
+            f"batch_size={batch_size}, draft_length={draft_length}: "
+            "FFN vs destination load"
+        )
+        ax.grid(alpha=0.25)
+        fig.colorbar(scatter, ax=ax, label="physical rank")
+        fig.tight_layout()
+        path = (
+            plot_dir
+            / f"batch_{batch_size:03d}_draft_{draft_length:02d}_scatter.png"
+        )
+        fig.savefig(path, dpi=180)
+        plt.close(fig)
+        paths.append(path)
+    return paths
+
+
 def plot_active_expert_ratio_vs_batch_size(
     plot_dir: Path,
     active_ratio_rows: list[dict[str, Any]],
@@ -2763,6 +3461,104 @@ def plot_active_expert_ratio_vs_batch_size(
     fig.savefig(path, dpi=200)
     plt.close(fig)
     return path
+
+
+def build_routing_time_audit_report(
+    manifest: dict[str, Any],
+    condition_rows: list[dict[str, Any]],
+) -> str:
+    lines = [
+        "# Routing Time Audit",
+        "",
+        "## Scope",
+        "",
+        (
+            "- v10_destination_assignments counts all token/expert assignments "
+            "incoming to each destination EP rank."
+        ),
+        (
+            "- v8_emulated_self_assignments replays the old local/self view by "
+            "counting only source_rank == destination_rank assignments."
+        ),
+        (
+            "- Strict barriers are verification_only for draft_length > 0 and "
+            "decode_only for draft_length = 0, with every rank matching the "
+            "same step kind."
+        ),
+        "",
+        "## Condition Verdicts",
+        "",
+    ]
+    for batch_size in tuple(manifest["batch_sizes"]):
+        rows = [
+            row
+            for row in condition_rows
+            if int(row["batch_size"]) == batch_size
+        ]
+        lines.append(f"### batch_size={batch_size}")
+        for row in rows:
+            lines.append(
+                "- draft_length={draft_length}: "
+                "ffn_max/min={ffn_ratio:.3f}, "
+                "v10_token_max/min={destination_ratio:.3f}, "
+                "v8_self_max/min={self_ratio:.3f}, "
+                "pearson(ffn,v10)={destination_corr:.3f}, "
+                "spearman(ffn,v10)={destination_rank_corr:.3f}, "
+                "pearson(ffn,v8)={self_corr:.3f}, "
+                "ms_per_destination_max/min={destination_ms_ratio:.3f}, "
+                "verdict={verdict}".format(
+                    draft_length=int(row["draft_length"]),
+                    ffn_ratio=float(row["ffn_max_min_ratio"]),
+                    destination_ratio=float(
+                        row["v10_destination_token_max_min_ratio"]
+                    ),
+                    self_ratio=float(
+                        row["v8_emulated_self_token_max_min_ratio"]
+                    ),
+                    destination_corr=float(
+                        row["pearson_ffn_v10_destination_tokens"]
+                    ),
+                    destination_rank_corr=float(
+                        row["spearman_ffn_v10_destination_tokens"]
+                    ),
+                    self_corr=float(
+                        row["pearson_ffn_v8_emulated_self_tokens"]
+                    ),
+                    destination_ms_ratio=float(
+                        row[
+                            "physical_rank_ms_per_destination_assignment_"
+                            "max_min_ratio"
+                        ]
+                    ),
+                    verdict=str(row["interpretation"]),
+                )
+            )
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Interpretation Rules",
+            "",
+            (
+                "- If v10 destination token imbalance is near flat, "
+                "correlation is low, or ms_per_destination_assignment varies "
+                "strongly across physical ranks, current v10 data does not "
+                "support explaining FFN time mainly by incoming destination "
+                "assignment count."
+            ),
+            (
+                "- If v8 self assignments align better than v10 destination "
+                "assignments, the old curve matched the old local/self "
+                "accounting view, not the true destination-rank incoming load."
+            ),
+            (
+                "- If v10 destination assignments correlate strongly with FFN "
+                "time and per-assignment cost is stable, the current code "
+                "supports the load-imbalance hypothesis."
+            ),
+        ]
+    )
+    return "\n".join(lines) + "\n"
 
 
 def build_report(
@@ -3009,6 +3805,11 @@ def analyze_experiment(
         results,
     )
     sorted_rank_summary_rows = build_sorted_rank_summary_rows(manifest, results)
+    (
+        routing_audit_condition_rows,
+        routing_audit_layer_rank_rows,
+        routing_audit_sorted_rank_rows,
+    ) = build_routing_time_audit_rows(manifest, results)
     active_expert_ratio_rows = build_active_expert_ratio_rows(manifest, results)
     position_rows = build_position_breakdown_rows(manifest, results)
     drop_rows = build_draft_drop_rows(manifest, results)
@@ -3063,6 +3864,18 @@ def analyze_experiment(
         dirs["tables"] / "rank_moe_gpu_imbalance_metrics.csv",
         rank_moe_imbalance_rows,
     )
+    save_csv(
+        dirs["tables"] / "routing_time_audit_by_condition.csv",
+        routing_audit_condition_rows,
+    )
+    save_csv(
+        dirs["tables"] / "routing_time_audit_by_layer_rank.csv",
+        routing_audit_layer_rank_rows,
+    )
+    save_csv(
+        dirs["tables"] / "routing_time_sorted_rank_audit.csv",
+        routing_audit_sorted_rank_rows,
+    )
     save_csv(dirs["tables"] / "position_ffn_breakdown.csv", position_rows)
     cutoff_rows, layer_rows, drop_step_rows, condition_drop_rows = drop_rows
     save_csv(dirs["tables"] / "draft_drop_cutoffs.csv", cutoff_rows)
@@ -3094,6 +3907,28 @@ def analyze_experiment(
 
     if rank_trace_rows:
         save_csv(dirs["tables"] / "rank_trace_summary.csv", rank_trace_rows)
+
+    if not skip_report:
+        report = build_report(
+            input_dir,
+            manifest,
+            speedup_rows,
+            acceptance_rows,
+            step_rows,
+            load_metric_rows,
+            rank_ffn_imbalance_rows,
+        )
+        with (input_dir / "实验报告.md").open("w", encoding="utf-8") as fp:
+            fp.write(report)
+        routing_time_report = build_routing_time_audit_report(
+            manifest,
+            routing_audit_condition_rows,
+        )
+        with (input_dir / "routing_time_audit_report.md").open(
+            "w",
+            encoding="utf-8",
+        ) as fp:
+            fp.write(routing_time_report)
 
     if not skip_plots:
         plot_speedup_vs_draft_length(
@@ -3163,6 +3998,14 @@ def analyze_experiment(
             batch_sizes,
             draft_lengths,
         )
+        plot_routing_time_audit(
+            dirs["routing_time_audit"],
+            routing_audit_condition_rows,
+            routing_audit_layer_rank_rows,
+            routing_audit_sorted_rank_rows,
+            batch_sizes,
+            draft_lengths,
+        )
         plot_position_breakdown(dirs["position_ffn"], position_rows)
         plot_layer_drop_ratio(dirs["draft_drop"], layer_rows)
         plot_step_drop_distribution(
@@ -3170,16 +4013,3 @@ def analyze_experiment(
             drop_step_rows,
             condition_drop_rows,
         )
-
-    if not skip_report:
-        report = build_report(
-            input_dir,
-            manifest,
-            speedup_rows,
-            acceptance_rows,
-            step_rows,
-            load_metric_rows,
-            rank_ffn_imbalance_rows,
-        )
-        with (input_dir / "实验报告.md").open("w", encoding="utf-8") as fp:
-            fp.write(report)
