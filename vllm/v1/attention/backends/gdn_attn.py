@@ -63,6 +63,12 @@ class GDNAttentionMetadata:
     non_spec_token_indx: torch.Tensor | None = None
 
     num_accepted_tokens: torch.Tensor | None = None  # shape: [batch,]
+    spec_max_query_len: int = 0
+    spec_query_start_loc_cpu: torch.Tensor | None = None
+    spec_req_indices_cpu: torch.Tensor | None = None
+    predicted_accept_len_cpu: torch.Tensor | None = None
+    needs_reload_from_cpu: torch.Tensor | None = None
+    reload_slot_cpu: torch.Tensor | None = None
 
     # Pre-computed FLA chunk metadata (avoids GPU->CPU sync in prepare_chunk_indices)
     chunk_indices: torch.Tensor | None = None
@@ -78,6 +84,20 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
     _cudagraph_support = AttentionCGSupport.UNIFORM_BATCH
 
     reorder_batch_threshold: int = 1
+
+    @classmethod
+    def get_cudagraph_support(
+        cls,
+        vllm_config: VllmConfig,
+        kv_cache_spec: AttentionSpec,
+    ) -> AttentionCGSupport:
+        speculative_config = vllm_config.speculative_config
+        if (
+            speculative_config is not None
+            and speculative_config.hybrid_spec_state_offload_enabled()
+        ):
+            return AttentionCGSupport.NEVER
+        return cls._cudagraph_support
 
     def __init__(
         self,
@@ -104,6 +124,13 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
         else:
             self.num_spec = 0
         self.use_spec_decode: bool = self.num_spec > 0
+        self.hybrid_spec_state_offload_enabled = bool(
+            self.speculative_config is not None
+            and self.speculative_config.hybrid_spec_state_offload_enabled()
+        )
+        self.spec_index_width = (
+            1 if self.hybrid_spec_state_offload_enabled else self.num_spec + 1
+        )
         self._init_reorder_batch_threshold(1, self.use_spec_decode)
 
         self.use_full_cuda_graph: bool = (
@@ -120,7 +147,7 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             )
 
         self.spec_state_indices_tensor: torch.Tensor = torch.empty(
-            (self.decode_cudagraph_max_bs, self.num_spec + 1),
+            (self.decode_cudagraph_max_bs, self.spec_index_width),
             dtype=torch.int32,
             device=device,
         )
@@ -166,6 +193,10 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
         common_attn_metadata: CommonAttentionMetadata,
         num_accepted_tokens: torch.Tensor | None = None,
         num_decode_draft_tokens_cpu: torch.Tensor | None = None,
+        spec_req_indices_cpu: torch.Tensor | None = None,
+        predicted_accept_len_cpu: torch.Tensor | None = None,
+        needs_reload_from_cpu: torch.Tensor | None = None,
+        reload_slot_cpu: torch.Tensor | None = None,
         fast_build: bool = False,
     ) -> GDNAttentionMetadata:
         m = common_attn_metadata
@@ -182,6 +213,7 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
         )
 
         spec_sequence_masks_cpu: torch.Tensor | None = None
+        spec_query_start_loc_cpu: torch.Tensor | None = None
         if (
             not self.use_spec_decode
             or num_decode_draft_tokens_cpu is None
@@ -260,13 +292,14 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                 )
                 # Filter by spec_sequence_masks to exclude padded sequences
                 spec_state_indices_tensor = block_table_tensor[
-                    spec_sequence_masks_cpu, : self.num_spec + 1
+                    spec_sequence_masks_cpu, : self.spec_index_width
                 ]
                 non_spec_state_indices_tensor = None
                 # Padded sequences are always at the back, so the first
                 # num_spec_decodes + 1 entries of query_start_loc already
                 # contain the correct cumulative token counts.
                 spec_query_start_loc = query_start_loc[: num_spec_decodes + 1]
+                spec_query_start_loc_cpu = query_start_loc_cpu[: num_spec_decodes + 1]
                 non_spec_query_start_loc = None
                 non_spec_query_start_loc_cpu = None
             else:
@@ -281,7 +314,7 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                 spec_token_indx = index[num_non_spec_tokens:]
 
                 spec_state_indices_tensor = block_table_tensor[
-                    spec_sequence_masks_cpu, : self.num_spec + 1
+                    spec_sequence_masks_cpu, : self.spec_index_width
                 ]
                 non_spec_state_indices_tensor = block_table_tensor[
                     ~spec_sequence_masks_cpu, 0
@@ -296,6 +329,14 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                     query_lens[spec_sequence_masks_cpu],
                     dim=0,
                     out=spec_query_start_loc[1:],
+                )
+                spec_query_start_loc_cpu = torch.zeros(
+                    num_spec_decodes + 1, dtype=torch.int32
+                )
+                torch.cumsum(
+                    query_lens_cpu[spec_sequence_masks_cpu],
+                    dim=0,
+                    out=spec_query_start_loc_cpu[1:],
                 )
                 non_spec_query_start_loc = torch.zeros(
                     query_lens.size(0) - num_spec_decodes + 1,
@@ -319,6 +360,18 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
 
             assert num_accepted_tokens is not None
             num_accepted_tokens = num_accepted_tokens[spec_sequence_masks_cpu]
+            if spec_req_indices_cpu is not None:
+                spec_req_indices_cpu = spec_req_indices_cpu[spec_sequence_masks_cpu]
+            if predicted_accept_len_cpu is not None:
+                predicted_accept_len_cpu = predicted_accept_len_cpu[
+                    spec_sequence_masks_cpu
+                ]
+            if needs_reload_from_cpu is not None:
+                needs_reload_from_cpu = needs_reload_from_cpu[
+                    spec_sequence_masks_cpu
+                ]
+            if reload_slot_cpu is not None:
+                reload_slot_cpu = reload_slot_cpu[spec_sequence_masks_cpu]
 
         chunk_indices: torch.Tensor | None = None
         chunk_offsets: torch.Tensor | None = None
@@ -456,6 +509,8 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             num_spec_decode_tokens=num_spec_decode_tokens,
             num_actual_tokens=m.num_actual_tokens,
             has_initial_state=has_initial_state,
+            spec_max_query_len=self.num_spec + 1,
+            spec_query_start_loc_cpu=spec_query_start_loc_cpu,
             chunk_indices=chunk_indices,
             chunk_offsets=chunk_offsets,
             spec_query_start_loc=spec_query_start_loc,
@@ -466,6 +521,10 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             spec_token_indx=spec_token_indx,
             non_spec_token_indx=non_spec_token_indx,
             num_accepted_tokens=num_accepted_tokens,
+            spec_req_indices_cpu=spec_req_indices_cpu,
+            predicted_accept_len_cpu=predicted_accept_len_cpu,
+            needs_reload_from_cpu=needs_reload_from_cpu,
+            reload_slot_cpu=reload_slot_cpu,
             nums_dict=nums_dict,
             batch_ptr=batch_ptr,
             token_chunk_offset_ptr=token_chunk_offset_ptr,

@@ -14,9 +14,14 @@ from vllm.v1.core.kv_cache_utils import (
 )
 from vllm.v1.core.single_type_kv_cache_manager import (
     ChunkedLocalAttentionManager,
+    MambaManager,
     SlidingWindowManager,
 )
-from vllm.v1.kv_cache_interface import ChunkedLocalAttentionSpec, SlidingWindowSpec
+from vllm.v1.kv_cache_interface import (
+    ChunkedLocalAttentionSpec,
+    MambaSpec,
+    SlidingWindowSpec,
+)
 
 pytestmark = pytest.mark.cpu_test
 
@@ -42,6 +47,49 @@ def get_chunked_local_attention_manager(
         kv_cache_group_id=0,
         max_admission_blocks_per_request=10**9,
     )
+
+
+def get_mamba_manager(mamba_spec, block_pool, enable_caching=True):
+    return MambaManager(
+        mamba_spec,
+        block_pool=block_pool,
+        enable_caching=enable_caching,
+        kv_cache_group_id=0,
+    )
+
+
+def test_mamba_align_uses_resident_speculative_blocks_for_admission():
+    mamba_spec = MambaSpec(
+        block_size=4,
+        shapes=((6, 4), (2, 3, 4)),
+        dtypes=(torch.float16, torch.float16),
+        mamba_cache_mode="align",
+        num_speculative_blocks=3,
+        resident_speculative_blocks=0,
+    )
+    block_pool = BlockPool(
+        num_gpu_blocks=32, enable_caching=False, hash_block_size=4
+    )
+    manager = get_mamba_manager(mamba_spec, block_pool, enable_caching=False)
+
+    assert (
+        manager.get_num_blocks_to_allocate(
+            request_id="req0",
+            num_tokens=4,
+            new_computed_blocks=[],
+            total_computed_tokens=0,
+            num_tokens_main_model=4,
+        )
+        == 1
+    )
+
+    new_blocks = manager.allocate_new_blocks(
+        request_id="req0",
+        num_tokens=4,
+        num_tokens_main_model=4,
+    )
+    assert len(new_blocks) == 1
+    assert len(manager.req_to_blocks["req0"]) == 1
 
 
 def test_chunked_local_attention_possible_cached_prefix():

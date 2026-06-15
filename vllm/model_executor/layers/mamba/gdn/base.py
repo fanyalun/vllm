@@ -45,6 +45,10 @@ class GatedDeltaNetAttention(PluggableLayer, MambaBase):
             if self.speculative_config
             else 0
         )
+        self.hybrid_spec_state_offload_enabled = bool(
+            self.speculative_config is not None
+            and self.speculative_config.hybrid_spec_state_offload_enabled()
+        )
 
     @property
     def mamba_type(self) -> MambaAttentionBackendEnum:

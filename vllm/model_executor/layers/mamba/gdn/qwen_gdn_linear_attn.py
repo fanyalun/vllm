@@ -3,6 +3,7 @@
 """Inference-only Qwen3-Next/Qwen3.5 model."""
 
 import functools
+from dataclasses import dataclass
 from typing import Literal
 
 import torch
@@ -81,6 +82,12 @@ if GDN_AITER_TRITON_AVAILABLE:
     )
 
 logger = init_logger(__name__)
+
+
+@dataclass
+class HybridSpecStateOffloadWorkspace:
+    temporal_state_gpu_scratch: torch.Tensor
+    temporal_state_cpu_shadow: torch.Tensor
 
 
 # TODO(arpera): remove ``_is_libs_cu13_install_intact`` and its caller in
@@ -557,6 +564,38 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         self.enable_packed_recurrent_decode = (
             envs.VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE
         )
+        self.hybrid_spec_state_offload_workspace = None
+        if self.hybrid_spec_state_offload_enabled:
+            _, temporal_state_dtype = self.get_state_dtype()
+            max_num_reqs = vllm_config.scheduler_config.max_num_seqs
+            num_candidate_states = self.num_spec + 1
+            hv = self.num_v_heads // self.tp_size
+            self.hybrid_spec_state_offload_workspace = (
+                HybridSpecStateOffloadWorkspace(
+                    temporal_state_gpu_scratch=torch.empty(
+                        (
+                            max_num_reqs * num_candidate_states,
+                            hv,
+                            self.head_v_dim,
+                            self.head_k_dim,
+                        ),
+                        dtype=temporal_state_dtype,
+                        device=current_platform.current_device(),
+                    ),
+                    temporal_state_cpu_shadow=torch.empty(
+                        (
+                            max_num_reqs,
+                            num_candidate_states,
+                            hv,
+                            self.head_v_dim,
+                            self.head_k_dim,
+                        ),
+                        dtype=temporal_state_dtype,
+                        device="cpu",
+                        pin_memory=True,
+                    ),
+                )
+            )
 
         compilation_config = get_current_vllm_config().compilation_config
         if prefix in compilation_config.static_forward_context:
@@ -1258,6 +1297,103 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             core_attn_out=core_attn_out,
         )
 
+    def _prepare_spec_offload_initial_state(
+        self,
+        ssm_state: torch.Tensor,
+        running_state_indices: torch.Tensor,
+        attn_metadata: GDNAttentionMetadata,
+    ) -> torch.Tensor:
+        initial_state = ssm_state[running_state_indices].contiguous()
+        needs_reload = attn_metadata.needs_reload_from_cpu
+        if needs_reload is None or not bool(needs_reload.any().item()):
+            return initial_state
+
+        workspace = self.hybrid_spec_state_offload_workspace
+        assert workspace is not None
+        assert attn_metadata.spec_req_indices_cpu is not None
+        assert attn_metadata.reload_slot_cpu is not None
+        for row, need_reload in enumerate(needs_reload.tolist()):
+            if not need_reload:
+                continue
+            req_idx = int(attn_metadata.spec_req_indices_cpu[row].item())
+            reload_slot = int(attn_metadata.reload_slot_cpu[row].item())
+            shadow_state = workspace.temporal_state_cpu_shadow[req_idx, reload_slot]
+            initial_state[row].copy_(shadow_state, non_blocking=True)
+            running_idx = int(running_state_indices[row].item())
+            ssm_state[running_idx].copy_(initial_state[row], non_blocking=True)
+        return initial_state
+
+    def _store_spec_offload_final_states(
+        self,
+        ssm_state: torch.Tensor,
+        running_state_indices: torch.Tensor,
+        final_states: torch.Tensor,
+        attn_metadata: GDNAttentionMetadata,
+    ) -> None:
+        workspace = self.hybrid_spec_state_offload_workspace
+        assert workspace is not None
+        assert attn_metadata.spec_query_start_loc_cpu is not None
+        assert attn_metadata.spec_req_indices_cpu is not None
+        assert attn_metadata.predicted_accept_len_cpu is not None
+
+        query_start_loc = attn_metadata.spec_query_start_loc_cpu.tolist()
+        req_indices = attn_metadata.spec_req_indices_cpu.tolist()
+        predicted_accept_lens = attn_metadata.predicted_accept_len_cpu.tolist()
+        running_state_indices_list = running_state_indices.tolist()
+
+        for row, (start, end) in enumerate(zip(query_start_loc, query_start_loc[1:])):
+            predicted_len = int(predicted_accept_lens[row])
+            predicted_idx = start + predicted_len - 1
+            running_idx = int(running_state_indices_list[row])
+            req_idx = int(req_indices[row])
+
+            ssm_state[running_idx].copy_(final_states[predicted_idx], non_blocking=True)
+            workspace.temporal_state_cpu_shadow[req_idx, : end - start].copy_(
+                final_states[start:end], non_blocking=True
+            )
+
+    def _forward_core_spec_offload(
+        self,
+        query_spec: torch.Tensor,
+        key_spec: torch.Tensor,
+        value_spec: torch.Tensor,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        ssm_state: torch.Tensor,
+        running_state_indices: torch.Tensor,
+        attn_metadata: GDNAttentionMetadata,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        workspace = self.hybrid_spec_state_offload_workspace
+        assert workspace is not None
+        assert attn_metadata.spec_query_start_loc is not None
+
+        initial_state = self._prepare_spec_offload_initial_state(
+            ssm_state, running_state_indices, attn_metadata
+        )
+        scratch = workspace.temporal_state_gpu_scratch[
+            : attn_metadata.num_spec_decode_tokens
+        ]
+        core_attn_out_spec, final_states = fused_sigmoid_gating_delta_rule_update(
+            A_log=self.A_log,
+            a=a,
+            b=b,
+            dt_bias=self.dt_bias,
+            q=query_spec,
+            k=key_spec,
+            v=value_spec,
+            initial_state=initial_state,
+            inplace_final_state=False,
+            final_state_out=scratch,
+            cu_seqlens=attn_metadata.spec_query_start_loc[
+                : attn_metadata.num_spec_decodes + 1
+            ],
+            use_qk_l2norm_in_kernel=True,
+        )
+        self._store_spec_offload_final_states(
+            ssm_state, running_state_indices, final_states, attn_metadata
+        )
+        return core_attn_out_spec, final_states
+
     def _forward_core(
         self,
         mixed_qkv: torch.Tensor,
@@ -1353,7 +1489,7 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 ],
                 num_accepted_tokens=num_accepted_tokens,
                 query_start_loc=spec_query_start_loc,
-                max_query_len=spec_state_indices_tensor.size(-1),
+                max_query_len=attn_metadata.spec_max_query_len,
                 validate_data=False,
             )
 
@@ -1436,26 +1572,43 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
 
         # 2.1: Process the multi-query part
         if spec_sequence_masks is not None:
-            core_attn_out_spec, last_recurrent_state = (
-                fused_sigmoid_gating_delta_rule_update(
-                    A_log=self.A_log,
-                    a=a,
-                    b=b,
-                    dt_bias=self.dt_bias,
-                    q=query_spec,
-                    k=key_spec,
-                    v=value_spec,
-                    initial_state=ssm_state,
-                    inplace_final_state=True,
-                    cu_seqlens=spec_query_start_loc[  # type: ignore[index]
-                        : attn_metadata.num_spec_decodes
-                        + 1  # type: ignore[attr-defined]
-                    ],
-                    ssm_state_indices=spec_state_indices_tensor,
-                    num_accepted_tokens=num_accepted_tokens,
-                    use_qk_l2norm_in_kernel=True,
+            if self.hybrid_spec_state_offload_enabled:
+                assert spec_state_indices_tensor is not None
+                core_attn_out_spec, last_recurrent_state = (
+                    self._forward_core_spec_offload(
+                        query_spec=query_spec,
+                        key_spec=key_spec,
+                        value_spec=value_spec,
+                        a=a,
+                        b=b,
+                        ssm_state=ssm_state,
+                        running_state_indices=spec_state_indices_tensor[:, 0][
+                            : attn_metadata.num_spec_decodes
+                        ],
+                        attn_metadata=attn_metadata,
+                    )
                 )
-            )
+            else:
+                core_attn_out_spec, last_recurrent_state = (
+                    fused_sigmoid_gating_delta_rule_update(
+                        A_log=self.A_log,
+                        a=a,
+                        b=b,
+                        dt_bias=self.dt_bias,
+                        q=query_spec,
+                        k=key_spec,
+                        v=value_spec,
+                        initial_state=ssm_state,
+                        inplace_final_state=True,
+                        cu_seqlens=spec_query_start_loc[  # type: ignore[index]
+                            : attn_metadata.num_spec_decodes
+                            + 1  # type: ignore[attr-defined]
+                        ],
+                        ssm_state_indices=spec_state_indices_tensor,
+                        num_accepted_tokens=num_accepted_tokens,
+                        use_qk_l2norm_in_kernel=True,
+                    )
+                )
         else:
             core_attn_out_spec, last_recurrent_state = None, None
 

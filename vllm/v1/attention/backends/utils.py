@@ -920,6 +920,9 @@ def mamba_get_block_table_tensor(
         return block_table
     else:
         assert isinstance(kv_cache_spec, MambaSpec)
+        resident_speculative_blocks = (
+            kv_cache_spec.effective_resident_speculative_blocks
+        )
         # NOTE: For 0-length requests in CUDA graph, use a start_index of 0
         # to handle the invalid block table.
         start_indices = torch.clamp(
@@ -929,7 +932,7 @@ def mamba_get_block_table_tensor(
         # Use int32 for arithmetic to avoid dtype promotion overhead,
         # then convert to int64 for gather (which requires Long indices)
         offsets = torch.arange(
-            1 + kv_cache_spec.num_speculative_blocks,
+            1 + resident_speculative_blocks,
             device=block_table.device,
             dtype=torch.int32,
         )

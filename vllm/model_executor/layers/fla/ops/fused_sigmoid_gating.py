@@ -191,6 +191,7 @@ def fused_sigmoid_gating_delta_rule_update(
     scale: float = None,
     initial_state: torch.Tensor = None,
     inplace_final_state: bool = True,
+    final_state_out: torch.Tensor | None = None,
     cu_seqlens: torch.Tensor | None = None,
     ssm_state_indices: torch.Tensor | None = None,
     num_accepted_tokens: torch.Tensor | None = None,
@@ -224,9 +225,22 @@ def fused_sigmoid_gating_delta_rule_update(
 
     o = q.new_empty(NK, *v.shape)
     if inplace_final_state:
+        if final_state_out is not None:
+            raise ValueError(
+                "final_state_out is incompatible with inplace_final_state=True."
+            )
         final_state = initial_state
     else:
-        final_state = q.new_empty(T, HV, V, K, dtype=initial_state.dtype)
+        if final_state_out is not None:
+            expected_shape = (T, HV, V, K)
+            if final_state_out.shape != expected_shape:
+                raise ValueError(
+                    "final_state_out must have shape "
+                    f"{expected_shape}, got {tuple(final_state_out.shape)}."
+                )
+            final_state = final_state_out
+        else:
+            final_state = q.new_empty(T, HV, V, K, dtype=initial_state.dtype)
 
     stride_init_state_token = initial_state.stride(0)
     stride_final_state_token = final_state.stride(0)

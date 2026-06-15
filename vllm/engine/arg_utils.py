@@ -614,6 +614,8 @@ class EngineArgs:
     spec_method: str | None = None
     spec_model: str | None = None
     spec_tokens: int | None = None
+    hybrid_spec_state_offload_mode: str | None = None
+    hybrid_spec_state_ewma_alpha: float | None = None
 
     show_hidden_metrics_for_version: str | None = (
         ObservabilityConfig.show_hidden_metrics_for_version
@@ -1466,6 +1468,14 @@ class EngineArgs:
             "--spec-tokens", **speculative_kwargs["num_speculative_tokens"]
         )
         vllm_group.add_argument(
+            "--hybrid-spec-state-offload-mode",
+            **speculative_kwargs["hybrid_spec_state_offload_mode"],
+        )
+        vllm_group.add_argument(
+            "--hybrid-spec-state-ewma-alpha",
+            **speculative_kwargs["hybrid_spec_state_ewma_alpha"],
+        )
+        vllm_group.add_argument(
             "--kv-transfer-config", **vllm_kwargs["kv_transfer_config"]
         )
         vllm_group.add_argument("--kv-events-config", **vllm_kwargs["kv_events_config"])
@@ -1669,6 +1679,16 @@ class EngineArgs:
             ("--spec-method", "method", self.spec_method),
             ("--spec-model", "model", self.spec_model),
             ("--spec-tokens", "num_speculative_tokens", self.spec_tokens),
+            (
+                "--hybrid-spec-state-offload-mode",
+                "hybrid_spec_state_offload_mode",
+                self.hybrid_spec_state_offload_mode,
+            ),
+            (
+                "--hybrid-spec-state-ewma-alpha",
+                "hybrid_spec_state_ewma_alpha",
+                self.hybrid_spec_state_ewma_alpha,
+            ),
         ):
             if value is None:
                 continue

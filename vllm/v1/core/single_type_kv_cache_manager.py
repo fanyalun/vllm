@@ -847,6 +847,9 @@ class MambaManager(SingleTypeKVCacheManager):
         self.cached_blocks_this_step: set[BlockHashWithGroupId] = set()
         self.mamba_cache_mode = kv_cache_spec.mamba_cache_mode
         self.num_speculative_blocks: int = kv_cache_spec.num_speculative_blocks
+        self.resident_speculative_blocks: int = (
+            kv_cache_spec.effective_resident_speculative_blocks
+        )
         if self.mamba_cache_mode == "align":
             # Mapping from request ID to the index of the block
             # allocated in the previous step
@@ -983,7 +986,7 @@ class MambaManager(SingleTypeKVCacheManager):
             # NOTE(tdouble): this is an over-estimate of how many blocks we need because
             # num_tokens can include draft tokens that will later be rejected.
             num_required_blocks = (
-                cdiv(num_tokens, self.block_size) + self.num_speculative_blocks
+                cdiv(num_tokens, self.block_size) + self.resident_speculative_blocks
             )
             num_new_blocks = (
                 num_required_blocks
@@ -998,7 +1001,7 @@ class MambaManager(SingleTypeKVCacheManager):
                 else:
                     # First prefill. Allocate 1 block for running state and the
                     # speculative blocks.
-                    num_new_blocks = 1 + self.num_speculative_blocks
+                    num_new_blocks = 1 + self.resident_speculative_blocks
 
             num_evictable_computed_blocks = self._get_num_evictable_blocks(
                 new_computed_blocks
@@ -1028,7 +1031,7 @@ class MambaManager(SingleTypeKVCacheManager):
             # NOTE(tdouble): this is an over-estimate of how many blocks we need because
             # num_tokens can include draft tokens that will later be rejected.
             num_required_blocks = (
-                cdiv(num_tokens, self.block_size) + self.num_speculative_blocks
+                cdiv(num_tokens, self.block_size) + self.resident_speculative_blocks
             )
             if num_required_blocks == len(req_blocks):
                 return []
@@ -1044,7 +1047,7 @@ class MambaManager(SingleTypeKVCacheManager):
                     # We always save the running state at the last
                     # (1 + num_speculative_blocks) block
                     self.last_state_block_idx[request_id] = (
-                        prev_block_len - 1 - self.num_speculative_blocks
+                        prev_block_len - 1 - self.resident_speculative_blocks
                     )
                 elif prev_block_len > 0:
                     # When a new request hits the prefix cache, the last block
@@ -1052,7 +1055,7 @@ class MambaManager(SingleTypeKVCacheManager):
                     self.last_state_block_idx[request_id] = prev_block_len - 1
 
                 num_skipped_blocks = (
-                    num_required_blocks - self.num_speculative_blocks - 1
+                    num_required_blocks - self.resident_speculative_blocks - 1
                 )
                 # null blocks
                 if prev_block_len < num_skipped_blocks:
@@ -1066,7 +1069,8 @@ class MambaManager(SingleTypeKVCacheManager):
                 if blocks_allocated:
                     # reuse previous speculative blocks in this step
                     for block_idx in range(
-                        prev_block_len - self.num_speculative_blocks, prev_block_len
+                        prev_block_len - self.resident_speculative_blocks,
+                        prev_block_len,
                     ):
                         if block_idx < num_skipped_blocks:
                             req_blocks.append(req_blocks[block_idx])
@@ -1077,7 +1081,7 @@ class MambaManager(SingleTypeKVCacheManager):
                 if blocks_allocated:
                     assert num_new_blocks <= 1
                 else:
-                    assert num_new_blocks <= self.num_speculative_blocks + 1
+                    assert num_new_blocks <= self.resident_speculative_blocks + 1
                 new_blocks = self.block_pool.get_new_blocks(num_new_blocks)
                 req_blocks.extend(new_blocks)
                 self._allocated_block_reqs.add(request_id)

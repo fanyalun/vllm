@@ -567,6 +567,7 @@ class MambaSpec(KVCacheSpec):
     mamba_type: MambaAttentionBackendEnum = MambaAttentionBackendEnum.MAMBA2
     mamba_cache_mode: str = "none"
     num_speculative_blocks: int = 0
+    resident_speculative_blocks: int | None = None
 
     @property
     def page_size_bytes(self) -> int:
@@ -579,16 +580,23 @@ class MambaSpec(KVCacheSpec):
             return self.page_size_padded
         return page_size
 
+    @property
+    def effective_resident_speculative_blocks(self) -> int:
+        if self.resident_speculative_blocks is None:
+            return self.num_speculative_blocks
+        return self.resident_speculative_blocks
+
     def max_memory_usage_bytes(self, vllm_config: VllmConfig) -> int:
+        resident_speculative_blocks = self.effective_resident_speculative_blocks
         if vllm_config.cache_config.mamba_cache_mode == "all":
             max_model_len = vllm_config.model_config.max_model_len
             return (
-                cdiv(max_model_len, self.block_size) + self.num_speculative_blocks
+                cdiv(max_model_len, self.block_size) + resident_speculative_blocks
             ) * self.page_size_bytes
         elif vllm_config.cache_config.mamba_cache_mode == "align":
-            return self.page_size_bytes * (2 + self.num_speculative_blocks)
+            return self.page_size_bytes * (2 + resident_speculative_blocks)
         else:
-            return self.page_size_bytes * (1 + self.num_speculative_blocks)
+            return self.page_size_bytes * (1 + resident_speculative_blocks)
 
 
 @dataclass(frozen=True)
@@ -729,6 +737,8 @@ class UniformTypeKVCacheSpecs(KVCacheSpec):
             return all(
                 isinstance(spec, MambaSpec)
                 and spec.num_speculative_blocks == one_spec.num_speculative_blocks
+                and spec.effective_resident_speculative_blocks
+                == one_spec.effective_resident_speculative_blocks
                 for spec in kv_cache_specs.values()
             )
         else:

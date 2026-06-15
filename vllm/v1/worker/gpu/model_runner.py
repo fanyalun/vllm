@@ -388,9 +388,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 max_num_blocks = cdiv(max_num_blocks, alignment) * alignment
             # For Mamba/Hybrid Model, KVCaches need extra blocks for speculative tokens
             if isinstance(spec, MambaSpec):
+                resident_speculative_blocks = (
+                    spec.effective_resident_speculative_blocks
+                )
                 max_num_blocks = (
                     max_num_blocks if self.cache_config.enable_prefix_caching else 1
-                ) + spec.num_speculative_blocks
+                ) + resident_speculative_blocks
             max_num_blocks_per_group.append(max_num_blocks)
 
         (self.attn_backends, self.attn_groups, attn_cg_support, kernel_block_sizes) = (

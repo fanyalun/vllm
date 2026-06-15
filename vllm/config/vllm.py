@@ -2083,6 +2083,49 @@ class VllmConfig:
                 "Model Runner V2 has not yet supported mamba_cache_mode='align'. "
             )
 
+        if (
+            self.speculative_config is not None
+            and self.speculative_config.hybrid_spec_state_offload_enabled()
+        ):
+            from vllm.platforms import current_platform
+
+            supported_hybrid_archs = {
+                "Qwen3NextForCausalLM",
+                "Qwen3_5ForCausalLM",
+                "Qwen3_5MoeForCausalLM",
+                "Qwen3_5ForConditionalGeneration",
+                "Qwen3_5MoeForConditionalGeneration",
+            }
+            if not current_platform.is_cuda():
+                raise ValueError(
+                    "Hybrid speculative state offload currently requires CUDA."
+                )
+            if self.cache_config.mamba_cache_mode != "align":
+                raise ValueError(
+                    "Hybrid speculative state offload requires "
+                    "mamba_cache_mode='align'."
+                )
+            if envs.VLLM_USE_V2_MODEL_RUNNER:
+                raise ValueError(
+                    "Hybrid speculative state offload does not support "
+                    "VLLM_USE_V2_MODEL_RUNNER."
+                )
+            if not current_platform.is_pin_memory_available():
+                raise ValueError(
+                    "Hybrid speculative state offload requires pinned CPU memory."
+                )
+            if (
+                not self.model_config.is_hybrid
+                or not any(
+                    arch in supported_hybrid_archs
+                    for arch in self.model_config.architectures
+                )
+            ):
+                raise ValueError(
+                    "Hybrid speculative state offload currently only supports "
+                    "Qwen3.5/Qwen3.6 hybrid GDN models on the v1 runner."
+                )
+
     @model_validator(mode="after")
     def validate_nvfp4_kv_cache_with_mla(self) -> "VllmConfig":
         if self.model_config is None:

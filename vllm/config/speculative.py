@@ -68,6 +68,7 @@ SpeculativeMethod = Literal[
 ]
 RejectionSampleMethod = Literal["standard", "synthetic"]
 DraftSampleMethod = Literal["greedy", "probabilistic"]
+HybridSpecStateOffloadMode = Literal["disabled", "predict_last"]
 
 
 @config
@@ -261,6 +262,12 @@ class SpeculativeConfig:
     during rejection sampling. This comes at the cost of additional GPU memory
     usage."""
 
+    hybrid_spec_state_offload_mode: HybridSpecStateOffloadMode = "disabled"
+    """Experimental hybrid GDN speculative-state offload mode."""
+
+    hybrid_spec_state_ewma_alpha: float = Field(default=0.5, ge=0.0, le=1.0)
+    """EWMA alpha for the hybrid speculative acceptance-length predictor."""
+
     def compute_hash(self) -> str:
         """
         WARNING: Whenever a new field is added to this config,
@@ -282,6 +289,7 @@ class SpeculativeConfig:
             "dflash",
         )
         factors.append(uses_aux_hidden_states)
+        factors.append(self.hybrid_spec_state_offload_mode)
 
         # The specific layers used also affect the computation graph
         if uses_aux_hidden_states and self.draft_model_config is not None:
@@ -1071,6 +1079,14 @@ class SpeculativeConfig:
     def use_ngram_gpu(self) -> bool:
         return self.method == "ngram_gpu"
 
+    def hybrid_spec_state_offload_enabled(self) -> bool:
+        return self.hybrid_spec_state_offload_mode != "disabled"
+
+    def resident_speculative_mamba_blocks(self) -> int:
+        if self.hybrid_spec_state_offload_enabled():
+            return 0
+        return self.num_speculative_tokens
+
     def __repr__(self) -> str:
         method = self.method
         model = (
@@ -1085,4 +1101,8 @@ class SpeculativeConfig:
             else self.draft_model_config.model
         )
         num_spec_tokens = self.num_speculative_tokens
-        return f"SpeculativeConfig({method=}, {model=}, {num_spec_tokens=})"
+        offload_mode = self.hybrid_spec_state_offload_mode
+        return (
+            f"SpeculativeConfig({method=}, {model=}, {num_spec_tokens=}, "
+            f"{offload_mode=})"
+        )
