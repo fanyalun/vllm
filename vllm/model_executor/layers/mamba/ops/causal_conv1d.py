@@ -1239,3 +1239,58 @@ def causal_conv1d_update(
     if unsqueeze:
         out = out.squeeze(-1)
     return out.to(original_x_dtype)
+
+
+def causal_conv1d_update_spec_offload(
+    x: torch.Tensor,
+    conv_state_source: torch.Tensor,
+    conv_state_scratch: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    activation: bool | str | None = None,
+    conv_state_indices: torch.Tensor | None = None,
+    num_accepted_tokens: torch.Tensor | None = None,
+    query_start_loc: torch.Tensor | None = None,
+    max_query_len: int = -1,
+    validate_data: bool = False,
+):
+    """Run speculative conv updates without mutating the persistent source.
+
+    The persistent running conv state is copied into a scratch buffer first.
+    The speculative conv kernel then reads from and writes to that scratch
+    buffer so candidate-state generation cannot clobber the resident state.
+    """
+    assert conv_state_indices is not None
+    assert num_accepted_tokens is not None
+    assert query_start_loc is not None
+
+    batch = conv_state_indices.size(0)
+    if batch == 0:
+        return x
+
+    scratch = conv_state_scratch[:batch]
+    required_state_len = weight.size(1) - 1 + max(0, max_query_len - 1)
+    assert scratch.size(0) >= batch
+    assert scratch.size(1) == conv_state_source.size(1)
+    assert scratch.size(2) >= required_state_len
+
+    source_indices = conv_state_indices.to(dtype=torch.long)
+    scratch.copy_(
+        conv_state_source.index_select(0, source_indices),
+        non_blocking=True,
+    )
+    scratch_indices = torch.arange(batch, dtype=torch.int32, device=x.device)
+
+    return causal_conv1d_update(
+        x=x,
+        conv_state=scratch,
+        weight=weight,
+        bias=bias,
+        activation=activation,
+        conv_state_indices=scratch_indices,
+        num_accepted_tokens=num_accepted_tokens,
+        query_start_loc=query_start_loc,
+        max_query_len=max_query_len,
+        null_block_id=None,
+        validate_data=validate_data,
+    )

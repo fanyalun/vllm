@@ -202,6 +202,11 @@ from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 from vllm.v1.worker.gpu_ubatch_wrapper import UBatchWrapper
 from vllm.v1.worker.kv_connector_model_runner_mixin import KVConnectorModelRunnerMixin
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
+from vllm.v1.worker.gpu.model_states.mamba_hybrid import (
+    init_hybrid_predicted_accept_len,
+    predict_hybrid_accept_len,
+    update_hybrid_accepted_len_ewma,
+)
 from vllm.v1.worker.ubatch_utils import (
     UBatchSlices,
     check_ubatch_thresholds,
@@ -431,6 +436,15 @@ class GPUModelRunner(
         self.scheduler_config = vllm_config.scheduler_config
         self.speculative_config = vllm_config.speculative_config
         self.observability_config = vllm_config.observability_config
+        self.hybrid_spec_state_offload_enabled = bool(
+            self.speculative_config is not None
+            and self.speculative_config.hybrid_spec_state_offload_enabled()
+        )
+        self.hybrid_spec_state_ewma_alpha = (
+            self.speculative_config.hybrid_spec_state_ewma_alpha
+            if self.speculative_config is not None
+            else 0.5
+        )
 
         model_config = self.model_config
         cache_config = self.cache_config
@@ -894,6 +908,11 @@ class GPUModelRunner(
                 self.max_num_reqs, dtype=torch.int32
             )
         self.layerwise_nvtx_hooks_registered = False
+        self.hybrid_spec_offload_free_slots: list[int] = []
+        if self.hybrid_spec_state_offload_enabled:
+            self.hybrid_spec_offload_free_slots = list(
+                range(self.max_num_reqs - 1, -1, -1)
+            )
 
     def update_max_model_len(self, max_model_len: int) -> None:
         self.max_model_len = max_model_len
@@ -1113,6 +1132,104 @@ class GPUModelRunner(
             self.async_output_copy_stream = stream
         return stream
 
+    def _allocate_hybrid_spec_offload_slot(self) -> int:
+        assert self.hybrid_spec_state_offload_enabled
+        if not self.hybrid_spec_offload_free_slots:
+            raise RuntimeError(
+                "Hybrid speculative state offload ran out of per-request slots."
+            )
+        return self.hybrid_spec_offload_free_slots.pop()
+
+    def _free_hybrid_spec_offload_slot(self, req_state: CachedRequestState) -> None:
+        if (
+            not self.hybrid_spec_state_offload_enabled
+            or req_state.hybrid_spec_offload_slot < 0
+        ):
+            return
+        self.hybrid_spec_offload_free_slots.append(req_state.hybrid_spec_offload_slot)
+        req_state.hybrid_spec_offload_slot = -1
+
+    def _init_hybrid_spec_offload_request_state(
+        self, req_state: CachedRequestState
+    ) -> None:
+        if not self.hybrid_spec_state_offload_enabled:
+            return
+        init_pred = init_hybrid_predicted_accept_len(self.num_spec_tokens)
+        req_state.accepted_len_ewma = float(init_pred)
+        req_state.predicted_accept_len = init_pred
+        req_state.reload_required = False
+        req_state.reload_slot = 0
+        if req_state.hybrid_spec_offload_slot < 0:
+            req_state.hybrid_spec_offload_slot = (
+                self._allocate_hybrid_spec_offload_slot()
+            )
+
+    def _update_hybrid_spec_offload_request_states(
+        self,
+        req_ids: list[str],
+        accepted_lens: list[int],
+        scheduled_spec_decode_tokens: dict[str, list[int] | tuple[int, ...]],
+    ) -> None:
+        if not self.hybrid_spec_state_offload_enabled:
+            return
+        max_accept_len = 1 + self.num_spec_tokens
+        for batch_idx, req_id in enumerate(req_ids):
+            req_state = self.requests[req_id]
+            if req_id not in scheduled_spec_decode_tokens:
+                req_state.reload_required = False
+                continue
+            accepted_len = int(accepted_lens[batch_idx])
+            accepted_len = max(1, min(max_accept_len, accepted_len))
+            predicted_len = max(1, min(max_accept_len, req_state.predicted_accept_len))
+            req_state.reload_required = predicted_len != accepted_len
+            req_state.reload_slot = accepted_len - 1
+            req_state.accepted_len_ewma = update_hybrid_accepted_len_ewma(
+                req_state.accepted_len_ewma,
+                accepted_len,
+                self.hybrid_spec_state_ewma_alpha,
+            )
+            req_state.predicted_accept_len = predict_hybrid_accept_len(
+                req_state.accepted_len_ewma, self.num_spec_tokens
+            )
+
+    def _build_hybrid_gdn_attn_metadata_args(
+        self, num_reqs_padded: int
+    ) -> dict[str, torch.Tensor]:
+        num_accepted_tokens_np = np.ones(num_reqs_padded, dtype=np.int32)
+        spec_req_indices_np = np.full(num_reqs_padded, -1, dtype=np.int32)
+        predicted_accept_len_np = np.ones(num_reqs_padded, dtype=np.int32)
+        needs_reload_np = np.zeros(num_reqs_padded, dtype=bool)
+        reload_slot_np = np.zeros(num_reqs_padded, dtype=np.int32)
+
+        for batch_idx, req_id in enumerate(
+            self.input_batch.req_ids[: self.input_batch.num_reqs]
+        ):
+            req_state = self.requests[req_id]
+            draft_len = int(self.num_decode_draft_tokens.np[batch_idx])
+            if draft_len >= 0:
+                max_accept_len = 1 + draft_len
+                num_accepted_tokens_np[batch_idx] = req_state.reload_slot + 1
+            else:
+                max_accept_len = 1
+            spec_req_indices_np[batch_idx] = req_state.hybrid_spec_offload_slot
+            predicted_accept_len_np[batch_idx] = min(
+                req_state.predicted_accept_len,
+                max_accept_len,
+            )
+            needs_reload_np[batch_idx] = req_state.reload_required
+            reload_slot_np[batch_idx] = req_state.reload_slot
+
+        return {
+            "num_accepted_tokens": torch.from_numpy(num_accepted_tokens_np).to(
+                device=self.device,
+                non_blocking=True,
+            ),
+            "spec_req_indices_cpu": torch.from_numpy(spec_req_indices_np),
+            "predicted_accept_len_cpu": torch.from_numpy(predicted_accept_len_np),
+            "needs_reload_from_cpu": torch.from_numpy(needs_reload_np),
+            "reload_slot_cpu": torch.from_numpy(reload_slot_np),
+        }
+
     def _update_states(self, scheduler_output: "SchedulerOutput") -> Callable | None:
         """Update the cached states and the persistent batch with the scheduler
         output.
@@ -1125,7 +1242,9 @@ class GPUModelRunner(
         """
         # Remove finished requests from the cached states.
         for req_id in scheduler_output.finished_req_ids:
-            self.requests.pop(req_id, None)
+            req_state = self.requests.pop(req_id, None)
+            if req_state is not None:
+                self._free_hybrid_spec_offload_slot(req_state)
             self.num_prompt_logprobs.pop(req_id, None)
         self.late_interaction_runner.on_requests_finished(
             scheduler_output.finished_req_ids
@@ -1224,6 +1343,7 @@ class GPUModelRunner(
                 output_token_ids=[],
                 lora_request=new_req_data.lora_request,
             )
+            self._init_hybrid_spec_offload_request_state(req_state)
             self.requests[req_id] = req_state
             self.late_interaction_runner.register_request(req_id, pooling_params)
 
@@ -1502,6 +1622,17 @@ class GPUModelRunner(
         # tokens gives us the first -1 position (i.e., number of accepted).
         num_reqs = output_token_ids.size(0)
         self.num_accepted_tokens.gpu[:num_reqs] = (output_token_ids != -1).sum(dim=1)
+        if self.hybrid_spec_state_offload_enabled:
+            accepted_lens = (
+                self.num_accepted_tokens.gpu[:num_reqs]
+                .to(device="cpu", non_blocking=False)
+                .tolist()
+            )
+            self._update_hybrid_spec_offload_request_states(
+                self.input_batch.req_ids[:num_reqs],
+                accepted_lens,
+                scheduler_output.scheduled_spec_decode_tokens,
+            )
 
         if self.cache_config.mamba_cache_mode == "align":
             # Fused GPU postprocess: state copies + per-request accepted-token
@@ -1570,6 +1701,7 @@ class GPUModelRunner(
         # Clear `output_token_ids` as previous output tokens are now part of
         # `prompt_token_ids`.
         req_state.output_token_ids.clear()
+        self._init_hybrid_spec_offload_request_state(req_state)
 
         if self.uses_mrope:
             self._init_mrope_positions(req_state)
@@ -2361,6 +2493,15 @@ class GPUModelRunner(
                 ):
                     extra_attn_metadata_args["prev_last_scheduled_idx"] = (
                         self.mamba_prev_last_scheduled_idx.gpu[:num_reqs_padded]
+                    )
+                if (
+                    self.hybrid_spec_state_offload_enabled
+                    and isinstance(builder, GDNAttentionMetadataBuilder)
+                ):
+                    extra_attn_metadata_args.update(
+                        self._build_hybrid_gdn_attn_metadata_args(
+                            num_reqs_padded
+                        )
                     )
 
             if for_cudagraph_capture:

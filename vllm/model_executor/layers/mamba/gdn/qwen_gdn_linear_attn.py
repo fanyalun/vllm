@@ -47,6 +47,7 @@ from vllm.model_executor.layers.mamba.mamba_utils import (
 from vllm.model_executor.layers.mamba.ops.causal_conv1d import (
     causal_conv1d_fn,
     causal_conv1d_update,
+    causal_conv1d_update_spec_offload,
 )
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.quantization.auto_gptq import AutoGPTQConfig
@@ -86,6 +87,8 @@ logger = init_logger(__name__)
 
 @dataclass
 class HybridSpecStateOffloadWorkspace:
+    conv_state_gpu_scratch: torch.Tensor
+    conv_state_cpu_shadow: torch.Tensor
     temporal_state_gpu_scratch: torch.Tensor
     temporal_state_cpu_shadow: torch.Tensor
 
@@ -566,12 +569,32 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         )
         self.hybrid_spec_state_offload_workspace = None
         if self.hybrid_spec_state_offload_enabled:
-            _, temporal_state_dtype = self.get_state_dtype()
+            conv_state_dtype, temporal_state_dtype = self.get_state_dtype()
             max_num_reqs = vllm_config.scheduler_config.max_num_seqs
             num_candidate_states = self.num_spec + 1
             hv = self.num_v_heads // self.tp_size
+            conv_state_len = self.conv_kernel_size - 1 + self.num_spec
             self.hybrid_spec_state_offload_workspace = (
                 HybridSpecStateOffloadWorkspace(
+                    conv_state_gpu_scratch=torch.empty(
+                        (
+                            max_num_reqs,
+                            self.conv_dim,
+                            conv_state_len,
+                        ),
+                        dtype=conv_state_dtype,
+                        device=current_platform.current_device(),
+                    ),
+                    conv_state_cpu_shadow=torch.empty(
+                        (
+                            max_num_reqs,
+                            self.conv_dim,
+                            conv_state_len,
+                        ),
+                        dtype=conv_state_dtype,
+                        device="cpu",
+                        pin_memory=True,
+                    ),
                     temporal_state_gpu_scratch=torch.empty(
                         (
                             max_num_reqs * num_candidate_states,
@@ -1295,7 +1318,30 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             b=b,
             a=a,
             core_attn_out=core_attn_out,
-        )
+            )
+
+    def _reload_spec_offload_conv_state(
+        self,
+        conv_state: torch.Tensor,
+        running_state_indices: torch.Tensor,
+        attn_metadata: GDNAttentionMetadata,
+    ) -> None:
+        needs_reload = attn_metadata.needs_reload_from_cpu
+        if needs_reload is None or not bool(needs_reload.any().item()):
+            return
+
+        workspace = self.hybrid_spec_state_offload_workspace
+        assert workspace is not None
+        assert attn_metadata.spec_req_indices_cpu is not None
+        for row, need_reload in enumerate(needs_reload.tolist()):
+            if not need_reload:
+                continue
+            req_idx = int(attn_metadata.spec_req_indices_cpu[row].item())
+            running_idx = int(running_state_indices[row].item())
+            conv_state[running_idx].copy_(
+                workspace.conv_state_cpu_shadow[req_idx],
+                non_blocking=True,
+            )
 
     def _prepare_spec_offload_initial_state(
         self,
@@ -1351,6 +1397,70 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             workspace.temporal_state_cpu_shadow[req_idx, : end - start].copy_(
                 final_states[start:end], non_blocking=True
             )
+
+    def _store_spec_offload_conv_states(
+        self,
+        conv_state: torch.Tensor,
+        running_state_indices: torch.Tensor,
+        final_conv_states: torch.Tensor,
+        attn_metadata: GDNAttentionMetadata,
+    ) -> None:
+        workspace = self.hybrid_spec_state_offload_workspace
+        assert workspace is not None
+        assert attn_metadata.spec_req_indices_cpu is not None
+
+        req_indices = attn_metadata.spec_req_indices_cpu.tolist()
+        running_state_indices_list = running_state_indices.tolist()
+        for row, (req_idx, running_idx) in enumerate(
+            zip(req_indices, running_state_indices_list)
+        ):
+            conv_state[int(running_idx)].copy_(
+                final_conv_states[row],
+                non_blocking=True,
+            )
+            workspace.conv_state_cpu_shadow[int(req_idx)].copy_(
+                final_conv_states[row],
+                non_blocking=True,
+            )
+
+    def _forward_conv_spec_offload(
+        self,
+        mixed_qkv_spec: torch.Tensor,
+        conv_state: torch.Tensor,
+        conv_weights: torch.Tensor,
+        running_state_indices: torch.Tensor,
+        num_accepted_tokens: torch.Tensor,
+        attn_metadata: GDNAttentionMetadata,
+    ) -> torch.Tensor:
+        workspace = self.hybrid_spec_state_offload_workspace
+        assert workspace is not None
+        assert attn_metadata.spec_query_start_loc is not None
+
+        self._reload_spec_offload_conv_state(
+            conv_state,
+            running_state_indices,
+            attn_metadata,
+        )
+        mixed_qkv_spec = causal_conv1d_update_spec_offload(
+            mixed_qkv_spec,
+            conv_state_source=conv_state,
+            conv_state_scratch=workspace.conv_state_gpu_scratch,
+            weight=conv_weights,
+            bias=self.conv1d.bias,
+            activation=self.activation,
+            conv_state_indices=running_state_indices,
+            num_accepted_tokens=num_accepted_tokens,
+            query_start_loc=attn_metadata.spec_query_start_loc,
+            max_query_len=attn_metadata.spec_max_query_len,
+            validate_data=False,
+        )
+        self._store_spec_offload_conv_states(
+            conv_state,
+            running_state_indices,
+            workspace.conv_state_gpu_scratch[: attn_metadata.num_spec_decodes],
+            attn_metadata,
+        )
+        return mixed_qkv_spec
 
     def _forward_core_spec_offload(
         self,
@@ -1478,20 +1588,31 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         if spec_sequence_masks is not None:
             # spec_state_indices_tensor is always set when spec_sequence_masks is set
             assert spec_state_indices_tensor is not None
-            mixed_qkv_spec = causal_conv1d_update(
-                mixed_qkv_spec,
-                conv_state,
-                conv_weights,
-                self.conv1d.bias,
-                self.activation,
-                conv_state_indices=spec_state_indices_tensor[:, 0][  # type: ignore[index]
-                    : attn_metadata.num_spec_decodes  # type: ignore[attr-defined]
-                ],
-                num_accepted_tokens=num_accepted_tokens,
-                query_start_loc=spec_query_start_loc,
-                max_query_len=attn_metadata.spec_max_query_len,
-                validate_data=False,
-            )
+            spec_running_state_indices = spec_state_indices_tensor[:, 0][
+                : attn_metadata.num_spec_decodes
+            ]
+            if self.hybrid_spec_state_offload_enabled:
+                mixed_qkv_spec = self._forward_conv_spec_offload(
+                    mixed_qkv_spec=mixed_qkv_spec,
+                    conv_state=conv_state,
+                    conv_weights=conv_weights,
+                    running_state_indices=spec_running_state_indices,
+                    num_accepted_tokens=num_accepted_tokens,
+                    attn_metadata=attn_metadata,
+                )
+            else:
+                mixed_qkv_spec = causal_conv1d_update(
+                    mixed_qkv_spec,
+                    conv_state,
+                    conv_weights,
+                    self.conv1d.bias,
+                    self.activation,
+                    conv_state_indices=spec_running_state_indices,
+                    num_accepted_tokens=num_accepted_tokens,
+                    query_start_loc=spec_query_start_loc,
+                    max_query_len=attn_metadata.spec_max_query_len,
+                    validate_data=False,
+                )
 
         # 1.2: Process the remaining part
         if attn_metadata.num_prefills > 0:
@@ -1582,9 +1703,7 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                         a=a,
                         b=b,
                         ssm_state=ssm_state,
-                        running_state_indices=spec_state_indices_tensor[:, 0][
-                            : attn_metadata.num_spec_decodes
-                        ],
+                        running_state_indices=spec_running_state_indices,
                         attn_metadata=attn_metadata,
                     )
                 )

@@ -41,7 +41,7 @@ from vllm.v1.kv_cache_interface import (
 )
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
-from vllm.v1.worker.gpu_input_batch import InputBatch
+from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.utils import select_common_block_size
 
@@ -233,6 +233,19 @@ def _make_kv_cache_spec() -> FullAttentionSpec:
     return FullAttentionSpec(block_size=1, num_kv_heads=1, head_size=1, dtype="float16")
 
 
+def _make_cached_request_state(req_id: str) -> CachedRequestState:
+    return CachedRequestState(
+        req_id=req_id,
+        prompt_token_ids=[1, 2, 3],
+        mm_features=[],
+        sampling_params=SamplingParams(),
+        generator=None,
+        block_ids=([0],),
+        num_computed_tokens=0,
+        output_token_ids=[],
+    )
+
+
 def test_select_common_block_size_prefers_manager_block_size():
     backend_a = _make_mock_backend_for_kernel_block_size([MultipleOf(32)])
     backend_b = _make_mock_backend_for_kernel_block_size([64, MultipleOf(16)])
@@ -247,6 +260,84 @@ def test_select_common_block_size_uses_largest_shared_int():
 
     selected_size = select_common_block_size(256, [backend_a, backend_b])
     assert selected_size == 64
+
+
+def test_hybrid_spec_request_state_updates_only_spec_rows():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner.hybrid_spec_state_offload_enabled = True
+    runner.hybrid_spec_state_ewma_alpha = 0.5
+    runner.num_spec_tokens = 4
+    runner.hybrid_spec_offload_free_slots = [1, 0]
+
+    req_a = _make_cached_request_state("req-a")
+    req_b = _make_cached_request_state("req-b")
+    runner._init_hybrid_spec_offload_request_state(req_a)
+    runner._init_hybrid_spec_offload_request_state(req_b)
+    runner.requests = {
+        "req-a": req_a,
+        "req-b": req_b,
+    }
+
+    assert req_a.hybrid_spec_offload_slot == 0
+    assert req_b.hybrid_spec_offload_slot == 1
+    assert req_a.predicted_accept_len == 5
+    assert req_b.predicted_accept_len == 5
+
+    runner._update_hybrid_spec_offload_request_states(
+        req_ids=["req-a", "req-b"],
+        accepted_lens=[3, 2],
+        scheduled_spec_decode_tokens={"req-a": [11, 12, 13, 14]},
+    )
+
+    assert req_a.reload_required is True
+    assert req_a.reload_slot == 2
+    assert req_a.accepted_len_ewma == pytest.approx(4.0)
+    assert req_a.predicted_accept_len == 4
+
+    assert req_b.reload_required is False
+    assert req_b.reload_slot == 0
+    assert req_b.accepted_len_ewma == pytest.approx(5.0)
+    assert req_b.predicted_accept_len == 5
+
+
+def test_build_hybrid_gdn_attn_metadata_args_uses_request_state_source():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner.device = torch.device("cpu")
+    runner.hybrid_spec_state_offload_enabled = True
+    runner.input_batch = SimpleNamespace(req_ids=["req-a", "req-b"], num_reqs=2)
+    runner.num_decode_draft_tokens = SimpleNamespace(
+        np=np.array([3, -1], dtype=np.int32)
+    )
+
+    req_a = _make_cached_request_state("req-a")
+    req_a.hybrid_spec_offload_slot = 7
+    req_a.predicted_accept_len = 4
+    req_a.reload_required = True
+    req_a.reload_slot = 2
+
+    req_b = _make_cached_request_state("req-b")
+    req_b.hybrid_spec_offload_slot = 8
+    req_b.predicted_accept_len = 5
+    req_b.reload_required = True
+    req_b.reload_slot = 1
+
+    runner.requests = {
+        "req-a": req_a,
+        "req-b": req_b,
+    }
+
+    metadata_args = runner._build_hybrid_gdn_attn_metadata_args(4)
+
+    assert metadata_args["num_accepted_tokens"].tolist() == [3, 1, 1, 1]
+    assert metadata_args["spec_req_indices_cpu"].tolist() == [7, 8, -1, -1]
+    assert metadata_args["predicted_accept_len_cpu"].tolist() == [4, 1, 1, 1]
+    assert metadata_args["needs_reload_from_cpu"].tolist() == [
+        True,
+        True,
+        False,
+        False,
+    ]
+    assert metadata_args["reload_slot_cpu"].tolist() == [2, 1, 0, 0]
 
 
 @pytest.mark.skip_global_cleanup

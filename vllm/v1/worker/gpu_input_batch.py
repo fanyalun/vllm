@@ -58,6 +58,11 @@ class CachedRequestState:
 
     # Used when both async_scheduling and spec_decode are enabled.
     prev_num_draft_len: int = 0
+    accepted_len_ewma: float = 1.0
+    predicted_accept_len: int = 1
+    reload_required: bool = False
+    reload_slot: int = 0
+    hybrid_spec_offload_slot: int = -1
 
     # for pooling models
     pooling_params: PoolingParams | None = None

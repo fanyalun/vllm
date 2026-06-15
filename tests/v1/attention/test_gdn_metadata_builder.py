@@ -6,6 +6,7 @@ Covers the fix for https://github.com/vllm-project/vllm/issues/34845.
 """
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -189,3 +190,54 @@ def test_has_initial_state_after_reclassification():
     assert meta.has_initial_state is not None
     # req0 has context_lens = 65 - 1 = 64 > 0, so has_initial_state[0] = True
     assert meta.has_initial_state[0].item() is True
+
+
+def test_gdn_build_filters_hybrid_spec_offload_metadata_to_spec_rows():
+    builder = GDNAttentionMetadataBuilder.__new__(GDNAttentionMetadataBuilder)
+    mamba_spec = MambaSpec(
+        block_size=BLOCK_SIZE,
+        shapes=((16, 64),),
+        dtypes=(torch.float16,),
+    )
+    builder.vllm_config = SimpleNamespace(
+        cache_config=SimpleNamespace(mamba_cache_mode="align")
+    )
+    builder.compilation_config = None
+    builder.speculative_config = SpeculativeConfig(
+        method="ngram",
+        num_speculative_tokens=2,
+        hybrid_spec_state_offload_mode="predict_last",
+    )
+    builder.kv_cache_spec = mamba_spec
+    builder.gdn_prefill_backend = "triton"
+    builder.num_spec = 2
+    builder.use_spec_decode = True
+    builder.hybrid_spec_state_offload_enabled = True
+    builder.spec_index_width = 1
+    builder.use_full_cuda_graph = False
+    builder.decode_cudagraph_max_bs = 32
+    batch = BatchSpec(seq_lens=[65, 20], query_lens=[1, 3])
+    common = create_common_attn_metadata(batch, BLOCK_SIZE, DEVICE)
+
+    meta = builder.build(
+        common_prefix_len=0,
+        common_attn_metadata=common,
+        num_accepted_tokens=torch.tensor([9, 3], dtype=torch.int32, device=DEVICE),
+        num_decode_draft_tokens_cpu=torch.tensor([-1, 2], dtype=torch.int32),
+        spec_req_indices_cpu=torch.tensor([111, 222], dtype=torch.int32),
+        predicted_accept_len_cpu=torch.tensor([1, 2], dtype=torch.int32),
+        needs_reload_from_cpu=torch.tensor([False, True], dtype=torch.bool),
+        reload_slot_cpu=torch.tensor([0, 2], dtype=torch.int32),
+    )
+
+    assert meta.num_spec_decodes == 1
+    assert meta.num_accepted_tokens is not None
+    assert meta.num_accepted_tokens.tolist() == [3]
+    assert meta.spec_req_indices_cpu is not None
+    assert meta.spec_req_indices_cpu.tolist() == [222]
+    assert meta.predicted_accept_len_cpu is not None
+    assert meta.predicted_accept_len_cpu.tolist() == [2]
+    assert meta.needs_reload_from_cpu is not None
+    assert meta.needs_reload_from_cpu.tolist() == [True]
+    assert meta.reload_slot_cpu is not None
+    assert meta.reload_slot_cpu.tolist() == [2]
