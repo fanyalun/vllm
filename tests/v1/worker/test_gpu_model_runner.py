@@ -38,9 +38,11 @@ from vllm.v1.kv_cache_interface import (
     KVCacheConfig,
     KVCacheGroupSpec,
     KVCacheTensor,
+    MambaSpec,
 )
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
+from vllm.v1.hybrid_spec_offload import HybridSpecReloadMode
 from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.utils import select_common_block_size
@@ -268,6 +270,7 @@ def test_hybrid_spec_request_state_updates_only_spec_rows():
     runner.hybrid_spec_state_ewma_alpha = 0.5
     runner.num_spec_tokens = 4
     runner.hybrid_spec_offload_free_slots = [1, 0]
+    runner._reset_hybrid_spec_prediction_stats()
 
     req_a = _make_cached_request_state("req-a")
     req_b = _make_cached_request_state("req-b")
@@ -291,13 +294,26 @@ def test_hybrid_spec_request_state_updates_only_spec_rows():
 
     assert req_a.reload_required is True
     assert req_a.reload_slot == 2
+    assert req_a.reload_generation == 1
+    assert req_a.reload_mode == int(HybridSpecReloadMode.CPU_SHADOW)
     assert req_a.accepted_len_ewma == pytest.approx(4.0)
     assert req_a.predicted_accept_len == 4
 
     assert req_b.reload_required is False
     assert req_b.reload_slot == 0
-    assert req_b.accepted_len_ewma == pytest.approx(5.0)
-    assert req_b.predicted_accept_len == 5
+    assert req_b.reload_generation == 0
+    assert req_b.reload_mode == int(HybridSpecReloadMode.NONE)
+    assert req_b.accepted_len_ewma == pytest.approx(3.0)
+    assert req_b.predicted_accept_len == 3
+
+    stats = runner.snapshot_hybrid_spec_prediction_stats()
+    assert stats.total_predictions == 1
+    assert stats.exact_match_count == 0
+    assert stats.within_one_count == 0
+    assert stats.abs_error_sum == 2
+    assert stats.signed_error_sum == 2
+    assert stats.predicted_accept_len_sum == 5
+    assert stats.accepted_len_sum == 3
 
 
 def test_build_hybrid_gdn_attn_metadata_args_uses_request_state_source():
@@ -314,12 +330,16 @@ def test_build_hybrid_gdn_attn_metadata_args_uses_request_state_source():
     req_a.predicted_accept_len = 4
     req_a.reload_required = True
     req_a.reload_slot = 2
+    req_a.reload_generation = 5
+    req_a.reload_mode = int(HybridSpecReloadMode.PRELOADED)
 
     req_b = _make_cached_request_state("req-b")
     req_b.hybrid_spec_offload_slot = 8
     req_b.predicted_accept_len = 5
     req_b.reload_required = True
     req_b.reload_slot = 1
+    req_b.reload_generation = 3
+    req_b.reload_mode = int(HybridSpecReloadMode.CPU_SHADOW)
 
     runner.requests = {
         "req-a": req_a,
@@ -331,13 +351,63 @@ def test_build_hybrid_gdn_attn_metadata_args_uses_request_state_source():
     assert metadata_args["num_accepted_tokens"].tolist() == [3, 1, 1, 1]
     assert metadata_args["spec_req_indices_cpu"].tolist() == [7, 8, -1, -1]
     assert metadata_args["predicted_accept_len_cpu"].tolist() == [4, 1, 1, 1]
-    assert metadata_args["needs_reload_from_cpu"].tolist() == [
-        True,
-        True,
-        False,
-        False,
-    ]
+    assert metadata_args["temporal_reload_mode_cpu"].tolist() == [2, 0, 0, 0]
     assert metadata_args["reload_slot_cpu"].tolist() == [2, 1, 0, 0]
+    assert metadata_args["reload_generation_cpu"].tolist() == [5, 3, 0, 0]
+
+
+def test_build_hybrid_temporal_preload_plan_uses_running_block_ids():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner.cache_config = SimpleNamespace(mamba_cache_mode="align")
+    runner.seq_lens = torch.tensor([1, 5], dtype=torch.int32)
+    runner.input_batch = SimpleNamespace(
+        req_ids=["req-a", "req-b"],
+        num_reqs=2,
+        block_table={
+            0: SimpleNamespace(
+                get_device_tensor=lambda num_reqs: torch.tensor(
+                    [[7, 8], [11, 12]], dtype=torch.int32
+                )
+            )
+        },
+    )
+
+    req_a = _make_cached_request_state("req-a")
+    req_a.hybrid_spec_offload_slot = 4
+    req_a.reload_required = True
+    req_a.reload_slot = 2
+    req_a.reload_generation = 9
+    req_a.reload_mode = int(HybridSpecReloadMode.CPU_SHADOW)
+
+    req_b = _make_cached_request_state("req-b")
+    req_b.hybrid_spec_offload_slot = 5
+    req_b.reload_required = True
+    req_b.reload_slot = 1
+    req_b.reload_generation = 3
+    req_b.reload_mode = int(HybridSpecReloadMode.NONE)
+
+    runner.requests = {"req-a": req_a, "req-b": req_b}
+    kv_cache_spec = MambaSpec(
+        block_size=4,
+        shapes=((1, 1),),
+        dtypes=(torch.float16,),
+        mamba_cache_mode="align",
+        resident_speculative_blocks=0,
+    )
+
+    preload_plan = runner._build_hybrid_temporal_preload_plan(
+        num_reqs=2,
+        kv_cache_gid=0,
+        kv_cache_spec=kv_cache_spec,
+    )
+
+    assert preload_plan == {
+        "req_ids": ["req-a"],
+        "req_slots": [4],
+        "reload_slots": [2],
+        "running_block_ids": [7],
+        "reload_generations": [9],
+    }
 
 
 @pytest.mark.skip_global_cleanup

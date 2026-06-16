@@ -21,6 +21,7 @@ from vllm.v1.attention.backends.gdn_attn import (
     GDNAttentionMetadata,
     GDNAttentionMetadataBuilder,
 )
+from vllm.v1.hybrid_spec_offload import HybridSpecReloadMode
 from vllm.v1.kv_cache_interface import MambaSpec
 
 BLOCK_SIZE = 16
@@ -226,8 +227,15 @@ def test_gdn_build_filters_hybrid_spec_offload_metadata_to_spec_rows():
         num_decode_draft_tokens_cpu=torch.tensor([-1, 2], dtype=torch.int32),
         spec_req_indices_cpu=torch.tensor([111, 222], dtype=torch.int32),
         predicted_accept_len_cpu=torch.tensor([1, 2], dtype=torch.int32),
-        needs_reload_from_cpu=torch.tensor([False, True], dtype=torch.bool),
+        temporal_reload_mode_cpu=torch.tensor(
+            [
+                int(HybridSpecReloadMode.NONE),
+                int(HybridSpecReloadMode.PRELOADED),
+            ],
+            dtype=torch.int32,
+        ),
         reload_slot_cpu=torch.tensor([0, 2], dtype=torch.int32),
+        reload_generation_cpu=torch.tensor([0, 7], dtype=torch.int32),
     )
 
     assert meta.num_spec_decodes == 1
@@ -235,9 +243,15 @@ def test_gdn_build_filters_hybrid_spec_offload_metadata_to_spec_rows():
     assert meta.num_accepted_tokens.tolist() == [3]
     assert meta.spec_req_indices_cpu is not None
     assert meta.spec_req_indices_cpu.tolist() == [222]
+    assert meta.non_spec_req_indices_cpu is not None
+    assert meta.non_spec_req_indices_cpu.tolist() == [111]
     assert meta.predicted_accept_len_cpu is not None
     assert meta.predicted_accept_len_cpu.tolist() == [2]
-    assert meta.needs_reload_from_cpu is not None
-    assert meta.needs_reload_from_cpu.tolist() == [True]
+    assert meta.temporal_reload_mode_cpu is not None
+    assert meta.temporal_reload_mode_cpu.tolist() == [
+        int(HybridSpecReloadMode.PRELOADED)
+    ]
     assert meta.reload_slot_cpu is not None
     assert meta.reload_slot_cpu.tolist() == [2]
+    assert meta.reload_generation_cpu is not None
+    assert meta.reload_generation_cpu.tolist() == [7]

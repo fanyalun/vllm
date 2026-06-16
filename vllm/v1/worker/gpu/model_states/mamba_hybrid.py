@@ -9,6 +9,7 @@ import torch.nn as nn
 
 from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
+from vllm.v1.hybrid_spec_offload import HybridSpecReloadMode
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
 from vllm.v1.attention.backends.mamba2_attn import Mamba2AttentionMetadataBuilder
 from vllm.v1.kv_cache_interface import KVCacheConfig
@@ -45,8 +46,9 @@ class MambaHybridAttnMetadata(ModelSpecificAttnMetadata):
     num_decode_draft_tokens_cpu: torch.Tensor | None = None
     spec_req_indices_cpu: torch.Tensor | None = None
     predicted_accept_len_cpu: torch.Tensor | None = None
-    needs_reload_from_cpu: torch.Tensor | None = None
+    temporal_reload_mode_cpu: torch.Tensor | None = None
     reload_slot_cpu: torch.Tensor | None = None
+    reload_generation_cpu: torch.Tensor | None = None
 
     def get_extra_common_attn_kwargs(
         self,
@@ -78,12 +80,15 @@ class MambaHybridAttnMetadata(ModelSpecificAttnMetadata):
             "predicted_accept_len_cpu": None
             if self.predicted_accept_len_cpu is None
             else self.predicted_accept_len_cpu[:num_reqs],
-            "needs_reload_from_cpu": None
-            if self.needs_reload_from_cpu is None
-            else self.needs_reload_from_cpu[:num_reqs],
+            "temporal_reload_mode_cpu": None
+            if self.temporal_reload_mode_cpu is None
+            else self.temporal_reload_mode_cpu[:num_reqs],
             "reload_slot_cpu": None
             if self.reload_slot_cpu is None
             else self.reload_slot_cpu[:num_reqs],
+            "reload_generation_cpu": None
+            if self.reload_generation_cpu is None
+            else self.reload_generation_cpu[:num_reqs],
         }
 
 
@@ -123,7 +128,13 @@ class MambaHybridModelState(DefaultModelState):
             self.reload_required_cpu = torch.zeros(
                 self.max_num_reqs, dtype=torch.bool
             )
+            self.reload_mode_cpu = torch.zeros(
+                self.max_num_reqs, dtype=torch.int32
+            )
             self.reload_slot_cpu = torch.zeros(self.max_num_reqs, dtype=torch.int32)
+            self.reload_generation_cpu = torch.zeros(
+                self.max_num_reqs, dtype=torch.int32
+            )
             self.hybrid_spec_state_ewma_alpha = (
                 self.speculative_config.hybrid_spec_state_ewma_alpha
             )
@@ -135,7 +146,9 @@ class MambaHybridModelState(DefaultModelState):
             self.hybrid_spec_state_ewma[req_index] = float(init_pred)
             self.predicted_accept_len_cpu[req_index] = init_pred
             self.reload_required_cpu[req_index] = False
+            self.reload_mode_cpu[req_index] = int(HybridSpecReloadMode.NONE)
             self.reload_slot_cpu[req_index] = 0
+            self.reload_generation_cpu[req_index] = 0
 
     def prepare_attn(
         self,
@@ -167,8 +180,9 @@ class MambaHybridModelState(DefaultModelState):
         num_decode_draft_tokens_cpu = None
         spec_req_indices_cpu = None
         predicted_accept_len_cpu = None
-        needs_reload_from_cpu = None
+        temporal_reload_mode_cpu = None
         reload_slot_cpu = None
+        reload_generation_cpu = None
         if not for_capture:
             num_accepted_tokens = self.num_accepted_tokens_gpu.new_ones(num_reqs)
             num_accepted_tokens[: input_batch.num_reqs] = self.num_accepted_tokens_gpu[
@@ -194,8 +208,9 @@ class MambaHybridModelState(DefaultModelState):
                 spec_req_indices_cpu = torch.from_numpy(req_indices_np)
 
                 predicted_accept_len_np = np.ones(num_reqs, dtype=np.int32)
-                needs_reload_np = np.zeros(num_reqs, dtype=bool)
+                temporal_reload_mode_np = np.zeros(num_reqs, dtype=np.int32)
                 reload_slot_np = np.zeros(num_reqs, dtype=np.int32)
+                reload_generation_np = np.zeros(num_reqs, dtype=np.int32)
                 for batch_idx, req_idx in enumerate(input_batch.idx_mapping_np):
                     predicted_len = int(self.predicted_accept_len_cpu[req_idx].item())
                     if input_batch.num_draft_tokens_per_req is not None:
@@ -207,15 +222,21 @@ class MambaHybridModelState(DefaultModelState):
                     predicted_accept_len_np[batch_idx] = min(
                         predicted_len, max_accept_len
                     )
-                    needs_reload_np[batch_idx] = bool(
-                        self.reload_required_cpu[req_idx].item()
+                    temporal_reload_mode_np[batch_idx] = int(
+                        self.reload_mode_cpu[req_idx].item()
                     )
                     reload_slot_np[batch_idx] = int(
                         self.reload_slot_cpu[req_idx].item()
                     )
+                    reload_generation_np[batch_idx] = int(
+                        self.reload_generation_cpu[req_idx].item()
+                    )
                 predicted_accept_len_cpu = torch.from_numpy(predicted_accept_len_np)
-                needs_reload_from_cpu = torch.from_numpy(needs_reload_np)
+                temporal_reload_mode_cpu = torch.from_numpy(
+                    temporal_reload_mode_np
+                )
                 reload_slot_cpu = torch.from_numpy(reload_slot_np)
+                reload_generation_cpu = torch.from_numpy(reload_generation_np)
 
         mamba_attn_metadata = MambaHybridAttnMetadata(
             is_prefilling=is_prefilling,
@@ -223,8 +244,9 @@ class MambaHybridModelState(DefaultModelState):
             num_decode_draft_tokens_cpu=num_decode_draft_tokens_cpu,
             spec_req_indices_cpu=spec_req_indices_cpu,
             predicted_accept_len_cpu=predicted_accept_len_cpu,
-            needs_reload_from_cpu=needs_reload_from_cpu,
+            temporal_reload_mode_cpu=temporal_reload_mode_cpu,
             reload_slot_cpu=reload_slot_cpu,
+            reload_generation_cpu=reload_generation_cpu,
         )
         return build_attn_metadata(
             attn_groups=attn_groups,
@@ -264,11 +286,19 @@ class MambaHybridModelState(DefaultModelState):
         for batch_idx, req_idx in enumerate(input_batch.idx_mapping_np):
             if not spec_decode_mask[batch_idx]:
                 self.reload_required_cpu[req_idx] = False
+                self.reload_mode_cpu[req_idx] = int(HybridSpecReloadMode.NONE)
                 continue
             accepted_len = int(accepted_lens[batch_idx].item())
             predicted_len = int(self.predicted_accept_len_cpu[req_idx].item())
             self.reload_required_cpu[req_idx] = predicted_len != accepted_len
             self.reload_slot_cpu[req_idx] = accepted_len - 1
+            if self.reload_required_cpu[req_idx]:
+                self.reload_generation_cpu[req_idx] += 1
+                self.reload_mode_cpu[req_idx] = int(
+                    HybridSpecReloadMode.CPU_SHADOW
+                )
+            else:
+                self.reload_mode_cpu[req_idx] = int(HybridSpecReloadMode.NONE)
             ewma = update_hybrid_accepted_len_ewma(
                 float(self.hybrid_spec_state_ewma[req_idx].item()),
                 accepted_len,

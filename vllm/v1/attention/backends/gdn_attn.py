@@ -8,6 +8,7 @@ from typing import Literal
 import torch
 
 from vllm.config import VllmConfig
+from vllm.v1.hybrid_spec_offload import HybridSpecReloadMode
 from vllm.v1.attention.backend import (
     AttentionBackend,
     AttentionCGSupport,
@@ -17,7 +18,6 @@ from vllm.v1.attention.backend import (
 from vllm.v1.attention.backends.utils import (
     NULL_BLOCK_ID,
     compute_causal_conv1d_metadata,
-    mamba_get_block_table_tensor,
     split_decodes_and_prefills,
 )
 from vllm.v1.kv_cache_interface import AttentionSpec, MambaSpec
@@ -66,9 +66,11 @@ class GDNAttentionMetadata:
     spec_max_query_len: int = 0
     spec_query_start_loc_cpu: torch.Tensor | None = None
     spec_req_indices_cpu: torch.Tensor | None = None
+    non_spec_req_indices_cpu: torch.Tensor | None = None
     predicted_accept_len_cpu: torch.Tensor | None = None
-    needs_reload_from_cpu: torch.Tensor | None = None
+    temporal_reload_mode_cpu: torch.Tensor | None = None
     reload_slot_cpu: torch.Tensor | None = None
+    reload_generation_cpu: torch.Tensor | None = None
 
     # Pre-computed FLA chunk metadata (avoids GPU->CPU sync in prepare_chunk_indices)
     chunk_indices: torch.Tensor | None = None
@@ -78,6 +80,31 @@ class GDNAttentionMetadata:
     nums_dict: dict | None = None
     batch_ptr: torch.Tensor | None = None
     token_chunk_offset_ptr: torch.Tensor | None = None
+
+
+def mamba_get_running_state_block_ids(
+    block_table: torch.Tensor,
+    seq_lens: torch.Tensor,
+    kv_cache_spec: MambaSpec,
+    mamba_cache_mode: str,
+) -> torch.Tensor:
+    if mamba_cache_mode in ("all", "none"):
+        return block_table
+
+    resident_speculative_blocks = (
+        kv_cache_spec.effective_resident_speculative_blocks
+    )
+    start_indices = torch.clamp(
+        (seq_lens - 1) // kv_cache_spec.block_size,
+        min=0,
+    )
+    offsets = torch.arange(
+        1 + resident_speculative_blocks,
+        device=block_table.device,
+        dtype=torch.int32,
+    )
+    indices_to_gather = (start_indices.unsqueeze(1) + offsets).to(torch.int64)
+    return torch.gather(block_table, 1, indices_to_gather)
 
 
 class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]):
@@ -196,7 +223,9 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
         spec_req_indices_cpu: torch.Tensor | None = None,
         predicted_accept_len_cpu: torch.Tensor | None = None,
         needs_reload_from_cpu: torch.Tensor | None = None,
+        temporal_reload_mode_cpu: torch.Tensor | None = None,
         reload_slot_cpu: torch.Tensor | None = None,
+        reload_generation_cpu: torch.Tensor | None = None,
         fast_build: bool = False,
     ) -> GDNAttentionMetadata:
         m = common_attn_metadata
@@ -205,15 +234,31 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
         query_start_loc_cpu = m.query_start_loc_cpu
         context_lens_tensor = m.compute_num_computed_tokens()
         nums_dict, batch_ptr, token_chunk_offset_ptr = None, None, None
-        block_table_tensor = mamba_get_block_table_tensor(
+        block_table_tensor = mamba_get_running_state_block_ids(
             m.block_table_tensor,
             m.seq_lens,
             self.kv_cache_spec,
             self.vllm_config.cache_config.mamba_cache_mode,
         )
 
+        if temporal_reload_mode_cpu is None and needs_reload_from_cpu is not None:
+            temporal_reload_mode_cpu = torch.where(
+                needs_reload_from_cpu,
+                torch.full(
+                    needs_reload_from_cpu.shape,
+                    int(HybridSpecReloadMode.CPU_SHADOW),
+                    dtype=torch.int32,
+                ),
+                torch.full(
+                    needs_reload_from_cpu.shape,
+                    int(HybridSpecReloadMode.NONE),
+                    dtype=torch.int32,
+                ),
+            )
+
         spec_sequence_masks_cpu: torch.Tensor | None = None
         spec_query_start_loc_cpu: torch.Tensor | None = None
+        non_spec_req_indices_cpu: torch.Tensor | None = None
         if (
             not self.use_spec_decode
             or num_decode_draft_tokens_cpu is None
@@ -248,6 +293,7 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             non_spec_query_start_loc = query_start_loc
             non_spec_query_start_loc_cpu = query_start_loc_cpu
             num_accepted_tokens = None
+            non_spec_req_indices_cpu = spec_req_indices_cpu
         else:
             query_lens = query_start_loc[1:] - query_start_loc[:-1]
             assert spec_sequence_masks_cpu is not None
@@ -361,17 +407,24 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             assert num_accepted_tokens is not None
             num_accepted_tokens = num_accepted_tokens[spec_sequence_masks_cpu]
             if spec_req_indices_cpu is not None:
+                non_spec_req_indices_cpu = spec_req_indices_cpu[
+                    ~spec_sequence_masks_cpu
+                ]
                 spec_req_indices_cpu = spec_req_indices_cpu[spec_sequence_masks_cpu]
             if predicted_accept_len_cpu is not None:
                 predicted_accept_len_cpu = predicted_accept_len_cpu[
                     spec_sequence_masks_cpu
                 ]
-            if needs_reload_from_cpu is not None:
-                needs_reload_from_cpu = needs_reload_from_cpu[
+            if temporal_reload_mode_cpu is not None:
+                temporal_reload_mode_cpu = temporal_reload_mode_cpu[
                     spec_sequence_masks_cpu
                 ]
             if reload_slot_cpu is not None:
                 reload_slot_cpu = reload_slot_cpu[spec_sequence_masks_cpu]
+            if reload_generation_cpu is not None:
+                reload_generation_cpu = reload_generation_cpu[
+                    spec_sequence_masks_cpu
+                ]
 
         chunk_indices: torch.Tensor | None = None
         chunk_offsets: torch.Tensor | None = None
@@ -522,9 +575,11 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             non_spec_token_indx=non_spec_token_indx,
             num_accepted_tokens=num_accepted_tokens,
             spec_req_indices_cpu=spec_req_indices_cpu,
+            non_spec_req_indices_cpu=non_spec_req_indices_cpu,
             predicted_accept_len_cpu=predicted_accept_len_cpu,
-            needs_reload_from_cpu=needs_reload_from_cpu,
+            temporal_reload_mode_cpu=temporal_reload_mode_cpu,
             reload_slot_cpu=reload_slot_cpu,
+            reload_generation_cpu=reload_generation_cpu,
             nums_dict=nums_dict,
             batch_ptr=batch_ptr,
             token_chunk_offset_ptr=token_chunk_offset_ptr,

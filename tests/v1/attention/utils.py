@@ -2,10 +2,15 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Utility functions for attention-related v1 tests."""
 
+import json
+import os
+import tempfile
 from dataclasses import dataclass
+from functools import lru_cache
 
 import pytest
 import torch
+from transformers import LlamaConfig
 
 from vllm.config import (
     CacheConfig,
@@ -34,6 +39,27 @@ from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     MambaSpec,
 )
+
+
+@lru_cache
+def _get_offline_test_model_dir() -> str:
+    model_dir = os.path.join(tempfile.gettempdir(), "vllm_attention_test_model")
+    os.makedirs(model_dir, exist_ok=True)
+    config_path = os.path.join(model_dir, "config.json")
+    if not os.path.exists(config_path):
+        config = LlamaConfig(
+            hidden_size=128,
+            intermediate_size=256,
+            num_hidden_layers=2,
+            num_attention_heads=8,
+            num_key_value_heads=8,
+            vocab_size=32000,
+            max_position_embeddings=2048,
+        ).to_dict()
+        config["architectures"] = ["LlamaForCausalLM"]
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+    return model_dir
 
 
 @dataclass
@@ -182,7 +208,7 @@ def create_standard_kv_cache_spec(
 
 
 def create_vllm_config(
-    model_name: str = "meta-llama/Meta-Llama-3-8B",
+    model_name: str | None = None,
     tensor_parallel_size: int = 1,
     max_model_len: int = 1024,
     dtype: ModelDType | torch.dtype = "auto",
@@ -196,6 +222,9 @@ def create_vllm_config(
 ) -> VllmConfig:
     """Create a VllmConfig for testing with reasonable defaults."""
 
+    if model_name is None:
+        model_name = _get_offline_test_model_dir()
+
     model_config = ModelConfig(
         model=model_name,
         tokenizer=model_name,
@@ -203,6 +232,7 @@ def create_vllm_config(
         dtype=dtype,
         seed=0,
         max_model_len=max_model_len,
+        skip_tokenizer_init=True,
     )
 
     cache_config = CacheConfig(
@@ -226,7 +256,7 @@ def create_vllm_config(
         is_encoder_decoder=model_config.is_encoder_decoder,
     )
 
-    device_config = DeviceConfig()
+    device_config = DeviceConfig(device="cpu")
     load_config = LoadConfig()
     compilation_config = CompilationConfig()
 

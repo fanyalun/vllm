@@ -47,7 +47,6 @@ from vllm.model_executor.layers.mamba.mamba_utils import (
 from vllm.model_executor.layers.mamba.ops.causal_conv1d import (
     causal_conv1d_fn,
     causal_conv1d_update,
-    causal_conv1d_update_spec_offload,
 )
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.quantization.auto_gptq import AutoGPTQConfig
@@ -66,6 +65,7 @@ from vllm.utils.torch_utils import (
     _resolve_layer_name,
     direct_register_custom_op,
 )
+from vllm.v1.hybrid_spec_offload import HybridSpecReloadMode
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadata
 
 # Optional ROCm AITER Triton kernels for the GDN decode fast-path.
@@ -87,10 +87,12 @@ logger = init_logger(__name__)
 
 @dataclass
 class HybridSpecStateOffloadWorkspace:
-    conv_state_gpu_scratch: torch.Tensor
-    conv_state_cpu_shadow: torch.Tensor
     temporal_state_gpu_scratch: torch.Tensor
     temporal_state_cpu_shadow: torch.Tensor
+    shadow_copy_done_event: torch.cuda.Event | None = None
+    preload_stream: torch.cuda.Stream | None = None
+    preload_done_events: list[torch.cuda.Event | None] | None = None
+    preload_generation_per_req: list[int] | None = None
 
 
 # TODO(arpera): remove ``_is_libs_cu13_install_intact`` and its caller in
@@ -569,32 +571,12 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         )
         self.hybrid_spec_state_offload_workspace = None
         if self.hybrid_spec_state_offload_enabled:
-            conv_state_dtype, temporal_state_dtype = self.get_state_dtype()
+            _, temporal_state_dtype = self.get_state_dtype()
             max_num_reqs = vllm_config.scheduler_config.max_num_seqs
             num_candidate_states = self.num_spec + 1
             hv = self.num_v_heads // self.tp_size
-            conv_state_len = self.conv_kernel_size - 1 + self.num_spec
             self.hybrid_spec_state_offload_workspace = (
                 HybridSpecStateOffloadWorkspace(
-                    conv_state_gpu_scratch=torch.empty(
-                        (
-                            max_num_reqs,
-                            self.conv_dim,
-                            conv_state_len,
-                        ),
-                        dtype=conv_state_dtype,
-                        device=current_platform.current_device(),
-                    ),
-                    conv_state_cpu_shadow=torch.empty(
-                        (
-                            max_num_reqs,
-                            self.conv_dim,
-                            conv_state_len,
-                        ),
-                        dtype=conv_state_dtype,
-                        device="cpu",
-                        pin_memory=True,
-                    ),
                     temporal_state_gpu_scratch=torch.empty(
                         (
                             max_num_reqs * num_candidate_states,
@@ -617,6 +599,11 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                         device="cpu",
                         pin_memory=True,
                     ),
+                    preload_stream=torch.cuda.Stream(
+                        device=current_platform.current_device()
+                    ),
+                    preload_done_events=[None] * max_num_reqs,
+                    preload_generation_per_req=[-1] * max_num_reqs,
                 )
             )
 
@@ -1320,56 +1307,101 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             core_attn_out=core_attn_out,
             )
 
-    def _reload_spec_offload_conv_state(
+    def stage_temporal_preload(
         self,
-        conv_state: torch.Tensor,
-        running_state_indices: torch.Tensor,
-        attn_metadata: GDNAttentionMetadata,
+        req_slots: list[int],
+        reload_slots: list[int],
+        running_block_ids: list[int],
+        reload_generations: list[int],
+        req_ids: list[str] | None = None,
     ) -> None:
-        needs_reload = attn_metadata.needs_reload_from_cpu
-        if needs_reload is None or not bool(needs_reload.any().item()):
+        del req_ids
+        if not req_slots:
             return
 
         workspace = self.hybrid_spec_state_offload_workspace
         assert workspace is not None
-        assert attn_metadata.spec_req_indices_cpu is not None
-        for row, need_reload in enumerate(needs_reload.tolist()):
-            if not need_reload:
-                continue
-            req_idx = int(attn_metadata.spec_req_indices_cpu[row].item())
-            running_idx = int(running_state_indices[row].item())
-            conv_state[running_idx].copy_(
-                workspace.conv_state_cpu_shadow[req_idx],
-                non_blocking=True,
-            )
+        assert workspace.preload_stream is not None
+        assert workspace.preload_done_events is not None
+        assert workspace.preload_generation_per_req is not None
 
-    def _prepare_spec_offload_initial_state(
+        if workspace.shadow_copy_done_event is not None:
+            workspace.preload_stream.wait_event(workspace.shadow_copy_done_event)
+
+        ssm_state = self.kv_cache[1]
+        with torch.cuda.stream(workspace.preload_stream):
+            for req_slot, reload_slot, running_block_id, reload_generation in zip(
+                req_slots,
+                reload_slots,
+                running_block_ids,
+                reload_generations,
+            ):
+                ssm_state[running_block_id].copy_(
+                    workspace.temporal_state_cpu_shadow[req_slot, reload_slot],
+                    non_blocking=True,
+                )
+                event = workspace.preload_done_events[req_slot]
+                if event is None:
+                    event = torch.cuda.Event()
+                    workspace.preload_done_events[req_slot] = event
+                event.record(workspace.preload_stream)
+                workspace.preload_generation_per_req[req_slot] = reload_generation
+
+    def _prepare_temporal_initial_state(
         self,
         ssm_state: torch.Tensor,
         running_state_indices: torch.Tensor,
         attn_metadata: GDNAttentionMetadata,
     ) -> torch.Tensor:
         initial_state = ssm_state[running_state_indices].contiguous()
-        needs_reload = attn_metadata.needs_reload_from_cpu
-        if needs_reload is None or not bool(needs_reload.any().item()):
+        reload_modes = attn_metadata.temporal_reload_mode_cpu
+        if reload_modes is None or not bool(reload_modes.any().item()):
             return initial_state
 
         workspace = self.hybrid_spec_state_offload_workspace
         assert workspace is not None
         assert attn_metadata.spec_req_indices_cpu is not None
         assert attn_metadata.reload_slot_cpu is not None
-        for row, need_reload in enumerate(needs_reload.tolist()):
-            if not need_reload:
+        assert workspace.preload_done_events is not None
+        assert workspace.preload_generation_per_req is not None
+
+        current_stream = torch.cuda.current_stream()
+        shadow_waited = False
+        for row, reload_mode in enumerate(reload_modes.tolist()):
+            if reload_mode == int(HybridSpecReloadMode.NONE):
                 continue
             req_idx = int(attn_metadata.spec_req_indices_cpu[row].item())
             reload_slot = int(attn_metadata.reload_slot_cpu[row].item())
+            running_idx = int(running_state_indices[row].item())
+            reload_generation = -1
+            if attn_metadata.reload_generation_cpu is not None:
+                reload_generation = int(
+                    attn_metadata.reload_generation_cpu[row].item()
+                )
+
+            if (
+                reload_mode == int(HybridSpecReloadMode.PRELOADED)
+                and workspace.preload_generation_per_req[req_idx]
+                == reload_generation
+            ):
+                preload_done_event = workspace.preload_done_events[req_idx]
+                if preload_done_event is not None:
+                    current_stream.wait_event(preload_done_event)
+                    initial_state[row].copy_(
+                        ssm_state[running_idx], non_blocking=True
+                    )
+                    continue
+
+            if workspace.shadow_copy_done_event is not None and not shadow_waited:
+                current_stream.wait_event(workspace.shadow_copy_done_event)
+                shadow_waited = True
+
             shadow_state = workspace.temporal_state_cpu_shadow[req_idx, reload_slot]
             initial_state[row].copy_(shadow_state, non_blocking=True)
-            running_idx = int(running_state_indices[row].item())
             ssm_state[running_idx].copy_(initial_state[row], non_blocking=True)
         return initial_state
 
-    def _store_spec_offload_final_states(
+    def _store_temporal_shadow(
         self,
         ssm_state: torch.Tensor,
         running_state_indices: torch.Tensor,
@@ -1398,69 +1430,38 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 final_states[start:end], non_blocking=True
             )
 
-    def _store_spec_offload_conv_states(
+        self._record_temporal_shadow_copy(workspace)
+
+    def _record_temporal_shadow_copy(
+        self, workspace: HybridSpecStateOffloadWorkspace
+    ) -> None:
+        if workspace.shadow_copy_done_event is None:
+            workspace.shadow_copy_done_event = torch.cuda.Event()
+        workspace.shadow_copy_done_event.record(torch.cuda.current_stream())
+
+    def _store_non_spec_offload_running_states(
         self,
-        conv_state: torch.Tensor,
-        running_state_indices: torch.Tensor,
-        final_conv_states: torch.Tensor,
+        ssm_state: torch.Tensor,
+        running_state_indices: torch.Tensor | None,
         attn_metadata: GDNAttentionMetadata,
     ) -> None:
+        if running_state_indices is None:
+            return
+
         workspace = self.hybrid_spec_state_offload_workspace
         assert workspace is not None
-        assert attn_metadata.spec_req_indices_cpu is not None
+        if attn_metadata.non_spec_req_indices_cpu is None:
+            return
 
-        req_indices = attn_metadata.spec_req_indices_cpu.tolist()
+        req_indices = attn_metadata.non_spec_req_indices_cpu.tolist()
         running_state_indices_list = running_state_indices.tolist()
-        for row, (req_idx, running_idx) in enumerate(
-            zip(req_indices, running_state_indices_list)
-        ):
-            conv_state[int(running_idx)].copy_(
-                final_conv_states[row],
-                non_blocking=True,
-            )
-            workspace.conv_state_cpu_shadow[int(req_idx)].copy_(
-                final_conv_states[row],
+        for req_idx, running_idx in zip(req_indices, running_state_indices_list):
+            workspace.temporal_state_cpu_shadow[int(req_idx), 0].copy_(
+                ssm_state[int(running_idx)],
                 non_blocking=True,
             )
 
-    def _forward_conv_spec_offload(
-        self,
-        mixed_qkv_spec: torch.Tensor,
-        conv_state: torch.Tensor,
-        conv_weights: torch.Tensor,
-        running_state_indices: torch.Tensor,
-        num_accepted_tokens: torch.Tensor,
-        attn_metadata: GDNAttentionMetadata,
-    ) -> torch.Tensor:
-        workspace = self.hybrid_spec_state_offload_workspace
-        assert workspace is not None
-        assert attn_metadata.spec_query_start_loc is not None
-
-        self._reload_spec_offload_conv_state(
-            conv_state,
-            running_state_indices,
-            attn_metadata,
-        )
-        mixed_qkv_spec = causal_conv1d_update_spec_offload(
-            mixed_qkv_spec,
-            conv_state_source=conv_state,
-            conv_state_scratch=workspace.conv_state_gpu_scratch,
-            weight=conv_weights,
-            bias=self.conv1d.bias,
-            activation=self.activation,
-            conv_state_indices=running_state_indices,
-            num_accepted_tokens=num_accepted_tokens,
-            query_start_loc=attn_metadata.spec_query_start_loc,
-            max_query_len=attn_metadata.spec_max_query_len,
-            validate_data=False,
-        )
-        self._store_spec_offload_conv_states(
-            conv_state,
-            running_state_indices,
-            workspace.conv_state_gpu_scratch[: attn_metadata.num_spec_decodes],
-            attn_metadata,
-        )
-        return mixed_qkv_spec
+        self._record_temporal_shadow_copy(workspace)
 
     def _forward_core_spec_offload(
         self,
@@ -1476,9 +1477,29 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         workspace = self.hybrid_spec_state_offload_workspace
         assert workspace is not None
         assert attn_metadata.spec_query_start_loc is not None
+        assert attn_metadata.num_accepted_tokens is not None
 
-        initial_state = self._prepare_spec_offload_initial_state(
+        initial_state = self._prepare_temporal_initial_state(
             ssm_state, running_state_indices, attn_metadata
+        )
+        num_spec_decodes = attn_metadata.num_spec_decodes
+        initial_state_padded = torch.empty(
+            (num_spec_decodes + 1, *initial_state.shape[1:]),
+            dtype=initial_state.dtype,
+            device=initial_state.device,
+        )
+        initial_state_padded[0].zero_()
+        initial_state_padded[1:].copy_(initial_state)
+        initial_state_indices = (
+            torch.arange(
+                1,
+                num_spec_decodes + 1,
+                dtype=torch.int32,
+                device=initial_state.device,
+            )
+            .unsqueeze(1)
+            .expand(-1, attn_metadata.spec_max_query_len)
+            .contiguous()
         )
         scratch = workspace.temporal_state_gpu_scratch[
             : attn_metadata.num_spec_decode_tokens
@@ -1491,15 +1512,17 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             q=query_spec,
             k=key_spec,
             v=value_spec,
-            initial_state=initial_state,
+            initial_state=initial_state_padded,
             inplace_final_state=False,
             final_state_out=scratch,
             cu_seqlens=attn_metadata.spec_query_start_loc[
                 : attn_metadata.num_spec_decodes + 1
             ],
+            ssm_state_indices=initial_state_indices,
+            num_accepted_tokens=attn_metadata.num_accepted_tokens,
             use_qk_l2norm_in_kernel=True,
         )
-        self._store_spec_offload_final_states(
+        self._store_temporal_shadow(
             ssm_state, running_state_indices, final_states, attn_metadata
         )
         return core_attn_out_spec, final_states
@@ -1591,28 +1614,18 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             spec_running_state_indices = spec_state_indices_tensor[:, 0][
                 : attn_metadata.num_spec_decodes
             ]
-            if self.hybrid_spec_state_offload_enabled:
-                mixed_qkv_spec = self._forward_conv_spec_offload(
-                    mixed_qkv_spec=mixed_qkv_spec,
-                    conv_state=conv_state,
-                    conv_weights=conv_weights,
-                    running_state_indices=spec_running_state_indices,
-                    num_accepted_tokens=num_accepted_tokens,
-                    attn_metadata=attn_metadata,
-                )
-            else:
-                mixed_qkv_spec = causal_conv1d_update(
-                    mixed_qkv_spec,
-                    conv_state,
-                    conv_weights,
-                    self.conv1d.bias,
-                    self.activation,
-                    conv_state_indices=spec_running_state_indices,
-                    num_accepted_tokens=num_accepted_tokens,
-                    query_start_loc=spec_query_start_loc,
-                    max_query_len=attn_metadata.spec_max_query_len,
-                    validate_data=False,
-                )
+            mixed_qkv_spec = causal_conv1d_update(
+                mixed_qkv_spec,
+                conv_state,
+                conv_weights,
+                self.conv1d.bias,
+                self.activation,
+                conv_state_indices=spec_running_state_indices,
+                num_accepted_tokens=num_accepted_tokens,
+                query_start_loc=spec_query_start_loc,
+                max_query_len=attn_metadata.spec_max_query_len,
+                validate_data=False,
+            )
 
         # 1.2: Process the remaining part
         if attn_metadata.num_prefills > 0:
@@ -1648,16 +1661,23 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             mixed_qkv_non_spec = None
 
         query_spec, key_spec, value_spec = self.rearrange_mixed_qkv(mixed_qkv_spec)
+        if spec_sequence_masks is not None:
+            assert spec_token_indx is not None
+            assert non_spec_token_indx is not None
+            a_spec = a.index_select(0, spec_token_indx)
+            b_spec = b.index_select(0, spec_token_indx)
+            a_non_spec = a.index_select(0, non_spec_token_indx)
+            b_non_spec = b.index_select(0, non_spec_token_indx)
+        else:
+            a_spec = a
+            b_spec = b
+            a_non_spec = a
+            b_non_spec = b
+
         if attn_metadata.num_prefills > 0:
             assert mixed_qkv_non_spec is not None, (
                 "mixed_qkv_non_spec must be provided for prefill path"
             )
-            if spec_sequence_masks is not None:
-                a_non_spec = a.index_select(0, non_spec_token_indx)
-                b_non_spec = b.index_select(0, non_spec_token_indx)
-            else:
-                a_non_spec = a
-                b_non_spec = b
 
             (
                 query_non_spec,
@@ -1700,8 +1720,8 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                         query_spec=query_spec,
                         key_spec=key_spec,
                         value_spec=value_spec,
-                        a=a,
-                        b=b,
+                        a=a_spec,
+                        b=b_spec,
                         ssm_state=ssm_state,
                         running_state_indices=spec_running_state_indices,
                         attn_metadata=attn_metadata,
@@ -1711,8 +1731,8 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 core_attn_out_spec, last_recurrent_state = (
                     fused_sigmoid_gating_delta_rule_update(
                         A_log=self.A_log,
-                        a=a,
-                        b=b,
+                        a=a_spec,
+                        b=b_spec,
                         dt_bias=self.dt_bias,
                         q=query_spec,
                         k=key_spec,
@@ -1761,8 +1781,8 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             core_attn_out_non_spec, last_recurrent_state = (
                 fused_sigmoid_gating_delta_rule_update(
                     A_log=self.A_log,
-                    a=a,
-                    b=b,
+                    a=a_non_spec,
+                    b=b_non_spec,
                     dt_bias=self.dt_bias,
                     q=query_non_spec,
                     k=key_non_spec,
@@ -1779,6 +1799,16 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             )
         else:
             core_attn_out_non_spec, last_recurrent_state = None, None
+
+        if (
+            self.hybrid_spec_state_offload_enabled
+            and core_attn_out_non_spec is not None
+        ):
+            self._store_non_spec_offload_running_states(
+                ssm_state=ssm_state,
+                running_state_indices=non_spec_state_indices_tensor,
+                attn_metadata=attn_metadata,
+            )
 
         # 3. Merge core attention output
         if spec_sequence_masks is not None and core_attn_out_non_spec is not None:
@@ -1913,6 +1943,14 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             ssm_state_indices=non_spec_state_indices_tensor[:num_actual_tokens],  # type: ignore[index]
             use_qk_l2norm_in_kernel=True,
         )
+        if self.hybrid_spec_state_offload_enabled:
+            self._store_non_spec_offload_running_states(
+                ssm_state=ssm_state,
+                running_state_indices=non_spec_state_indices_tensor[
+                    :num_actual_tokens
+                ],
+                attn_metadata=attn_metadata,
+            )
         return
 
 

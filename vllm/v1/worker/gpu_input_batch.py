@@ -26,6 +26,7 @@ from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.thinking_budget_state import (
     maybe_create_thinking_budget_state_holder,
 )
+from vllm.v1.hybrid_spec_offload import HybridSpecReloadMode
 from vllm.v1.utils import copy_slice
 from vllm.v1.worker.block_table import MultiGroupBlockTable
 
@@ -62,6 +63,8 @@ class CachedRequestState:
     predicted_accept_len: int = 1
     reload_required: bool = False
     reload_slot: int = 0
+    reload_generation: int = 0
+    reload_mode: int = HybridSpecReloadMode.NONE
     hybrid_spec_offload_slot: int = -1
 
     # for pooling models

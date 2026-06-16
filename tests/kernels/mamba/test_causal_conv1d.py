@@ -10,7 +10,6 @@ from einops import rearrange
 from vllm.model_executor.layers.mamba.ops.causal_conv1d import (
     causal_conv1d_fn,
     causal_conv1d_update,
-    causal_conv1d_update_spec_offload,
 )
 from vllm.utils.torch_utils import set_random_seed
 from vllm.v1.attention.backends.utils import NULL_BLOCK_ID
@@ -263,81 +262,6 @@ def test_causal_conv1d_update_with_batch_gather(
         conv_state[unused_states_bool], conv_state_for_padding_test[unused_states_bool]
     )
     assert torch.allclose(out[:batch_size], out_ref, rtol=rtol, atol=atol)
-
-
-@pytest.mark.parametrize("itype", [torch.float32, torch.bfloat16])
-@pytest.mark.parametrize("silu_activation", [False, True])
-@pytest.mark.parametrize("has_bias", [False, True])
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="Need CUDA device")
-def test_causal_conv1d_update_spec_offload_matches_baseline(
-    has_bias, silu_activation, itype
-):
-    device = "cuda"
-    rtol, atol = (3e-4, 1e-3) if itype == torch.float32 else (1e-2, 5e-2)
-
-    torch.manual_seed(0)
-    torch.cuda.manual_seed_all(0)
-    dim = 320
-    width = 4
-    max_query_len = 3
-    state_len = width - 1 + max_query_len - 1
-    total_entries = 6
-
-    query_lens = [2, 3]
-    query_start_loc = torch.tensor(
-        [0, query_lens[0], sum(query_lens)],
-        dtype=torch.int32,
-        device=device,
-    )
-    x = torch.randn(sum(query_lens), dim, device=device, dtype=itype)
-    x_ref = x.clone()
-
-    conv_state_source = torch.randn(
-        total_entries, dim, state_len, device=device, dtype=itype
-    )
-    conv_state_source_ref = conv_state_source.clone()
-    conv_state_scratch = torch.empty(
-        len(query_lens), dim, state_len, device=device, dtype=itype
-    )
-    conv_state_indices = torch.tensor([1, 4], dtype=torch.int32, device=device)
-    num_accepted_tokens = torch.tensor([1, 3], dtype=torch.int32, device=device)
-    weight = torch.randn(dim, width, device=device, dtype=itype)
-    bias = torch.randn(dim, device=device, dtype=itype) if has_bias else None
-    activation = None if not silu_activation else "silu"
-
-    baseline_state = conv_state_source_ref[conv_state_indices.long()].clone()
-    baseline_indices = torch.arange(
-        len(query_lens), dtype=torch.int32, device=device
-    )
-    out_ref = causal_conv1d_update(
-        x_ref,
-        baseline_state,
-        weight,
-        bias,
-        activation=activation,
-        conv_state_indices=baseline_indices,
-        num_accepted_tokens=num_accepted_tokens,
-        query_start_loc=query_start_loc,
-        max_query_len=max_query_len,
-        validate_data=False,
-    )
-    out = causal_conv1d_update_spec_offload(
-        x,
-        conv_state_source=conv_state_source,
-        conv_state_scratch=conv_state_scratch,
-        weight=weight,
-        bias=bias,
-        activation=activation,
-        conv_state_indices=conv_state_indices,
-        num_accepted_tokens=num_accepted_tokens,
-        query_start_loc=query_start_loc,
-        max_query_len=max_query_len,
-        validate_data=False,
-    )
-
-    assert torch.equal(conv_state_source, conv_state_source_ref)
-    assert torch.allclose(conv_state_scratch, baseline_state, rtol=rtol, atol=atol)
-    assert torch.allclose(out, out_ref, rtol=rtol, atol=atol)
 
 
 @pytest.mark.parametrize("itype", [torch.bfloat16])
