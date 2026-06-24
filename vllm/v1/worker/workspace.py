@@ -116,7 +116,29 @@ class WorkspaceManager:
             for i in range(len(shapes_and_dtypes))
         ]
 
+    @staticmethod
+    def _required_workspace_bytes(
+        *shapes_and_dtypes: tuple[tuple[int, ...], torch.dtype]
+    ) -> int:
+        actual_bytes = [_compute_bytes(s, d) for s, d in shapes_and_dtypes]
+        aligned_bytes = [round_up(actual, 256) for actual in actual_bytes]
+        return sum(aligned_bytes)
+
+    def reserve_simultaneous_for_all_ubatches(
+        self, *shapes_and_dtypes: tuple[tuple[int, ...], torch.dtype]
+    ) -> None:
+        required_bytes = self._required_workspace_bytes(*shapes_and_dtypes)
+        for ubatch_id in range(self._num_ubatches):
+            self._ensure_workspace_size_for_ubatch(required_bytes, ubatch_id)
+
     def _ensure_workspace_size(self, required_bytes: int) -> torch.Tensor:
+        return self._ensure_workspace_size_for_ubatch(
+            required_bytes, dbo_current_ubatch_id()
+        )
+
+    def _ensure_workspace_size_for_ubatch(
+        self, required_bytes: int, ubatch_id: int
+    ) -> torch.Tensor:
         """Ensure workspace is allocated and large enough, return current workspace.
 
         Args:
@@ -125,7 +147,6 @@ class WorkspaceManager:
         Returns:
             The current workspace tensor.
         """
-        ubatch_id = dbo_current_ubatch_id()
         current_workspace = self._current_workspaces[ubatch_id]
         current_size = self._workspace_size_bytes(current_workspace)
 

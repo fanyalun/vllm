@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Inference-only Qwen3-Next/Qwen3.5 model."""
 
+from collections import deque
 import functools
 from dataclasses import dataclass
 from typing import Literal
@@ -87,12 +88,27 @@ logger = init_logger(__name__)
 
 @dataclass
 class HybridSpecStateOffloadWorkspace:
-    temporal_state_gpu_scratch: torch.Tensor
     temporal_state_cpu_shadow: torch.Tensor
     shadow_copy_done_event: torch.cuda.Event | None = None
     preload_stream: torch.cuda.Stream | None = None
     preload_done_events: list[torch.cuda.Event | None] | None = None
     preload_generation_per_req: list[int] | None = None
+    pending_preload_timings: deque[
+        tuple[torch.cuda.Event, torch.cuda.Event, int]
+    ] | None = None
+    pending_preloaded_timings: deque[
+        tuple[torch.cuda.Event, torch.cuda.Event, int]
+    ] | None = None
+    pending_fallback_timings: deque[
+        tuple[torch.cuda.Event, torch.cuda.Event, int]
+    ] | None = None
+    preload_total_ms: float = 0.0
+    preload_call_count: int = 0
+    preload_req_count: int = 0
+    preloaded_total_ms: float = 0.0
+    preloaded_row_count: int = 0
+    fallback_total_ms: float = 0.0
+    fallback_row_count: int = 0
 
 
 # TODO(arpera): remove ``_is_libs_cu13_install_intact`` and its caller in
@@ -577,16 +593,6 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             hv = self.num_v_heads // self.tp_size
             self.hybrid_spec_state_offload_workspace = (
                 HybridSpecStateOffloadWorkspace(
-                    temporal_state_gpu_scratch=torch.empty(
-                        (
-                            max_num_reqs * num_candidate_states,
-                            hv,
-                            self.head_v_dim,
-                            self.head_k_dim,
-                        ),
-                        dtype=temporal_state_dtype,
-                        device=current_platform.current_device(),
-                    ),
                     temporal_state_cpu_shadow=torch.empty(
                         (
                             max_num_reqs,
@@ -604,6 +610,9 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                     ),
                     preload_done_events=[None] * max_num_reqs,
                     preload_generation_per_req=[-1] * max_num_reqs,
+                    pending_preload_timings=deque(),
+                    pending_preloaded_timings=deque(),
+                    pending_fallback_timings=deque(),
                 )
             )
 
@@ -1324,12 +1333,16 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         assert workspace.preload_stream is not None
         assert workspace.preload_done_events is not None
         assert workspace.preload_generation_per_req is not None
+        assert workspace.pending_preload_timings is not None
 
         if workspace.shadow_copy_done_event is not None:
             workspace.preload_stream.wait_event(workspace.shadow_copy_done_event)
 
         ssm_state = self.kv_cache[1]
         with torch.cuda.stream(workspace.preload_stream):
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record(workspace.preload_stream)
             for req_slot, reload_slot, running_block_id, reload_generation in zip(
                 req_slots,
                 reload_slots,
@@ -1346,6 +1359,86 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                     workspace.preload_done_events[req_slot] = event
                 event.record(workspace.preload_stream)
                 workspace.preload_generation_per_req[req_slot] = reload_generation
+            end_event.record(workspace.preload_stream)
+        workspace.preload_call_count += 1
+        workspace.preload_req_count += len(req_slots)
+        workspace.pending_preload_timings.append(
+            (start_event, end_event, len(req_slots))
+        )
+        self._drain_reload_timing_events(workspace)
+
+    def _drain_reload_timing_events(
+        self,
+        workspace: HybridSpecStateOffloadWorkspace,
+        *,
+        synchronize: bool = False,
+    ) -> None:
+        timing_queues = (
+            ("preload", workspace.pending_preload_timings),
+            ("preloaded", workspace.pending_preloaded_timings),
+            ("fallback", workspace.pending_fallback_timings),
+        )
+        if synchronize:
+            torch.cuda.synchronize()
+        for kind, queue in timing_queues:
+            if queue is None:
+                continue
+            while queue:
+                start_event, end_event, count = queue[0]
+                if not synchronize and not end_event.query():
+                    break
+                queue.popleft()
+                elapsed_ms = float(start_event.elapsed_time(end_event))
+                if kind == "preload":
+                    workspace.preload_total_ms += elapsed_ms
+                elif kind == "preloaded":
+                    workspace.preloaded_total_ms += elapsed_ms
+                    workspace.preloaded_row_count += count
+                else:
+                    workspace.fallback_total_ms += elapsed_ms
+                    workspace.fallback_row_count += count
+
+    def reset_reload_timing_stats(self) -> None:
+        workspace = self.hybrid_spec_state_offload_workspace
+        if workspace is None:
+            return
+        self._drain_reload_timing_events(workspace, synchronize=True)
+        if workspace.pending_preload_timings is not None:
+            workspace.pending_preload_timings.clear()
+        if workspace.pending_preloaded_timings is not None:
+            workspace.pending_preloaded_timings.clear()
+        if workspace.pending_fallback_timings is not None:
+            workspace.pending_fallback_timings.clear()
+        workspace.preload_total_ms = 0.0
+        workspace.preload_call_count = 0
+        workspace.preload_req_count = 0
+        workspace.preloaded_total_ms = 0.0
+        workspace.preloaded_row_count = 0
+        workspace.fallback_total_ms = 0.0
+        workspace.fallback_row_count = 0
+
+    def snapshot_reload_timing_stats(self) -> dict[str, float | int]:
+        workspace = self.hybrid_spec_state_offload_workspace
+        if workspace is None:
+            return {
+                "preload_total_ms": 0.0,
+                "preload_call_count": 0,
+                "preload_req_count": 0,
+                "preloaded_total_ms": 0.0,
+                "preloaded_row_count": 0,
+                "fallback_total_ms": 0.0,
+                "fallback_row_count": 0,
+            }
+        self._drain_reload_timing_events(workspace, synchronize=True)
+        return {
+            "preload_total_ms": float(workspace.preload_total_ms),
+            "preload_call_count": int(workspace.preload_call_count),
+            "preload_req_count": int(workspace.preload_req_count),
+            "preloaded_total_ms": float(workspace.preloaded_total_ms),
+            "preloaded_row_count": int(workspace.preloaded_row_count),
+            "fallback_total_ms": float(workspace.fallback_total_ms),
+            "fallback_row_count": int(workspace.fallback_row_count),
+        }
 
     def _prepare_temporal_initial_state(
         self,
@@ -1364,9 +1457,12 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         assert attn_metadata.reload_slot_cpu is not None
         assert workspace.preload_done_events is not None
         assert workspace.preload_generation_per_req is not None
+        assert workspace.pending_preloaded_timings is not None
+        assert workspace.pending_fallback_timings is not None
 
         current_stream = torch.cuda.current_stream()
-        shadow_waited = False
+        preloaded_rows: list[tuple[int, int, int]] = []
+        fallback_rows: list[tuple[int, int, int, int]] = []
         for row, reload_mode in enumerate(reload_modes.tolist()):
             if reload_mode == int(HybridSpecReloadMode.NONE):
                 continue
@@ -1386,19 +1482,43 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             ):
                 preload_done_event = workspace.preload_done_events[req_idx]
                 if preload_done_event is not None:
-                    current_stream.wait_event(preload_done_event)
-                    initial_state[row].copy_(
-                        ssm_state[running_idx], non_blocking=True
-                    )
+                    preloaded_rows.append((row, req_idx, running_idx))
                     continue
 
-            if workspace.shadow_copy_done_event is not None and not shadow_waited:
-                current_stream.wait_event(workspace.shadow_copy_done_event)
-                shadow_waited = True
+            fallback_rows.append((row, req_idx, reload_slot, running_idx))
 
-            shadow_state = workspace.temporal_state_cpu_shadow[req_idx, reload_slot]
-            initial_state[row].copy_(shadow_state, non_blocking=True)
-            ssm_state[running_idx].copy_(initial_state[row], non_blocking=True)
+        if preloaded_rows:
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record(current_stream)
+            for row, req_idx, running_idx in preloaded_rows:
+                preload_done_event = workspace.preload_done_events[req_idx]
+                if preload_done_event is not None:
+                    current_stream.wait_event(preload_done_event)
+                initial_state[row].copy_(ssm_state[running_idx], non_blocking=True)
+            end_event.record(current_stream)
+            workspace.pending_preloaded_timings.append(
+                (start_event, end_event, len(preloaded_rows))
+            )
+
+        if fallback_rows:
+            if workspace.shadow_copy_done_event is not None:
+                current_stream.wait_event(workspace.shadow_copy_done_event)
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record(current_stream)
+            for row, req_idx, reload_slot, running_idx in fallback_rows:
+                shadow_state = workspace.temporal_state_cpu_shadow[
+                    req_idx, reload_slot
+                ]
+                initial_state[row].copy_(shadow_state, non_blocking=True)
+                ssm_state[running_idx].copy_(initial_state[row], non_blocking=True)
+            end_event.record(current_stream)
+            workspace.pending_fallback_timings.append(
+                (start_event, end_event, len(fallback_rows))
+            )
+
+        self._drain_reload_timing_events(workspace)
         return initial_state
 
     def _store_temporal_shadow(
@@ -1501,9 +1621,9 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             .expand(-1, attn_metadata.spec_max_query_len)
             .contiguous()
         )
-        scratch = workspace.temporal_state_gpu_scratch[
-            : attn_metadata.num_spec_decode_tokens
-        ]
+        scratch = self.acquire_hybrid_temporal_scratch(
+            attn_metadata.num_spec_decode_tokens
+        )
         core_attn_out_spec, final_states = fused_sigmoid_gating_delta_rule_update(
             A_log=self.A_log,
             a=a,

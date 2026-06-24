@@ -235,6 +235,30 @@ class SchedulerCapacityConfig:
         }
 
 
+def _empty_hybrid_prediction_stats() -> dict[str, int]:
+    return {
+        "total_predictions": 0,
+        "exact_match_count": 0,
+        "within_one_count": 0,
+        "abs_error_sum": 0,
+        "signed_error_sum": 0,
+        "predicted_accept_len_sum": 0,
+        "accepted_len_sum": 0,
+    }
+
+
+def _empty_hybrid_reload_timing_stats() -> dict[str, float | int]:
+    return {
+        "preload_total_ms": 0.0,
+        "preload_call_count": 0,
+        "preload_req_count": 0,
+        "preloaded_total_ms": 0.0,
+        "preloaded_row_count": 0,
+        "fallback_total_ms": 0.0,
+        "fallback_row_count": 0,
+    }
+
+
 @dataclass
 class ConditionRawData:
     batch_size: int
@@ -252,6 +276,8 @@ class ConditionRawData:
     tpot_definition: str
     timing_backend: str
     timing_scope: str
+    hybrid_spec_state_offload_mode: str
+    hybrid_spec_state_ewma_alpha: float
     selected_dataset_indices: np.ndarray
     prompt_lengths: np.ndarray
     output_lengths: np.ndarray
@@ -270,6 +296,20 @@ class ConditionRawData:
     spec_num_accepted_tokens: int
     spec_acceptance_rate: float
     spec_mean_acceptance_length: float
+    hybrid_prediction_total: int
+    hybrid_prediction_exact_match: int
+    hybrid_prediction_within_one: int
+    hybrid_prediction_abs_error_sum: int
+    hybrid_prediction_signed_error_sum: int
+    hybrid_prediction_predicted_sum: int
+    hybrid_prediction_accepted_sum: int
+    hybrid_reload_preload_total_ms: float
+    hybrid_reload_preload_call_count: int
+    hybrid_reload_preload_req_count: int
+    hybrid_reload_preloaded_total_ms: float
+    hybrid_reload_preloaded_row_count: int
+    hybrid_reload_fallback_total_ms: float
+    hybrid_reload_fallback_row_count: int
     step_histograms: np.ndarray
     step_total_tokens: np.ndarray
     step_total_ms: np.ndarray
@@ -387,6 +427,12 @@ class ConditionRawData:
             "tpot_definition": np.asarray([self.tpot_definition]),
             "timing_backend": np.asarray([self.timing_backend]),
             "timing_scope": np.asarray([self.timing_scope]),
+            "hybrid_spec_state_offload_mode": np.asarray(
+                [self.hybrid_spec_state_offload_mode]
+            ),
+            "hybrid_spec_state_ewma_alpha": np.asarray(
+                [self.hybrid_spec_state_ewma_alpha], dtype=np.float64
+            ),
             "selected_dataset_indices": self.selected_dataset_indices,
             "prompt_lengths": self.prompt_lengths,
             "output_lengths": self.output_lengths,
@@ -438,6 +484,48 @@ class ConditionRawData:
             ),
             "spec_mean_acceptance_length": np.asarray(
                 [self.spec_mean_acceptance_length], dtype=np.float64
+            ),
+            "hybrid_prediction_total": np.asarray(
+                [self.hybrid_prediction_total], dtype=np.int64
+            ),
+            "hybrid_prediction_exact_match": np.asarray(
+                [self.hybrid_prediction_exact_match], dtype=np.int64
+            ),
+            "hybrid_prediction_within_one": np.asarray(
+                [self.hybrid_prediction_within_one], dtype=np.int64
+            ),
+            "hybrid_prediction_abs_error_sum": np.asarray(
+                [self.hybrid_prediction_abs_error_sum], dtype=np.int64
+            ),
+            "hybrid_prediction_signed_error_sum": np.asarray(
+                [self.hybrid_prediction_signed_error_sum], dtype=np.int64
+            ),
+            "hybrid_prediction_predicted_sum": np.asarray(
+                [self.hybrid_prediction_predicted_sum], dtype=np.int64
+            ),
+            "hybrid_prediction_accepted_sum": np.asarray(
+                [self.hybrid_prediction_accepted_sum], dtype=np.int64
+            ),
+            "hybrid_reload_preload_total_ms": np.asarray(
+                [self.hybrid_reload_preload_total_ms], dtype=np.float64
+            ),
+            "hybrid_reload_preload_call_count": np.asarray(
+                [self.hybrid_reload_preload_call_count], dtype=np.int64
+            ),
+            "hybrid_reload_preload_req_count": np.asarray(
+                [self.hybrid_reload_preload_req_count], dtype=np.int64
+            ),
+            "hybrid_reload_preloaded_total_ms": np.asarray(
+                [self.hybrid_reload_preloaded_total_ms], dtype=np.float64
+            ),
+            "hybrid_reload_preloaded_row_count": np.asarray(
+                [self.hybrid_reload_preloaded_row_count], dtype=np.int64
+            ),
+            "hybrid_reload_fallback_total_ms": np.asarray(
+                [self.hybrid_reload_fallback_total_ms], dtype=np.float64
+            ),
+            "hybrid_reload_fallback_row_count": np.asarray(
+                [self.hybrid_reload_fallback_row_count], dtype=np.int64
             ),
             "step_histograms": self.step_histograms,
             "step_total_tokens": self.step_total_tokens,
@@ -594,6 +682,8 @@ class CollectedConditionSummary:
     batch_size: int
     draft_length: int
     raw_path: str
+    hybrid_spec_state_offload_mode: str
+    hybrid_spec_state_ewma_alpha: float
     local_max_num_seqs: int
     configured_max_num_batched_tokens: int
     scheduler_max_num_seqs: int
@@ -615,6 +705,20 @@ class CollectedConditionSummary:
     spec_num_accepted_tokens: int
     spec_acceptance_rate: float
     spec_mean_acceptance_length: float
+    hybrid_prediction_total: int
+    hybrid_prediction_exact_match: int
+    hybrid_prediction_within_one: int
+    hybrid_prediction_abs_error_sum: int
+    hybrid_prediction_signed_error_sum: int
+    hybrid_prediction_predicted_sum: int
+    hybrid_prediction_accepted_sum: int
+    hybrid_reload_preload_total_ms: float
+    hybrid_reload_preload_call_count: int
+    hybrid_reload_preload_req_count: int
+    hybrid_reload_preloaded_total_ms: float
+    hybrid_reload_preloaded_row_count: int
+    hybrid_reload_fallback_total_ms: float
+    hybrid_reload_fallback_row_count: int
     num_forward_steps_total: int
     num_captured_steps: int
     num_global_candidate_steps: int
@@ -694,6 +798,20 @@ class RankConditionData:
     spec_num_drafts: int
     spec_num_draft_tokens: int
     spec_num_accepted_tokens: int
+    hybrid_prediction_total: int
+    hybrid_prediction_exact_match: int
+    hybrid_prediction_within_one: int
+    hybrid_prediction_abs_error_sum: int
+    hybrid_prediction_signed_error_sum: int
+    hybrid_prediction_predicted_sum: int
+    hybrid_prediction_accepted_sum: int
+    hybrid_reload_preload_total_ms: float
+    hybrid_reload_preload_call_count: int
+    hybrid_reload_preload_req_count: int
+    hybrid_reload_preloaded_total_ms: float
+    hybrid_reload_preloaded_row_count: int
+    hybrid_reload_fallback_total_ms: float
+    hybrid_reload_fallback_row_count: int
     num_forward_steps_total: int
     num_captured_steps: int
     num_dropped_steps: int
@@ -821,6 +939,48 @@ class RankConditionData:
             ),
             "spec_num_accepted_tokens": np.asarray(
                 [self.spec_num_accepted_tokens], dtype=np.int64
+            ),
+            "hybrid_prediction_total": np.asarray(
+                [self.hybrid_prediction_total], dtype=np.int64
+            ),
+            "hybrid_prediction_exact_match": np.asarray(
+                [self.hybrid_prediction_exact_match], dtype=np.int64
+            ),
+            "hybrid_prediction_within_one": np.asarray(
+                [self.hybrid_prediction_within_one], dtype=np.int64
+            ),
+            "hybrid_prediction_abs_error_sum": np.asarray(
+                [self.hybrid_prediction_abs_error_sum], dtype=np.int64
+            ),
+            "hybrid_prediction_signed_error_sum": np.asarray(
+                [self.hybrid_prediction_signed_error_sum], dtype=np.int64
+            ),
+            "hybrid_prediction_predicted_sum": np.asarray(
+                [self.hybrid_prediction_predicted_sum], dtype=np.int64
+            ),
+            "hybrid_prediction_accepted_sum": np.asarray(
+                [self.hybrid_prediction_accepted_sum], dtype=np.int64
+            ),
+            "hybrid_reload_preload_total_ms": np.asarray(
+                [self.hybrid_reload_preload_total_ms], dtype=np.float64
+            ),
+            "hybrid_reload_preload_call_count": np.asarray(
+                [self.hybrid_reload_preload_call_count], dtype=np.int64
+            ),
+            "hybrid_reload_preload_req_count": np.asarray(
+                [self.hybrid_reload_preload_req_count], dtype=np.int64
+            ),
+            "hybrid_reload_preloaded_total_ms": np.asarray(
+                [self.hybrid_reload_preloaded_total_ms], dtype=np.float64
+            ),
+            "hybrid_reload_preloaded_row_count": np.asarray(
+                [self.hybrid_reload_preloaded_row_count], dtype=np.int64
+            ),
+            "hybrid_reload_fallback_total_ms": np.asarray(
+                [self.hybrid_reload_fallback_total_ms], dtype=np.float64
+            ),
+            "hybrid_reload_fallback_row_count": np.asarray(
+                [self.hybrid_reload_fallback_row_count], dtype=np.int64
             ),
             "num_forward_steps_total": np.asarray(
                 [self.num_forward_steps_total], dtype=np.int64
@@ -993,6 +1153,10 @@ def save_run_metadata(output_dir: Path, args: Any) -> None:
         "enable_nvtx_ranges": bool(
             getattr(args, "enable_nvtx_ranges", False)
         ),
+        "hybrid_spec_state_offload_mode": (
+            args.hybrid_spec_state_offload_mode
+        ),
+        "hybrid_spec_state_ewma_alpha": args.hybrid_spec_state_ewma_alpha,
         "timing_backend": TIMING_BACKEND,
         "timing_scope": TIMING_SCOPE,
         "local_gpu_ids": getattr(args, "local_gpu_ids", None),
@@ -1033,6 +1197,10 @@ def save_collect_manifest(
         "enable_nvtx_ranges": bool(
             getattr(args, "enable_nvtx_ranges", False)
         ),
+        "hybrid_spec_state_offload_mode": (
+            args.hybrid_spec_state_offload_mode
+        ),
+        "hybrid_spec_state_ewma_alpha": args.hybrid_spec_state_ewma_alpha,
         "timing_backend": TIMING_BACKEND,
         "timing_scope": TIMING_SCOPE,
         "local_gpu_ids": getattr(args, "local_gpu_ids", None),
@@ -1045,6 +1213,12 @@ def save_collect_manifest(
                 "batch_size": summary.batch_size,
                 "draft_length": summary.draft_length,
                 "raw_path": summary.raw_path,
+                "hybrid_spec_state_offload_mode": (
+                    summary.hybrid_spec_state_offload_mode
+                ),
+                "hybrid_spec_state_ewma_alpha": (
+                    summary.hybrid_spec_state_ewma_alpha
+                ),
                 "local_max_num_seqs": summary.local_max_num_seqs,
                 "configured_max_num_batched_tokens": (
                     summary.configured_max_num_batched_tokens
@@ -1082,6 +1256,46 @@ def save_collect_manifest(
                 "spec_mean_acceptance_length": (
                     summary.spec_mean_acceptance_length
                 ),
+                "hybrid_prediction_total": summary.hybrid_prediction_total,
+                "hybrid_prediction_exact_match": (
+                    summary.hybrid_prediction_exact_match
+                ),
+                "hybrid_prediction_within_one": (
+                    summary.hybrid_prediction_within_one
+                ),
+                "hybrid_prediction_abs_error_sum": (
+                    summary.hybrid_prediction_abs_error_sum
+                ),
+                "hybrid_prediction_signed_error_sum": (
+                    summary.hybrid_prediction_signed_error_sum
+                ),
+                "hybrid_prediction_predicted_sum": (
+                    summary.hybrid_prediction_predicted_sum
+                ),
+                "hybrid_prediction_accepted_sum": (
+                    summary.hybrid_prediction_accepted_sum
+                ),
+                "hybrid_reload_preload_total_ms": (
+                    summary.hybrid_reload_preload_total_ms
+                ),
+                "hybrid_reload_preload_call_count": (
+                    summary.hybrid_reload_preload_call_count
+                ),
+                "hybrid_reload_preload_req_count": (
+                    summary.hybrid_reload_preload_req_count
+                ),
+                "hybrid_reload_preloaded_total_ms": (
+                    summary.hybrid_reload_preloaded_total_ms
+                ),
+                "hybrid_reload_preloaded_row_count": (
+                    summary.hybrid_reload_preloaded_row_count
+                ),
+                "hybrid_reload_fallback_total_ms": (
+                    summary.hybrid_reload_fallback_total_ms
+                ),
+                "hybrid_reload_fallback_row_count": (
+                    summary.hybrid_reload_fallback_row_count
+                ),
                 "num_forward_steps_total": summary.num_forward_steps_total,
                 "num_captured_steps": summary.num_captured_steps,
                 "num_global_candidate_steps": summary.num_global_candidate_steps,
@@ -1113,8 +1327,19 @@ def load_condition_summary(raw_path: Path) -> CollectedConditionSummary:
                 return -1
             return int(data[name][0])
 
+        def read_optional_float(name: str) -> float:
+            if name not in data:
+                return 0.0
+            return float(data[name][0])
+
         batch_size = int(data["batch_size"][0])
         draft_length = int(data["draft_length"][0])
+        hybrid_spec_state_offload_mode = str(
+            data["hybrid_spec_state_offload_mode"][0]
+        )
+        hybrid_spec_state_ewma_alpha = float(
+            data["hybrid_spec_state_ewma_alpha"][0]
+        )
         local_max_num_seqs = read_optional_int("local_max_num_seqs")
         configured_max_num_batched_tokens = read_optional_int(
             "configured_max_num_batched_tokens"
@@ -1150,6 +1375,46 @@ def load_condition_summary(raw_path: Path) -> CollectedConditionSummary:
         spec_mean_acceptance_length = float(
             data["spec_mean_acceptance_length"][0]
         )
+        hybrid_prediction_total = read_optional_int("hybrid_prediction_total")
+        hybrid_prediction_exact_match = read_optional_int(
+            "hybrid_prediction_exact_match"
+        )
+        hybrid_prediction_within_one = read_optional_int(
+            "hybrid_prediction_within_one"
+        )
+        hybrid_prediction_abs_error_sum = read_optional_int(
+            "hybrid_prediction_abs_error_sum"
+        )
+        hybrid_prediction_signed_error_sum = read_optional_int(
+            "hybrid_prediction_signed_error_sum"
+        )
+        hybrid_prediction_predicted_sum = read_optional_int(
+            "hybrid_prediction_predicted_sum"
+        )
+        hybrid_prediction_accepted_sum = read_optional_int(
+            "hybrid_prediction_accepted_sum"
+        )
+        hybrid_reload_preload_total_ms = read_optional_float(
+            "hybrid_reload_preload_total_ms"
+        )
+        hybrid_reload_preload_call_count = read_optional_int(
+            "hybrid_reload_preload_call_count"
+        )
+        hybrid_reload_preload_req_count = read_optional_int(
+            "hybrid_reload_preload_req_count"
+        )
+        hybrid_reload_preloaded_total_ms = read_optional_float(
+            "hybrid_reload_preloaded_total_ms"
+        )
+        hybrid_reload_preloaded_row_count = read_optional_int(
+            "hybrid_reload_preloaded_row_count"
+        )
+        hybrid_reload_fallback_total_ms = read_optional_float(
+            "hybrid_reload_fallback_total_ms"
+        )
+        hybrid_reload_fallback_row_count = read_optional_int(
+            "hybrid_reload_fallback_row_count"
+        )
         num_forward_steps_total = int(data["num_forward_steps_total"][0])
         num_captured_steps = int(data["num_captured_steps"][0])
         num_global_candidate_steps = int(data["num_global_candidate_steps"][0])
@@ -1170,6 +1435,8 @@ def load_condition_summary(raw_path: Path) -> CollectedConditionSummary:
         batch_size=batch_size,
         draft_length=draft_length,
         raw_path=str(raw_path.relative_to(raw_path.parent.parent)),
+        hybrid_spec_state_offload_mode=hybrid_spec_state_offload_mode,
+        hybrid_spec_state_ewma_alpha=hybrid_spec_state_ewma_alpha,
         local_max_num_seqs=local_max_num_seqs,
         configured_max_num_batched_tokens=configured_max_num_batched_tokens,
         scheduler_max_num_seqs=scheduler_max_num_seqs,
@@ -1193,6 +1460,20 @@ def load_condition_summary(raw_path: Path) -> CollectedConditionSummary:
         spec_num_accepted_tokens=spec_num_accepted_tokens,
         spec_acceptance_rate=spec_acceptance_rate,
         spec_mean_acceptance_length=spec_mean_acceptance_length,
+        hybrid_prediction_total=hybrid_prediction_total,
+        hybrid_prediction_exact_match=hybrid_prediction_exact_match,
+        hybrid_prediction_within_one=hybrid_prediction_within_one,
+        hybrid_prediction_abs_error_sum=hybrid_prediction_abs_error_sum,
+        hybrid_prediction_signed_error_sum=hybrid_prediction_signed_error_sum,
+        hybrid_prediction_predicted_sum=hybrid_prediction_predicted_sum,
+        hybrid_prediction_accepted_sum=hybrid_prediction_accepted_sum,
+        hybrid_reload_preload_total_ms=hybrid_reload_preload_total_ms,
+        hybrid_reload_preload_call_count=hybrid_reload_preload_call_count,
+        hybrid_reload_preload_req_count=hybrid_reload_preload_req_count,
+        hybrid_reload_preloaded_total_ms=hybrid_reload_preloaded_total_ms,
+        hybrid_reload_preloaded_row_count=hybrid_reload_preloaded_row_count,
+        hybrid_reload_fallback_total_ms=hybrid_reload_fallback_total_ms,
+        hybrid_reload_fallback_row_count=hybrid_reload_fallback_row_count,
         num_forward_steps_total=num_forward_steps_total,
         num_captured_steps=num_captured_steps,
         num_global_candidate_steps=num_global_candidate_steps,
@@ -1357,7 +1638,20 @@ def create_llm(args: Namespace, batch_size: int, draft_length: int):
             "method": "mtp",
             "num_speculative_tokens": draft_length,
             "max_model_len": args.max_model_len,
+            "hybrid_spec_state_offload_mode": (
+                args.hybrid_spec_state_offload_mode
+            ),
+            "hybrid_spec_state_ewma_alpha": (
+                args.hybrid_spec_state_ewma_alpha
+            ),
         }
+    mamba_cache_mode = (
+        "align"
+        if draft_length > 0
+        and args.hybrid_spec_state_offload_mode != "disabled"
+        else "none"
+    )
+    enable_prefix_caching = mamba_cache_mode == "align"
 
     llm = LLM(
         model=args.model,
@@ -1372,6 +1666,8 @@ def create_llm(args: Namespace, batch_size: int, draft_length: int):
         max_num_seqs=local_max_num_seqs,
         max_num_batched_tokens=configured_max_num_batched_tokens,
         gpu_memory_utilization=args.gpu_memory_utilization,
+        enable_prefix_caching=enable_prefix_caching,
+        mamba_cache_mode=mamba_cache_mode,
         speculative_config=speculative_config,
         enforce_eager=args.enforce_eager,
         disable_log_stats=False,
@@ -2172,6 +2468,60 @@ def stop_condition_collection_worker(worker: Any) -> dict[str, int]:
     _WORKER_STATE.current_step = None
     _WORKER_STATE.draft_measure_depth = 0
     return {"pending_timings": pending}
+
+
+def reset_hybrid_prediction_stats_worker(worker: Any) -> bool:
+    model_runner = getattr(worker, "model_runner", None)
+    reset = getattr(model_runner, "reset_hybrid_spec_prediction_stats", None)
+    if reset is None:
+        return False
+    reset()
+    return True
+
+
+def collect_hybrid_prediction_stats_worker(worker: Any) -> dict[str, int]:
+    model_runner = getattr(worker, "model_runner", None)
+    snapshot = getattr(model_runner, "snapshot_hybrid_spec_prediction_stats", None)
+    if snapshot is None:
+        return _empty_hybrid_prediction_stats()
+    stats = snapshot()
+    return {
+        "total_predictions": int(stats.total_predictions),
+        "exact_match_count": int(stats.exact_match_count),
+        "within_one_count": int(stats.within_one_count),
+        "abs_error_sum": int(stats.abs_error_sum),
+        "signed_error_sum": int(stats.signed_error_sum),
+        "predicted_accept_len_sum": int(stats.predicted_accept_len_sum),
+        "accepted_len_sum": int(stats.accepted_len_sum),
+    }
+
+
+def reset_hybrid_reload_timing_stats_worker(worker: Any) -> bool:
+    model_runner = getattr(worker, "model_runner", None)
+    reset = getattr(model_runner, "reset_hybrid_spec_reload_timing_stats", None)
+    if reset is None:
+        return False
+    reset()
+    return True
+
+
+def collect_hybrid_reload_timing_stats_worker(
+    worker: Any,
+) -> dict[str, float | int]:
+    model_runner = getattr(worker, "model_runner", None)
+    snapshot = getattr(model_runner, "snapshot_hybrid_spec_reload_timing_stats", None)
+    if snapshot is None:
+        return _empty_hybrid_reload_timing_stats()
+    stats = snapshot()
+    return {
+        "preload_total_ms": float(stats.preload_total_ms),
+        "preload_call_count": int(stats.preload_call_count),
+        "preload_req_count": int(stats.preload_req_count),
+        "preloaded_total_ms": float(stats.preloaded_total_ms),
+        "preloaded_row_count": int(stats.preloaded_row_count),
+        "fallback_total_ms": float(stats.fallback_total_ms),
+        "fallback_row_count": int(stats.fallback_row_count),
+    }
 
 
 def pop_step_timing_worker(
@@ -2977,6 +3327,14 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
             llm.generate(warmup_batch, sampling_params=sampling_params, use_tqdm=False)
     finished_stats_logger = get_finished_request_stats_logger(llm)
     finished_stats_logger.reset()
+    model_executor.collective_rpc(
+        reset_hybrid_prediction_stats_worker,
+        timeout=30,
+    )
+    model_executor.collective_rpc(
+        reset_hybrid_reload_timing_stats_worker,
+        timeout=30,
+    )
     rank_expert_maps = model_executor.collective_rpc(
         collect_expert_to_ep_rank_worker,
         timeout=30,
@@ -3054,6 +3412,8 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
     num_prefill_dropped_steps = 0
     num_mixed_dropped_steps = 0
     finished_stats = FinishedRequestStatTotals(0.0, 0, 0)
+    hybrid_prediction_stats = _empty_hybrid_prediction_stats()
+    hybrid_reload_timing_stats = _empty_hybrid_reload_timing_stats()
 
     try:
         for round_idx in range(total_rounds):
@@ -3344,6 +3704,39 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
                     trace_samples.extend(recorder.trace_samples[:remaining])
     finally:
         finished_stats = finished_stats_logger.snapshot()
+        worker_prediction_stats = model_executor.collective_rpc(
+            collect_hybrid_prediction_stats_worker,
+            timeout=30,
+        )
+        for worker_stats in worker_prediction_stats:
+            for key in hybrid_prediction_stats:
+                hybrid_prediction_stats[key] += int(worker_stats.get(key, 0))
+        worker_reload_timing_stats = model_executor.collective_rpc(
+            collect_hybrid_reload_timing_stats_worker,
+            timeout=30,
+        )
+        for worker_stats in worker_reload_timing_stats:
+            hybrid_reload_timing_stats["preload_total_ms"] += float(
+                worker_stats.get("preload_total_ms", 0.0)
+            )
+            hybrid_reload_timing_stats["preload_call_count"] += int(
+                worker_stats.get("preload_call_count", 0)
+            )
+            hybrid_reload_timing_stats["preload_req_count"] += int(
+                worker_stats.get("preload_req_count", 0)
+            )
+            hybrid_reload_timing_stats["preloaded_total_ms"] += float(
+                worker_stats.get("preloaded_total_ms", 0.0)
+            )
+            hybrid_reload_timing_stats["preloaded_row_count"] += int(
+                worker_stats.get("preloaded_row_count", 0)
+            )
+            hybrid_reload_timing_stats["fallback_total_ms"] += float(
+                worker_stats.get("fallback_total_ms", 0.0)
+            )
+            hybrid_reload_timing_stats["fallback_row_count"] += int(
+                worker_stats.get("fallback_row_count", 0)
+            )
         with suppress(Exception):
             llm.llm_engine.engine_core.shutdown()
         del llm
@@ -3635,6 +4028,46 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
             spec_num_drafts=finished_stats.spec_num_drafts,
             spec_num_draft_tokens=finished_stats.spec_num_draft_tokens,
             spec_num_accepted_tokens=finished_stats.spec_num_accepted_tokens,
+            hybrid_prediction_total=hybrid_prediction_stats["total_predictions"],
+            hybrid_prediction_exact_match=(
+                hybrid_prediction_stats["exact_match_count"]
+            ),
+            hybrid_prediction_within_one=(
+                hybrid_prediction_stats["within_one_count"]
+            ),
+            hybrid_prediction_abs_error_sum=(
+                hybrid_prediction_stats["abs_error_sum"]
+            ),
+            hybrid_prediction_signed_error_sum=(
+                hybrid_prediction_stats["signed_error_sum"]
+            ),
+            hybrid_prediction_predicted_sum=(
+                hybrid_prediction_stats["predicted_accept_len_sum"]
+            ),
+            hybrid_prediction_accepted_sum=(
+                hybrid_prediction_stats["accepted_len_sum"]
+            ),
+            hybrid_reload_preload_total_ms=float(
+                hybrid_reload_timing_stats["preload_total_ms"]
+            ),
+            hybrid_reload_preload_call_count=int(
+                hybrid_reload_timing_stats["preload_call_count"]
+            ),
+            hybrid_reload_preload_req_count=int(
+                hybrid_reload_timing_stats["preload_req_count"]
+            ),
+            hybrid_reload_preloaded_total_ms=float(
+                hybrid_reload_timing_stats["preloaded_total_ms"]
+            ),
+            hybrid_reload_preloaded_row_count=int(
+                hybrid_reload_timing_stats["preloaded_row_count"]
+            ),
+            hybrid_reload_fallback_total_ms=float(
+                hybrid_reload_timing_stats["fallback_total_ms"]
+            ),
+            hybrid_reload_fallback_row_count=int(
+                hybrid_reload_timing_stats["fallback_row_count"]
+            ),
             num_forward_steps_total=num_forward_steps_total,
             num_captured_steps=num_captured_steps,
             num_dropped_steps=num_dropped_steps,
@@ -3741,6 +4174,46 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         spec_num_drafts=finished_stats.spec_num_drafts,
         spec_num_draft_tokens=finished_stats.spec_num_draft_tokens,
         spec_num_accepted_tokens=finished_stats.spec_num_accepted_tokens,
+        hybrid_prediction_total=hybrid_prediction_stats["total_predictions"],
+        hybrid_prediction_exact_match=(
+            hybrid_prediction_stats["exact_match_count"]
+        ),
+        hybrid_prediction_within_one=(
+            hybrid_prediction_stats["within_one_count"]
+        ),
+        hybrid_prediction_abs_error_sum=(
+            hybrid_prediction_stats["abs_error_sum"]
+        ),
+        hybrid_prediction_signed_error_sum=(
+            hybrid_prediction_stats["signed_error_sum"]
+        ),
+        hybrid_prediction_predicted_sum=(
+            hybrid_prediction_stats["predicted_accept_len_sum"]
+        ),
+        hybrid_prediction_accepted_sum=(
+            hybrid_prediction_stats["accepted_len_sum"]
+        ),
+        hybrid_reload_preload_total_ms=float(
+            hybrid_reload_timing_stats["preload_total_ms"]
+        ),
+        hybrid_reload_preload_call_count=int(
+            hybrid_reload_timing_stats["preload_call_count"]
+        ),
+        hybrid_reload_preload_req_count=int(
+            hybrid_reload_timing_stats["preload_req_count"]
+        ),
+        hybrid_reload_preloaded_total_ms=float(
+            hybrid_reload_timing_stats["preloaded_total_ms"]
+        ),
+        hybrid_reload_preloaded_row_count=int(
+            hybrid_reload_timing_stats["preloaded_row_count"]
+        ),
+        hybrid_reload_fallback_total_ms=float(
+            hybrid_reload_timing_stats["fallback_total_ms"]
+        ),
+        hybrid_reload_fallback_row_count=int(
+            hybrid_reload_timing_stats["fallback_row_count"]
+        ),
         num_forward_steps_total=num_forward_steps_total,
         num_captured_steps=num_captured_steps,
         num_dropped_steps=num_dropped_steps,
@@ -3793,6 +4266,11 @@ def load_rank_condition_data(path: Path) -> RankConditionData:
             if name not in data:
                 return -1
             return int(data[name][0])
+
+        def read_optional_float(name: str) -> float:
+            if name not in data:
+                return 0.0
+            return float(data[name][0])
 
         candidate_layer_ffn_ms = np.asarray(data["candidate_layer_ffn_ms"])
         candidate_position_shape = (
@@ -3962,6 +4440,46 @@ def load_rank_condition_data(path: Path) -> RankConditionData:
             spec_num_drafts=int(data["spec_num_drafts"][0]),
             spec_num_draft_tokens=int(data["spec_num_draft_tokens"][0]),
             spec_num_accepted_tokens=int(data["spec_num_accepted_tokens"][0]),
+            hybrid_prediction_total=read_optional_int("hybrid_prediction_total"),
+            hybrid_prediction_exact_match=read_optional_int(
+                "hybrid_prediction_exact_match"
+            ),
+            hybrid_prediction_within_one=read_optional_int(
+                "hybrid_prediction_within_one"
+            ),
+            hybrid_prediction_abs_error_sum=read_optional_int(
+                "hybrid_prediction_abs_error_sum"
+            ),
+            hybrid_prediction_signed_error_sum=read_optional_int(
+                "hybrid_prediction_signed_error_sum"
+            ),
+            hybrid_prediction_predicted_sum=read_optional_int(
+                "hybrid_prediction_predicted_sum"
+            ),
+            hybrid_prediction_accepted_sum=read_optional_int(
+                "hybrid_prediction_accepted_sum"
+            ),
+            hybrid_reload_preload_total_ms=read_optional_float(
+                "hybrid_reload_preload_total_ms"
+            ),
+            hybrid_reload_preload_call_count=read_optional_int(
+                "hybrid_reload_preload_call_count"
+            ),
+            hybrid_reload_preload_req_count=read_optional_int(
+                "hybrid_reload_preload_req_count"
+            ),
+            hybrid_reload_preloaded_total_ms=read_optional_float(
+                "hybrid_reload_preloaded_total_ms"
+            ),
+            hybrid_reload_preloaded_row_count=read_optional_int(
+                "hybrid_reload_preloaded_row_count"
+            ),
+            hybrid_reload_fallback_total_ms=read_optional_float(
+                "hybrid_reload_fallback_total_ms"
+            ),
+            hybrid_reload_fallback_row_count=read_optional_int(
+                "hybrid_reload_fallback_row_count"
+            ),
             num_forward_steps_total=int(data["num_forward_steps_total"][0]),
             num_captured_steps=int(data["num_captured_steps"][0]),
             num_dropped_steps=int(data["num_dropped_steps"][0]),
@@ -4203,6 +4721,48 @@ def _aggregate_rank_condition_data(
     spec_num_accepted_tokens = sum(
         partial.spec_num_accepted_tokens for partial in partials
     )
+    hybrid_prediction_total = sum(
+        partial.hybrid_prediction_total for partial in partials
+    )
+    hybrid_prediction_exact_match = sum(
+        partial.hybrid_prediction_exact_match for partial in partials
+    )
+    hybrid_prediction_within_one = sum(
+        partial.hybrid_prediction_within_one for partial in partials
+    )
+    hybrid_prediction_abs_error_sum = sum(
+        partial.hybrid_prediction_abs_error_sum for partial in partials
+    )
+    hybrid_prediction_signed_error_sum = sum(
+        partial.hybrid_prediction_signed_error_sum for partial in partials
+    )
+    hybrid_prediction_predicted_sum = sum(
+        partial.hybrid_prediction_predicted_sum for partial in partials
+    )
+    hybrid_prediction_accepted_sum = sum(
+        partial.hybrid_prediction_accepted_sum for partial in partials
+    )
+    hybrid_reload_preload_total_ms = sum(
+        partial.hybrid_reload_preload_total_ms for partial in partials
+    )
+    hybrid_reload_preload_call_count = sum(
+        partial.hybrid_reload_preload_call_count for partial in partials
+    )
+    hybrid_reload_preload_req_count = sum(
+        partial.hybrid_reload_preload_req_count for partial in partials
+    )
+    hybrid_reload_preloaded_total_ms = sum(
+        partial.hybrid_reload_preloaded_total_ms for partial in partials
+    )
+    hybrid_reload_preloaded_row_count = sum(
+        partial.hybrid_reload_preloaded_row_count for partial in partials
+    )
+    hybrid_reload_fallback_total_ms = sum(
+        partial.hybrid_reload_fallback_total_ms for partial in partials
+    )
+    hybrid_reload_fallback_row_count = sum(
+        partial.hybrid_reload_fallback_row_count for partial in partials
+    )
     spec_acceptance_rate = (
         spec_num_accepted_tokens / spec_num_draft_tokens
         if spec_num_draft_tokens > 0
@@ -4238,6 +4798,8 @@ def _aggregate_rank_condition_data(
         tpot_definition=TPOT_DEFINITION,
         timing_backend=TIMING_BACKEND,
         timing_scope=TIMING_SCOPE,
+        hybrid_spec_state_offload_mode=args.hybrid_spec_state_offload_mode,
+        hybrid_spec_state_ewma_alpha=args.hybrid_spec_state_ewma_alpha,
         selected_dataset_indices=selected_indices,
         prompt_lengths=prompt_lengths,
         output_lengths=output_lengths,
@@ -4256,6 +4818,20 @@ def _aggregate_rank_condition_data(
         spec_num_accepted_tokens=spec_num_accepted_tokens,
         spec_acceptance_rate=spec_acceptance_rate,
         spec_mean_acceptance_length=spec_mean_acceptance_length,
+        hybrid_prediction_total=hybrid_prediction_total,
+        hybrid_prediction_exact_match=hybrid_prediction_exact_match,
+        hybrid_prediction_within_one=hybrid_prediction_within_one,
+        hybrid_prediction_abs_error_sum=hybrid_prediction_abs_error_sum,
+        hybrid_prediction_signed_error_sum=hybrid_prediction_signed_error_sum,
+        hybrid_prediction_predicted_sum=hybrid_prediction_predicted_sum,
+        hybrid_prediction_accepted_sum=hybrid_prediction_accepted_sum,
+        hybrid_reload_preload_total_ms=hybrid_reload_preload_total_ms,
+        hybrid_reload_preload_call_count=hybrid_reload_preload_call_count,
+        hybrid_reload_preload_req_count=hybrid_reload_preload_req_count,
+        hybrid_reload_preloaded_total_ms=hybrid_reload_preloaded_total_ms,
+        hybrid_reload_preloaded_row_count=hybrid_reload_preloaded_row_count,
+        hybrid_reload_fallback_total_ms=hybrid_reload_fallback_total_ms,
+        hybrid_reload_fallback_row_count=hybrid_reload_fallback_row_count,
         step_histograms=global_steps.global_step_histograms,
         step_total_tokens=global_steps.global_step_total_tokens,
         step_total_ms=global_steps.global_step_total_ms,
@@ -4481,6 +5057,10 @@ def _build_collect_one_command(
         "condition",
         "--model",
         args.model,
+        "--hybrid-spec-state-offload-mode",
+        args.hybrid_spec_state_offload_mode,
+        "--hybrid-spec-state-ewma-alpha",
+        str(args.hybrid_spec_state_ewma_alpha),
         "--dataset",
         args.dataset,
         "--dataset-split",

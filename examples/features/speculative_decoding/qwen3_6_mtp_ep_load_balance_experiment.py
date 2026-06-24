@@ -32,6 +32,16 @@ from mtp_ep_load_balance_utils import (
 
 def add_collect_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--hybrid-spec-state-offload-mode",
+        choices=("disabled", "predict_last"),
+        default="disabled",
+    )
+    parser.add_argument(
+        "--hybrid-spec-state-ewma-alpha",
+        type=float,
+        default=0.5,
+    )
     parser.add_argument("--dataset", default=DEFAULT_DATASET)
     parser.add_argument("--dataset-config", default=DEFAULT_DATASET_CONFIG)
     parser.add_argument("--dataset-split", default=DEFAULT_DATASET_SPLIT)

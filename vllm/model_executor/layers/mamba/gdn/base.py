@@ -17,6 +17,7 @@ from vllm.model_executor.layers.mamba.mamba_utils import (
 )
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.v1.attention.backends.registry import MambaAttentionBackendEnum
+from vllm.v1.worker.workspace import current_workspace_manager
 
 
 class GatedDeltaNetAttention(PluggableLayer, MambaBase):
@@ -60,3 +61,25 @@ class GatedDeltaNetAttention(PluggableLayer, MambaBase):
             self.cache_config.mamba_cache_dtype,
             self.cache_config.mamba_ssm_cache_dtype,
         )
+
+    def get_hybrid_temporal_scratch_spec(
+        self, max_rows: int
+    ) -> tuple[tuple[int, ...], torch.dtype]:
+        state_shapes = tuple(self.get_state_shape())
+        assert len(state_shapes) >= 2
+        _, temporal_state_dtype = self.get_state_dtype()
+        return (max_rows, *state_shapes[1]), temporal_state_dtype
+
+    def reserve_hybrid_temporal_scratch(
+        self, max_num_reqs: int
+    ) -> tuple[tuple[int, ...], torch.dtype]:
+        spec = self.get_hybrid_temporal_scratch_spec(
+            max_num_reqs * (self.num_spec + 1)
+        )
+        current_workspace_manager().reserve_simultaneous_for_all_ubatches(spec)
+        return spec
+
+    def acquire_hybrid_temporal_scratch(self, num_rows: int) -> torch.Tensor:
+        spec = self.get_hybrid_temporal_scratch_spec(num_rows)
+        (scratch,) = current_workspace_manager().get_simultaneous(spec)
+        return scratch

@@ -410,6 +410,154 @@ def test_build_hybrid_temporal_preload_plan_uses_running_block_ids():
     }
 
 
+def test_stage_hybrid_temporal_preloads_marks_preloaded_after_all_groups():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner.input_batch = SimpleNamespace(num_reqs=1)
+
+    req_a = _make_cached_request_state("req-a")
+    req_a.reload_required = True
+    req_a.reload_mode = int(HybridSpecReloadMode.CPU_SHADOW)
+    runner.requests = {"req-a": req_a}
+
+    runner._hybrid_temporal_preload_supported = lambda: True
+
+    layer_a = SimpleNamespace(stage_temporal_preload=Mock())
+    layer_b = SimpleNamespace(stage_temporal_preload=Mock())
+    kv_cache_spec = SimpleNamespace()
+    runner._get_hybrid_gdn_layers_by_group = lambda: [
+        (0, kv_cache_spec, [layer_a]),
+        (1, kv_cache_spec, [layer_b]),
+    ]
+
+    observed_reload_modes: list[int] = []
+
+    def build_preload_plan(num_reqs: int, kv_cache_gid: int, kv_cache_spec_arg):
+        del num_reqs, kv_cache_gid, kv_cache_spec_arg
+        observed_reload_modes.append(runner.requests["req-a"].reload_mode)
+        return {
+            "req_ids": ["req-a"],
+            "req_slots": [4],
+            "reload_slots": [2],
+            "running_block_ids": [7],
+            "reload_generations": [9],
+        }
+
+    runner._build_hybrid_temporal_preload_plan = build_preload_plan
+
+    runner._stage_hybrid_temporal_preloads(input_fits_in_drafter=True)
+
+    assert observed_reload_modes == [
+        int(HybridSpecReloadMode.CPU_SHADOW),
+        int(HybridSpecReloadMode.CPU_SHADOW),
+    ]
+    layer_a.stage_temporal_preload.assert_called_once_with(
+        req_ids=["req-a"],
+        req_slots=[4],
+        reload_slots=[2],
+        running_block_ids=[7],
+        reload_generations=[9],
+    )
+    layer_b.stage_temporal_preload.assert_called_once_with(
+        req_ids=["req-a"],
+        req_slots=[4],
+        reload_slots=[2],
+        running_block_ids=[7],
+        reload_generations=[9],
+    )
+    assert runner.requests["req-a"].reload_mode == int(
+        HybridSpecReloadMode.PRELOADED
+    )
+
+
+def test_reserve_hybrid_temporal_scratch_workspaces_uses_max_num_reqs():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner.max_num_reqs = 8
+
+    layer_a = SimpleNamespace(reserve_hybrid_temporal_scratch=Mock())
+    layer_b = SimpleNamespace(reserve_hybrid_temporal_scratch=Mock())
+    runner._get_hybrid_gdn_layers_by_group = lambda: [
+        (0, SimpleNamespace(), [layer_a]),
+        (1, SimpleNamespace(), [layer_b]),
+    ]
+
+    runner._reserve_hybrid_temporal_scratch_workspaces()
+
+    layer_a.reserve_hybrid_temporal_scratch.assert_called_once_with(8)
+    layer_b.reserve_hybrid_temporal_scratch.assert_called_once_with(8)
+
+
+@pytest.mark.parametrize(
+    ("resident_speculative_blocks", "expected_max_num_blocks_per_req"),
+    [(0, 1), (4, 5)],
+)
+def test_may_reinitialize_input_batch_uses_resident_mamba_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+    resident_speculative_blocks: int,
+    expected_max_num_blocks_per_req: int,
+):
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner.max_model_len = 512
+    runner.max_encoder_len = 0
+    runner.max_num_reqs = 8
+    runner.max_num_tokens = 256
+    runner.device = torch.device("cpu")
+    runner.pin_memory = False
+    runner.num_spec_tokens = 4
+    runner.cache_config = SimpleNamespace(enable_prefix_caching=False)
+    runner.model_config = SimpleNamespace(get_vocab_size=lambda: 32000)
+    runner.input_batch = SimpleNamespace(
+        logitsprocs=None,
+        logitsprocs_need_output_token_ids=False,
+    )
+    runner.is_pooling_model = False
+    runner.vllm_config = SimpleNamespace(reasoning_config=None)
+    runner._init_block_sizes = []
+    runner._init_kernel_block_sizes = []
+
+    monkeypatch.setattr(
+        gpu_model_runner_module,
+        "get_total_cp_world_size",
+        lambda: 1,
+    )
+
+    captured_kwargs = {}
+
+    class DummyInputBatch:
+
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            self.logitsprocs = kwargs["logitsprocs"]
+            self.logitsprocs_need_output_token_ids = kwargs[
+                "logitsprocs_need_output_token_ids"
+            ]
+
+    monkeypatch.setattr(gpu_model_runner_module, "InputBatch", DummyInputBatch)
+
+    kv_cache_config = KVCacheConfig(
+        num_blocks=16,
+        kv_cache_tensors=[],
+        kv_cache_groups=[
+            KVCacheGroupSpec(
+                layer_names=["layer.0"],
+                kv_cache_spec=MambaSpec(
+                    block_size=16,
+                    shapes=((1, 1),),
+                    dtypes=(torch.float16,),
+                    mamba_cache_mode="align",
+                    num_speculative_blocks=4,
+                    resident_speculative_blocks=resident_speculative_blocks,
+                ),
+            )
+        ],
+    )
+
+    runner.may_reinitialize_input_batch(kv_cache_config, kernel_block_sizes=[16])
+
+    assert captured_kwargs["max_num_blocks_per_req"] == [
+        expected_max_num_blocks_per_req
+    ]
+
+
 @pytest.mark.skip_global_cleanup
 @pytest.mark.parametrize(
     ("world_size", "is_last_rank", "expected_calls"),

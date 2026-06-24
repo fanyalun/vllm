@@ -432,6 +432,16 @@ class HybridSpecPredictionStats(NamedTuple):
     accepted_len_sum: int
 
 
+class HybridSpecReloadTimingStats(NamedTuple):
+    preload_total_ms: float
+    preload_call_count: int
+    preload_req_count: int
+    preloaded_total_ms: float
+    preloaded_row_count: int
+    fallback_total_ms: float
+    fallback_row_count: int
+
+
 class GPUModelRunner(
     LoRAModelRunnerMixin, KVConnectorModelRunnerMixin, ECConnectorModelRunnerMixin
 ):
@@ -1179,6 +1189,46 @@ class GPUModelRunner(
             accepted_len_sum=self.hybrid_spec_prediction_accepted_sum,
         )
 
+    def reset_hybrid_spec_reload_timing_stats(self) -> None:
+        for _, _, layers in self._get_hybrid_gdn_layers_by_group():
+            for layer in layers:
+                layer.reset_reload_timing_stats()
+
+    def snapshot_hybrid_spec_reload_timing_stats(
+        self,
+    ) -> HybridSpecReloadTimingStats:
+        preload_total_ms = 0.0
+        preload_call_count = 0
+        preload_req_count = 0
+        preloaded_total_ms = 0.0
+        preloaded_row_count = 0
+        fallback_total_ms = 0.0
+        fallback_row_count = 0
+        for _, _, layers in self._get_hybrid_gdn_layers_by_group():
+            for layer in layers:
+                stats = layer.snapshot_reload_timing_stats()
+                preload_total_ms += float(stats["preload_total_ms"])
+                preload_call_count += int(stats["preload_call_count"])
+                preload_req_count += int(stats["preload_req_count"])
+                preloaded_total_ms += float(stats["preloaded_total_ms"])
+                preloaded_row_count += int(stats["preloaded_row_count"])
+                fallback_total_ms += float(stats["fallback_total_ms"])
+                fallback_row_count += int(stats["fallback_row_count"])
+        return HybridSpecReloadTimingStats(
+            preload_total_ms=preload_total_ms,
+            preload_call_count=preload_call_count,
+            preload_req_count=preload_req_count,
+            preloaded_total_ms=preloaded_total_ms,
+            preloaded_row_count=preloaded_row_count,
+            fallback_total_ms=fallback_total_ms,
+            fallback_row_count=fallback_row_count,
+        )
+
+    def _reserve_hybrid_temporal_scratch_workspaces(self) -> None:
+        for _, _, layers in self._get_hybrid_gdn_layers_by_group():
+            for layer in layers:
+                layer.reserve_hybrid_temporal_scratch(self.max_num_reqs)
+
     def _free_hybrid_spec_offload_slot(self, req_state: CachedRequestState) -> None:
         if (
             not self.hybrid_spec_state_offload_enabled
@@ -1397,6 +1447,7 @@ class GPUModelRunner(
             return
 
         num_reqs = self.input_batch.num_reqs
+        req_ids_to_mark_preloaded: set[str] = set()
         for kv_cache_gid, kv_cache_spec, layers in self._get_hybrid_gdn_layers_by_group():
             preload_plan = self._build_hybrid_temporal_preload_plan(
                 num_reqs, kv_cache_gid, kv_cache_spec
@@ -1407,10 +1458,12 @@ class GPUModelRunner(
             for layer in layers:
                 layer.stage_temporal_preload(**preload_plan)
 
-            for req_id in preload_plan["req_ids"]:
-                self.requests[req_id].reload_mode = int(
-                    HybridSpecReloadMode.PRELOADED
-                )
+            req_ids_to_mark_preloaded.update(preload_plan["req_ids"])
+
+        for req_id in req_ids_to_mark_preloaded:
+            self.requests[req_id].reload_mode = int(
+                HybridSpecReloadMode.PRELOADED
+            )
 
     def _update_states(self, scheduler_output: "SchedulerOutput") -> Callable | None:
         """Update the cached states and the persistent batch with the scheduler
@@ -6769,6 +6822,8 @@ class GPUModelRunner(
         torch.accelerator.synchronize()
         torch.accelerator.empty_cache()
 
+        self._reserve_hybrid_temporal_scratch_workspaces()
+
         # Lock workspace to prevent resizing during execution.
         # Max workspace sizes should have been captured during warmup/profiling.
         lock_workspace()
@@ -7156,7 +7211,7 @@ class GPUModelRunner(
                     max_num_blocks_per_req
                     if self.cache_config.enable_prefix_caching
                     else 1
-                ) + kv_cache_group.kv_cache_spec.num_speculative_blocks
+                ) + kv_cache_group.kv_cache_spec.effective_resident_speculative_blocks
             max_num_blocks.append(max_num_blocks_per_req)
 
         if (

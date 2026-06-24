@@ -35,6 +35,8 @@ class LoadedConditionData:
     tpot_definition: str
     timing_backend: str
     timing_scope: str
+    hybrid_spec_state_offload_mode: str
+    hybrid_spec_state_ewma_alpha: float
     selected_dataset_indices: np.ndarray
     prompt_lengths: np.ndarray
     output_lengths: np.ndarray
@@ -53,6 +55,20 @@ class LoadedConditionData:
     spec_num_accepted_tokens: int
     spec_acceptance_rate: float
     spec_mean_acceptance_length: float
+    hybrid_prediction_total: int
+    hybrid_prediction_exact_match: int
+    hybrid_prediction_within_one: int
+    hybrid_prediction_abs_error_sum: int
+    hybrid_prediction_signed_error_sum: int
+    hybrid_prediction_predicted_sum: int
+    hybrid_prediction_accepted_sum: int
+    hybrid_reload_preload_total_ms: float
+    hybrid_reload_preload_call_count: int
+    hybrid_reload_preload_req_count: int
+    hybrid_reload_preloaded_total_ms: float
+    hybrid_reload_preloaded_row_count: int
+    hybrid_reload_fallback_total_ms: float
+    hybrid_reload_fallback_row_count: int
     step_histograms: np.ndarray
     step_total_tokens: np.ndarray
     step_total_ms: np.ndarray
@@ -388,6 +404,12 @@ def load_condition_data(path: Path) -> LoadedConditionData:
             tpot_definition=_scalar(npz, "tpot_definition", str),
             timing_backend=_scalar(npz, "timing_backend", str),
             timing_scope=_scalar(npz, "timing_scope", str),
+            hybrid_spec_state_offload_mode=_scalar(
+                npz, "hybrid_spec_state_offload_mode", str
+            ),
+            hybrid_spec_state_ewma_alpha=_scalar(
+                npz, "hybrid_spec_state_ewma_alpha", float
+            ),
             selected_dataset_indices=np.asarray(npz["selected_dataset_indices"]),
             prompt_lengths=np.asarray(npz["prompt_lengths"]),
             output_lengths=np.asarray(npz["output_lengths"]),
@@ -419,6 +441,48 @@ def load_condition_data(path: Path) -> LoadedConditionData:
             spec_acceptance_rate=_scalar(npz, "spec_acceptance_rate", float),
             spec_mean_acceptance_length=_scalar(
                 npz, "spec_mean_acceptance_length", float
+            ),
+            hybrid_prediction_total=_scalar(
+                npz, "hybrid_prediction_total", int
+            ),
+            hybrid_prediction_exact_match=_scalar(
+                npz, "hybrid_prediction_exact_match", int
+            ),
+            hybrid_prediction_within_one=_scalar(
+                npz, "hybrid_prediction_within_one", int
+            ),
+            hybrid_prediction_abs_error_sum=_scalar(
+                npz, "hybrid_prediction_abs_error_sum", int
+            ),
+            hybrid_prediction_signed_error_sum=_scalar(
+                npz, "hybrid_prediction_signed_error_sum", int
+            ),
+            hybrid_prediction_predicted_sum=_scalar(
+                npz, "hybrid_prediction_predicted_sum", int
+            ),
+            hybrid_prediction_accepted_sum=_scalar(
+                npz, "hybrid_prediction_accepted_sum", int
+            ),
+            hybrid_reload_preload_total_ms=_scalar(
+                npz, "hybrid_reload_preload_total_ms", float
+            ),
+            hybrid_reload_preload_call_count=_scalar(
+                npz, "hybrid_reload_preload_call_count", int
+            ),
+            hybrid_reload_preload_req_count=_scalar(
+                npz, "hybrid_reload_preload_req_count", int
+            ),
+            hybrid_reload_preloaded_total_ms=_scalar(
+                npz, "hybrid_reload_preloaded_total_ms", float
+            ),
+            hybrid_reload_preloaded_row_count=_scalar(
+                npz, "hybrid_reload_preloaded_row_count", int
+            ),
+            hybrid_reload_fallback_total_ms=_scalar(
+                npz, "hybrid_reload_fallback_total_ms", float
+            ),
+            hybrid_reload_fallback_row_count=_scalar(
+                npz, "hybrid_reload_fallback_row_count", int
             ),
             step_histograms=np.asarray(npz["step_histograms"]),
             step_total_tokens=np.asarray(npz["step_total_tokens"]),
@@ -2640,6 +2704,132 @@ def build_acceptance_metric_rows(
     return rows
 
 
+def build_hybrid_prediction_metric_rows(
+    manifest: dict[str, Any],
+    results: dict[tuple[int, int], LoadedConditionData],
+) -> list[dict[str, float | int | str]]:
+    rows: list[dict[str, float | int | str]] = []
+    for batch_size in tuple(manifest["batch_sizes"]):
+        for draft_length in tuple(manifest["draft_lengths"]):
+            data = results[(batch_size, draft_length)]
+            total = data.hybrid_prediction_total
+            rows.append(
+                {
+                    "batch_size": batch_size,
+                    "draft_length": draft_length,
+                    "hybrid_spec_state_offload_mode": (
+                        data.hybrid_spec_state_offload_mode
+                    ),
+                    "hybrid_spec_state_ewma_alpha": (
+                        data.hybrid_spec_state_ewma_alpha
+                    ),
+                    "hybrid_prediction_total": total,
+                    "hybrid_prediction_exact_match": (
+                        data.hybrid_prediction_exact_match
+                    ),
+                    "hybrid_prediction_exact_match_rate": (
+                        data.hybrid_prediction_exact_match / total
+                        if total > 0
+                        else 0.0
+                    ),
+                    "hybrid_prediction_within_one": (
+                        data.hybrid_prediction_within_one
+                    ),
+                    "hybrid_prediction_within_one_rate": (
+                        data.hybrid_prediction_within_one / total
+                        if total > 0
+                        else 0.0
+                    ),
+                    "hybrid_prediction_mae": (
+                        data.hybrid_prediction_abs_error_sum / total
+                        if total > 0
+                        else 0.0
+                    ),
+                    "hybrid_prediction_bias": (
+                        data.hybrid_prediction_signed_error_sum / total
+                        if total > 0
+                        else 0.0
+                    ),
+                    "hybrid_prediction_mean_predicted_accept_len": (
+                        data.hybrid_prediction_predicted_sum / total
+                        if total > 0
+                        else 0.0
+                    ),
+                    "hybrid_prediction_mean_accepted_len": (
+                        data.hybrid_prediction_accepted_sum / total
+                        if total > 0
+                        else 0.0
+                    ),
+                }
+            )
+    return rows
+
+
+def build_hybrid_reload_metric_rows(
+    manifest: dict[str, Any],
+    results: dict[tuple[int, int], LoadedConditionData],
+) -> list[dict[str, float | int | str]]:
+    rows: list[dict[str, float | int | str]] = []
+    for batch_size in tuple(manifest["batch_sizes"]):
+        for draft_length in tuple(manifest["draft_lengths"]):
+            data = results[(batch_size, draft_length)]
+            preload_calls = data.hybrid_reload_preload_call_count
+            preload_reqs = data.hybrid_reload_preload_req_count
+            preloaded_rows = data.hybrid_reload_preloaded_row_count
+            fallback_rows = data.hybrid_reload_fallback_row_count
+            rows.append(
+                {
+                    "batch_size": batch_size,
+                    "draft_length": draft_length,
+                    "hybrid_spec_state_offload_mode": (
+                        data.hybrid_spec_state_offload_mode
+                    ),
+                    "hybrid_spec_state_ewma_alpha": (
+                        data.hybrid_spec_state_ewma_alpha
+                    ),
+                    "hybrid_reload_preload_total_ms": (
+                        data.hybrid_reload_preload_total_ms
+                    ),
+                    "hybrid_reload_preload_call_count": preload_calls,
+                    "hybrid_reload_preload_req_count": preload_reqs,
+                    "hybrid_reload_preload_mean_ms_per_call": (
+                        data.hybrid_reload_preload_total_ms / preload_calls
+                        if preload_calls > 0
+                        else 0.0
+                    ),
+                    "hybrid_reload_preload_mean_ms_per_req": (
+                        data.hybrid_reload_preload_total_ms / preload_reqs
+                        if preload_reqs > 0
+                        else 0.0
+                    ),
+                    "hybrid_reload_preloaded_total_ms": (
+                        data.hybrid_reload_preloaded_total_ms
+                    ),
+                    "hybrid_reload_preloaded_row_count": preloaded_rows,
+                    "hybrid_reload_preloaded_mean_ms_per_row": (
+                        data.hybrid_reload_preloaded_total_ms / preloaded_rows
+                        if preloaded_rows > 0
+                        else 0.0
+                    ),
+                    "hybrid_reload_fallback_total_ms": (
+                        data.hybrid_reload_fallback_total_ms
+                    ),
+                    "hybrid_reload_fallback_row_count": fallback_rows,
+                    "hybrid_reload_fallback_mean_ms_per_row": (
+                        data.hybrid_reload_fallback_total_ms / fallback_rows
+                        if fallback_rows > 0
+                        else 0.0
+                    ),
+                    "hybrid_reload_total_ms": (
+                        data.hybrid_reload_preload_total_ms
+                        + data.hybrid_reload_preloaded_total_ms
+                        + data.hybrid_reload_fallback_total_ms
+                    ),
+                }
+            )
+    return rows
+
+
 def plot_speedup_vs_draft_length(
     plot_dir: Path,
     speedup_rows: list[dict[str, float | int]],
@@ -3784,6 +3974,10 @@ def analyze_experiment(
         ),
     )
     acceptance_rows = build_acceptance_metric_rows(manifest, results)
+    hybrid_prediction_rows = build_hybrid_prediction_metric_rows(
+        manifest, results
+    )
+    hybrid_reload_rows = build_hybrid_reload_metric_rows(manifest, results)
     step_rows = build_step_time_rows(manifest, results)
     (
         load_metric_rows,
@@ -3816,6 +4010,14 @@ def analyze_experiment(
 
     save_csv(dirs["tables"] / "speedup_metrics.csv", speedup_rows)
     save_csv(dirs["tables"] / "acceptance_metrics.csv", acceptance_rows)
+    save_csv(
+        dirs["tables"] / "hybrid_prediction_metrics.csv",
+        hybrid_prediction_rows,
+    )
+    save_csv(
+        dirs["tables"] / "hybrid_reload_metrics.csv",
+        hybrid_reload_rows,
+    )
     save_csv(
         dirs["tables"] / "barrier_rank_layer_metrics.csv",
         barrier_rank_layer_rows,
@@ -3887,6 +4089,12 @@ def analyze_experiment(
     save_csv(
         dirs["tables"] / "draft_drop_condition_summary.csv",
         condition_drop_rows,
+    )
+    print(
+        "[analyze] wrote tables: "
+        f"{dirs['tables'] / 'speedup_metrics.csv'}, "
+        f"{dirs['tables'] / 'hybrid_prediction_metrics.csv'}, "
+        f"{dirs['tables'] / 'hybrid_reload_metrics.csv'}"
     )
 
     rank_trace_rows: list[dict[str, Any]] = []

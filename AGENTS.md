@@ -127,3 +127,19 @@ change and explain why**.
 - **Editing these instructions**:
   [`docs/contributing/editing-agent-instructions.md`](docs/contributing/editing-agent-instructions.md)
   — Rules for modifying AGENTS.md or any domain-specific guide it references.
+
+# 本地模型路径：
+/home/fanya/.cache/modelscope/hub/models/Qwen/Qwen3.6-35B-A3B
+
+## Experiment Semantics: Qwen3.6 EP + Spec Decode
+
+- Primary target scenario: large-batch expert parallel plus speculative decoding on a single node with 4 or 8 GPUs.
+- When analyzing MoE decode or verification behavior, explicitly separate large-batch and small-batch conclusions; do not reuse a small-batch memory-bound conclusion as the default answer for the large-batch EP + spec-decode setting.
+- The core validation questions for this workflow are:
+  - whether speculative decoding increases expert-load imbalance,
+  - how large that increase is,
+  - whether rank-local FFN time is strongly correlated with routed assignments in the large-batch setting,
+  - whether rank-local FFN time is more strongly correlated with activated expert count in the small-batch setting.
+- For draft-drop analysis, the relevant question is how many draft tokens would be lost under the naive policy that drops draft tokens whose routed load exceeds the minimum-rank baseline.
+- For Qwen3.6 linear attention, remember that speculative decoding parallelism is limited by verification-stage state-cache retention: every draft token may need its own linear state until acceptance is known.
+- The current design direction under consideration is: predict acceptance length, keep only the last predicted accepted token's linear state on GPU, offload the other draft-token states to CPU, restore the correct state from CPU on misprediction, and clear the unused states after success or recovery.
