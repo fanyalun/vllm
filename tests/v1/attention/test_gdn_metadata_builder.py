@@ -21,7 +21,7 @@ from vllm.v1.attention.backends.gdn_attn import (
     GDNAttentionMetadata,
     GDNAttentionMetadataBuilder,
 )
-from vllm.v1.hybrid_spec_offload import HybridSpecReloadMode
+from vllm.v1.hybrid_spec_replay import HybridSpecRepairMode
 from vllm.v1.kv_cache_interface import MambaSpec
 
 BLOCK_SIZE = 16
@@ -227,15 +227,15 @@ def test_gdn_build_filters_hybrid_spec_offload_metadata_to_spec_rows():
         num_decode_draft_tokens_cpu=torch.tensor([-1, 2], dtype=torch.int32),
         spec_req_indices_cpu=torch.tensor([111, 222], dtype=torch.int32),
         predicted_accept_len_cpu=torch.tensor([1, 2], dtype=torch.int32),
-        temporal_reload_mode_cpu=torch.tensor(
+        temporal_repair_mode_cpu=torch.tensor(
             [
-                int(HybridSpecReloadMode.NONE),
-                int(HybridSpecReloadMode.PRELOADED),
+                int(HybridSpecRepairMode.NONE),
+                int(HybridSpecRepairMode.FROM_START),
             ],
             dtype=torch.int32,
         ),
-        reload_slot_cpu=torch.tensor([0, 2], dtype=torch.int32),
-        reload_generation_cpu=torch.tensor([0, 7], dtype=torch.int32),
+        repair_target_slot_cpu=torch.tensor([0, 2], dtype=torch.int32),
+        repair_generation_cpu=torch.tensor([0, 7], dtype=torch.int32),
     )
 
     assert meta.num_spec_decodes == 1
@@ -245,13 +245,15 @@ def test_gdn_build_filters_hybrid_spec_offload_metadata_to_spec_rows():
     assert meta.spec_req_indices_cpu.tolist() == [222]
     assert meta.non_spec_req_indices_cpu is not None
     assert meta.non_spec_req_indices_cpu.tolist() == [111]
+    assert meta.non_spec_repair_generation_cpu is not None
+    assert meta.non_spec_repair_generation_cpu.tolist() == [0]
     assert meta.predicted_accept_len_cpu is not None
     assert meta.predicted_accept_len_cpu.tolist() == [2]
-    assert meta.temporal_reload_mode_cpu is not None
-    assert meta.temporal_reload_mode_cpu.tolist() == [
-        int(HybridSpecReloadMode.PRELOADED)
+    assert meta.temporal_repair_mode_cpu is not None
+    assert meta.temporal_repair_mode_cpu.tolist() == [
+        int(HybridSpecRepairMode.FROM_START)
     ]
-    assert meta.reload_slot_cpu is not None
-    assert meta.reload_slot_cpu.tolist() == [2]
-    assert meta.reload_generation_cpu is not None
-    assert meta.reload_generation_cpu.tolist() == [7]
+    assert meta.repair_target_slot_cpu is not None
+    assert meta.repair_target_slot_cpu.tolist() == [2]
+    assert meta.repair_generation_cpu is not None
+    assert meta.repair_generation_cpu.tolist() == [7]

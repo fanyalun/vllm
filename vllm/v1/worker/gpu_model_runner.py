@@ -4,6 +4,8 @@
 import functools
 import gc
 import itertools
+import os
+import sys
 import threading
 import time
 from collections import defaultdict
@@ -167,7 +169,11 @@ from vllm.v1.outputs import (
     SamplerOutput,
     make_empty_encoder_model_runner_output,
 )
-from vllm.v1.hybrid_spec_offload import HybridSpecReloadMode
+from vllm.v1.hybrid_spec_replay import (
+    HybridSpecRepairMode,
+    HybridTemporalGroupPlan,
+    HybridTemporalWavePlan,
+)
 from vllm.v1.pool.metadata import PoolingMetadata, PoolingStates
 from vllm.v1.sample.logits_processor import LogitsProcessors, build_logitsprocs
 from vllm.v1.sample.logits_processor.interface import LogitsProcessor
@@ -236,6 +242,12 @@ if TYPE_CHECKING:
     from vllm.v1.worker.encoder_cudagraph import EncoderCudaGraphManager
 
 logger = init_logger(__name__)
+
+
+def _trace_predict_last(message: str) -> None:
+    if os.getenv("VLLM_PREDICT_LAST_TRACE") != "1":
+        return
+    print(f"[predict_last][runner] {message}", file=sys.stderr, flush=True)
 
 AttnMetadataDict: TypeAlias = dict[str, AttentionMetadata]
 # list when ubatching is enabled
@@ -432,14 +444,14 @@ class HybridSpecPredictionStats(NamedTuple):
     accepted_len_sum: int
 
 
-class HybridSpecReloadTimingStats(NamedTuple):
-    preload_total_ms: float
-    preload_call_count: int
-    preload_req_count: int
-    preloaded_total_ms: float
-    preloaded_row_count: int
-    fallback_total_ms: float
-    fallback_row_count: int
+class HybridSpecRepairTimingStats(NamedTuple):
+    repair_copy_ms: float
+    repair_compute_ms: float
+    repair_row_count: int
+    repair_from_start_count: int
+    repair_from_resident_count: int
+    checkpoint_save_ms: float
+    tape_save_ms: float
 
 
 class GPUModelRunner(
@@ -935,6 +947,10 @@ class GPUModelRunner(
             )
         self.layerwise_nvtx_hooks_registered = False
         self.hybrid_spec_offload_free_slots: list[int] = []
+        self._hybrid_temporal_group_plans: list[
+            tuple[list[QwenGatedDeltaNetAttention], HybridTemporalGroupPlan]
+        ] = []
+        self._hybrid_temporal_runtime_initialized = False
         if self.hybrid_spec_state_offload_enabled:
             self.hybrid_spec_offload_free_slots = list(
                 range(self.max_num_reqs - 1, -1, -1)
@@ -1158,7 +1174,7 @@ class GPUModelRunner(
             self.async_output_copy_stream = stream
         return stream
 
-    def _allocate_hybrid_spec_offload_slot(self) -> int:
+    def _allocate_hybrid_spec_slot(self) -> int:
         assert self.hybrid_spec_state_offload_enabled
         if not self.hybrid_spec_offload_free_slots:
             raise RuntimeError(
@@ -1192,51 +1208,75 @@ class GPUModelRunner(
     def reset_hybrid_spec_reload_timing_stats(self) -> None:
         for _, _, layers in self._get_hybrid_gdn_layers_by_group():
             for layer in layers:
-                layer.reset_reload_timing_stats()
+                layer.reset_repair_timing_stats()
 
     def snapshot_hybrid_spec_reload_timing_stats(
         self,
-    ) -> HybridSpecReloadTimingStats:
-        preload_total_ms = 0.0
-        preload_call_count = 0
-        preload_req_count = 0
-        preloaded_total_ms = 0.0
-        preloaded_row_count = 0
-        fallback_total_ms = 0.0
-        fallback_row_count = 0
+    ) -> HybridSpecRepairTimingStats:
+        repair_copy_ms = 0.0
+        repair_compute_ms = 0.0
+        repair_row_count = 0
+        repair_from_start_count = 0
+        repair_from_resident_count = 0
+        checkpoint_save_ms = 0.0
+        tape_save_ms = 0.0
         for _, _, layers in self._get_hybrid_gdn_layers_by_group():
             for layer in layers:
-                stats = layer.snapshot_reload_timing_stats()
-                preload_total_ms += float(stats["preload_total_ms"])
-                preload_call_count += int(stats["preload_call_count"])
-                preload_req_count += int(stats["preload_req_count"])
-                preloaded_total_ms += float(stats["preloaded_total_ms"])
-                preloaded_row_count += int(stats["preloaded_row_count"])
-                fallback_total_ms += float(stats["fallback_total_ms"])
-                fallback_row_count += int(stats["fallback_row_count"])
-        return HybridSpecReloadTimingStats(
-            preload_total_ms=preload_total_ms,
-            preload_call_count=preload_call_count,
-            preload_req_count=preload_req_count,
-            preloaded_total_ms=preloaded_total_ms,
-            preloaded_row_count=preloaded_row_count,
-            fallback_total_ms=fallback_total_ms,
-            fallback_row_count=fallback_row_count,
+                stats = layer.snapshot_repair_timing_stats()
+                repair_copy_ms += float(stats["repair_copy_ms"])
+                repair_compute_ms += float(stats["repair_compute_ms"])
+                repair_row_count += int(stats["repair_row_count"])
+                repair_from_start_count += int(
+                    stats["repair_from_start_count"]
+                )
+                repair_from_resident_count += int(
+                    stats["repair_from_resident_count"]
+                )
+                checkpoint_save_ms += float(stats["checkpoint_save_ms"])
+                tape_save_ms += float(stats["tape_save_ms"])
+        return HybridSpecRepairTimingStats(
+            repair_copy_ms=repair_copy_ms,
+            repair_compute_ms=repair_compute_ms,
+            repair_row_count=repair_row_count,
+            repair_from_start_count=repair_from_start_count,
+            repair_from_resident_count=repair_from_resident_count,
+            checkpoint_save_ms=checkpoint_save_ms,
+            tape_save_ms=tape_save_ms,
         )
 
-    def _reserve_hybrid_temporal_scratch_workspaces(self) -> None:
-        for _, _, layers in self._get_hybrid_gdn_layers_by_group():
+    def _reserve_hybrid_temporal_scratch_workspaces(
+        self,
+        layer_groups: list[
+            tuple[int, MambaSpec, list[QwenGatedDeltaNetAttention]]
+        ] | None = None,
+    ) -> None:
+        if layer_groups is None:
+            layer_groups = self._get_hybrid_gdn_layers_by_group()
+        for _, _, layers in layer_groups:
             for layer in layers:
                 layer.reserve_hybrid_temporal_scratch(self.max_num_reqs)
+
+    def initialize_hybrid_temporal_runtime(self) -> None:
+        if self._hybrid_temporal_runtime_initialized:
+            return
+        if not self._hybrid_temporal_preload_supported():
+            return
+
+        layer_groups = self._get_hybrid_gdn_layers_by_group()
+        if not layer_groups:
+            return
+
+        self._reserve_hybrid_temporal_scratch_workspaces(layer_groups)
+        self._hybrid_temporal_runtime_initialized = True
 
     def _free_hybrid_spec_offload_slot(self, req_state: CachedRequestState) -> None:
         if (
             not self.hybrid_spec_state_offload_enabled
-            or req_state.hybrid_spec_offload_slot < 0
+            or req_state.hybrid_spec_slot < 0
         ):
             return
-        self.hybrid_spec_offload_free_slots.append(req_state.hybrid_spec_offload_slot)
-        req_state.hybrid_spec_offload_slot = -1
+        self.hybrid_spec_offload_free_slots.append(req_state.hybrid_spec_slot)
+        req_state.hybrid_spec_slot = -1
 
     def _init_hybrid_spec_offload_request_state(
         self, req_state: CachedRequestState
@@ -1246,13 +1286,14 @@ class GPUModelRunner(
         init_pred = init_hybrid_predicted_accept_len(self.num_spec_tokens)
         req_state.accepted_len_ewma = float(init_pred)
         req_state.predicted_accept_len = init_pred
-        req_state.reload_required = False
-        req_state.reload_slot = 0
-        req_state.reload_generation = 0
-        req_state.reload_mode = int(HybridSpecReloadMode.NONE)
-        if req_state.hybrid_spec_offload_slot < 0:
-            req_state.hybrid_spec_offload_slot = (
-                self._allocate_hybrid_spec_offload_slot()
+        req_state.repair_required = False
+        req_state.repair_target_slot = 0
+        req_state.resident_slot = max(0, init_pred - 1)
+        req_state.repair_generation = 0
+        req_state.repair_mode = int(HybridSpecRepairMode.NONE)
+        if req_state.hybrid_spec_slot < 0:
+            req_state.hybrid_spec_slot = (
+                self._allocate_hybrid_spec_slot()
             )
 
     def _update_hybrid_spec_offload_request_states(
@@ -1269,9 +1310,10 @@ class GPUModelRunner(
             accepted_len = int(accepted_lens[batch_idx])
             accepted_len = max(1, min(max_accept_len, accepted_len))
             if req_id not in scheduled_spec_decode_tokens:
-                req_state.reload_required = False
-                req_state.reload_slot = 0
-                req_state.reload_mode = int(HybridSpecReloadMode.NONE)
+                req_state.repair_required = False
+                req_state.repair_target_slot = 0
+                req_state.resident_slot = 0
+                req_state.repair_mode = int(HybridSpecRepairMode.NONE)
                 req_state.accepted_len_ewma = update_hybrid_accepted_len_ewma(
                     req_state.accepted_len_ewma,
                     1,
@@ -1281,7 +1323,13 @@ class GPUModelRunner(
                     req_state.accepted_len_ewma, self.num_spec_tokens
                 )
                 continue
-            predicted_len = max(1, min(max_accept_len, req_state.predicted_accept_len))
+            req_draft_len = len(scheduled_spec_decode_tokens[req_id])
+            req_max_accept_len = 1 + req_draft_len
+            accepted_len = min(accepted_len, req_max_accept_len)
+            predicted_len = max(
+                1,
+                min(req_max_accept_len, req_state.predicted_accept_len),
+            )
             error = predicted_len - accepted_len
             self.hybrid_spec_prediction_total += 1
             self.hybrid_spec_prediction_exact_match += int(error == 0)
@@ -1290,13 +1338,21 @@ class GPUModelRunner(
             self.hybrid_spec_prediction_signed_error_sum += error
             self.hybrid_spec_prediction_predicted_sum += predicted_len
             self.hybrid_spec_prediction_accepted_sum += accepted_len
-            req_state.reload_required = predicted_len != accepted_len
-            req_state.reload_slot = accepted_len - 1
-            if req_state.reload_required:
-                req_state.reload_generation += 1
-                req_state.reload_mode = int(HybridSpecReloadMode.CPU_SHADOW)
+            req_state.resident_slot = predicted_len - 1
+            if accepted_len == predicted_len:
+                req_state.repair_required = False
+                req_state.repair_mode = int(HybridSpecRepairMode.NONE)
+                req_state.repair_target_slot = accepted_len - 1
+            elif accepted_len > predicted_len:
+                req_state.repair_required = True
+                req_state.repair_mode = int(HybridSpecRepairMode.FROM_RESIDENT)
+                req_state.repair_target_slot = accepted_len - 1
+                req_state.repair_generation += 1
             else:
-                req_state.reload_mode = int(HybridSpecReloadMode.NONE)
+                req_state.repair_required = True
+                req_state.repair_mode = int(HybridSpecRepairMode.FROM_START)
+                req_state.repair_target_slot = accepted_len - 1
+                req_state.repair_generation += 1
             req_state.accepted_len_ewma = update_hybrid_accepted_len_ewma(
                 req_state.accepted_len_ewma,
                 accepted_len,
@@ -1305,50 +1361,57 @@ class GPUModelRunner(
             req_state.predicted_accept_len = predict_hybrid_accept_len(
                 req_state.accepted_len_ewma, self.num_spec_tokens
             )
+            _trace_predict_last(
+                f"req={req_id} accepted={accepted_len} predicted_before="
+                f"{predicted_len} mode={int(req_state.repair_mode)} "
+                f"target={req_state.repair_target_slot} resident="
+                f"{req_state.resident_slot} gen={req_state.repair_generation} "
+                f"predicted_after={req_state.predicted_accept_len}"
+            )
 
     def _build_hybrid_gdn_attn_metadata_args(
         self, num_reqs_padded: int
     ) -> dict[str, torch.Tensor]:
-        num_accepted_tokens_np = np.ones(num_reqs_padded, dtype=np.int32)
         spec_req_indices_np = np.full(num_reqs_padded, -1, dtype=np.int32)
         predicted_accept_len_np = np.ones(num_reqs_padded, dtype=np.int32)
-        temporal_reload_mode_np = np.zeros(num_reqs_padded, dtype=np.int32)
-        reload_slot_np = np.zeros(num_reqs_padded, dtype=np.int32)
-        reload_generation_np = np.zeros(num_reqs_padded, dtype=np.int32)
+        temporal_repair_mode_np = np.zeros(num_reqs_padded, dtype=np.int32)
+        repair_target_slot_np = np.zeros(num_reqs_padded, dtype=np.int32)
+        repair_generation_np = np.zeros(num_reqs_padded, dtype=np.int32)
+        next_replay_generation_np = np.ones(num_reqs_padded, dtype=np.int32)
 
         for batch_idx, req_id in enumerate(
             self.input_batch.req_ids[: self.input_batch.num_reqs]
         ):
             req_state = self.requests[req_id]
             draft_len = int(self.num_decode_draft_tokens.np[batch_idx])
-            if draft_len >= 0:
-                max_accept_len = 1 + draft_len
-                num_accepted_tokens_np[batch_idx] = req_state.reload_slot + 1
-            else:
-                max_accept_len = 1
-            spec_req_indices_np[batch_idx] = req_state.hybrid_spec_offload_slot
+            max_accept_len = 1 + draft_len if draft_len >= 0 else 1
+            spec_req_indices_np[batch_idx] = req_state.hybrid_spec_slot
             predicted_accept_len_np[batch_idx] = min(
                 req_state.predicted_accept_len,
                 max_accept_len,
             )
-            temporal_reload_mode_np[batch_idx] = (
-                req_state.reload_mode if draft_len >= 0 else 0
+            temporal_repair_mode_np[batch_idx] = (
+                req_state.repair_mode
+                if draft_len >= 0 and req_state.repair_required
+                else int(HybridSpecRepairMode.NONE)
             )
-            reload_slot_np[batch_idx] = req_state.reload_slot
-            reload_generation_np[batch_idx] = req_state.reload_generation
+            repair_target_slot_np[batch_idx] = req_state.repair_target_slot
+            repair_generation_np[batch_idx] = req_state.repair_generation
+            next_replay_generation_np[batch_idx] = (
+                req_state.repair_generation + 1
+            )
 
         return {
-            "num_accepted_tokens": torch.from_numpy(num_accepted_tokens_np).to(
-                device=self.device,
-                non_blocking=True,
-            ),
             "spec_req_indices_cpu": torch.from_numpy(spec_req_indices_np),
             "predicted_accept_len_cpu": torch.from_numpy(predicted_accept_len_np),
-            "temporal_reload_mode_cpu": torch.from_numpy(
-                temporal_reload_mode_np
+            "temporal_repair_mode_cpu": torch.from_numpy(
+                temporal_repair_mode_np
             ),
-            "reload_slot_cpu": torch.from_numpy(reload_slot_np),
-            "reload_generation_cpu": torch.from_numpy(reload_generation_np),
+            "repair_target_slot_cpu": torch.from_numpy(repair_target_slot_np),
+            "repair_generation_cpu": torch.from_numpy(repair_generation_np),
+            "next_replay_generation_cpu": torch.from_numpy(
+                next_replay_generation_np
+            ),
         }
 
     def _hybrid_temporal_preload_supported(self) -> bool:
@@ -1384,86 +1447,144 @@ class GPUModelRunner(
                 grouped_layers.append((kv_cache_gid, kv_cache_spec, layers))
         return grouped_layers
 
-    def _build_hybrid_temporal_preload_plan(
+    def _build_hybrid_temporal_wave_plan(
         self,
         num_reqs: int,
-        kv_cache_gid: int,
-        kv_cache_spec: MambaSpec,
-    ) -> dict[str, list[int]] | None:
+    ) -> HybridTemporalWavePlan | None:
         req_ids: list[str] = []
-        batch_rows: list[int] = []
-        req_slots: list[int] = []
-        reload_slots: list[int] = []
-        reload_generations: list[int] = []
+        spec_req_slots: list[int] = []
+        spec_query_start_locs = [0]
+        predicted_accept_lens: list[int] = []
+        next_replay_generations: list[int] = []
 
         for batch_idx, req_id in enumerate(self.input_batch.req_ids[:num_reqs]):
             req_state = self.requests[req_id]
-            if (
-                not req_state.reload_required
-                or req_state.reload_mode != int(HybridSpecReloadMode.CPU_SHADOW)
-                or req_state.hybrid_spec_offload_slot < 0
-            ):
+            draft_len = int(self.num_decode_draft_tokens.np[batch_idx])
+            if draft_len < 0:
                 continue
             req_ids.append(req_id)
-            batch_rows.append(batch_idx)
-            req_slots.append(req_state.hybrid_spec_offload_slot)
-            reload_slots.append(req_state.reload_slot)
-            reload_generations.append(req_state.reload_generation)
+            spec_req_slots.append(req_state.hybrid_spec_slot)
+            query_len = 1 + draft_len
+            predicted_accept_lens.append(
+                min(req_state.predicted_accept_len, query_len)
+            )
+            next_replay_generations.append(req_state.repair_generation + 1)
+            spec_query_start_locs.append(spec_query_start_locs[-1] + query_len)
 
-        if not batch_rows:
+        if not req_ids:
             return None
 
-        block_table_tensor = self.input_batch.block_table[kv_cache_gid].get_device_tensor(
-            num_reqs
-        )
-        running_block_ids = mamba_get_running_state_block_ids(
-            block_table_tensor,
-            self.seq_lens[:num_reqs],
-            kv_cache_spec,
-            self.cache_config.mamba_cache_mode,
-        )
-        running_block_rows = torch.tensor(
-            batch_rows, dtype=torch.int64, device=running_block_ids.device
-        )
-        running_block_ids = (
-            running_block_ids.index_select(0, running_block_rows)[:, 0]
-            .to(device="cpu", non_blocking=False)
-            .tolist()
+        return HybridTemporalWavePlan(
+            req_ids=req_ids,
+            spec_req_slots=spec_req_slots,
+            spec_query_start_locs=spec_query_start_locs,
+            predicted_accept_lens=predicted_accept_lens,
+            next_replay_generations=next_replay_generations,
         )
 
-        return {
-            "req_ids": req_ids,
-            "req_slots": req_slots,
-            "reload_slots": reload_slots,
-            "running_block_ids": running_block_ids,
-            "reload_generations": reload_generations,
+    def _build_hybrid_temporal_group_plans(
+        self,
+        wave_plan: HybridTemporalWavePlan,
+    ) -> list[tuple[list[QwenGatedDeltaNetAttention], HybridTemporalGroupPlan]]:
+        num_reqs = self.input_batch.num_reqs
+        batch_rows_by_req_id = {
+            req_id: row
+            for row, req_id in enumerate(self.input_batch.req_ids[:num_reqs])
         }
+        group_plans: list[
+            tuple[list[QwenGatedDeltaNetAttention], HybridTemporalGroupPlan]
+        ] = []
+        for kv_cache_gid, kv_cache_spec, layers in self._get_hybrid_gdn_layers_by_group():
+            if not layers:
+                continue
+            spec_batch_rows = [
+                batch_rows_by_req_id[req_id] for req_id in wave_plan.req_ids
+            ]
+            repair_row_indices: list[int] = []
+            repair_req_slots: list[int] = []
+            repair_target_slots: list[int] = []
+            resident_slots: list[int] = []
+            repair_modes: list[HybridSpecRepairMode] = []
+            repair_generations: list[int] = []
+            for row_idx, req_id in enumerate(wave_plan.req_ids):
+                req_state = self.requests[req_id]
+                if (
+                    not req_state.repair_required
+                    or req_state.hybrid_spec_slot < 0
+                ):
+                    continue
+                repair_row_indices.append(row_idx)
+                repair_req_slots.append(wave_plan.spec_req_slots[row_idx])
+                repair_target_slots.append(req_state.repair_target_slot)
+                resident_slots.append(req_state.resident_slot)
+                repair_modes.append(HybridSpecRepairMode(req_state.repair_mode))
+                repair_generations.append(req_state.repair_generation)
 
-    def _stage_hybrid_temporal_preloads(
+            running_block_ids: list[int] = []
+            if spec_batch_rows:
+                block_table_tensor = self.input_batch.block_table[
+                    kv_cache_gid
+                ].get_device_tensor(num_reqs)
+                all_running_block_ids = mamba_get_running_state_block_ids(
+                    block_table_tensor,
+                    self.seq_lens[:num_reqs],
+                    kv_cache_spec,
+                    self.cache_config.mamba_cache_mode,
+                )[:, 0].to(device="cpu", non_blocking=False).tolist()
+                running_block_ids = [
+                    int(all_running_block_ids[row]) for row in spec_batch_rows
+                ]
+            source_block_ids = [
+                int(
+                    self.requests[req_id].hybrid_spec_source_block_ids.get(
+                        kv_cache_gid,
+                        running_block_ids[row_idx],
+                    )
+                )
+                for row_idx, req_id in enumerate(wave_plan.req_ids)
+            ]
+            _trace_predict_last(
+                f"group gid={kv_cache_gid} reqs={wave_plan.req_ids} running="
+                f"{running_block_ids} source={source_block_ids} repair_rows="
+                f"{repair_row_indices} modes={[int(mode) for mode in repair_modes]} "
+                f"targets={repair_target_slots} residents={resident_slots}"
+            )
+
+            group_plan = HybridTemporalGroupPlan(
+                wave_plan=wave_plan,
+                running_block_ids=running_block_ids,
+                source_block_ids=source_block_ids,
+                repair_row_indices=repair_row_indices,
+                repair_req_slots=repair_req_slots,
+                repair_target_slots=repair_target_slots,
+                resident_slots=resident_slots,
+                repair_modes=repair_modes,
+                repair_generations=repair_generations,
+            )
+            group_plans.append((layers, group_plan))
+        return group_plans
+
+    def build_hybrid_temporal_group_plans(
+        self,
+    ) -> list[tuple[list[QwenGatedDeltaNetAttention], HybridTemporalGroupPlan]]:
+        if not self._hybrid_temporal_preload_supported():
+            return []
+
+        wave_plan = self._build_hybrid_temporal_wave_plan(
+            self.input_batch.num_reqs
+        )
+        if wave_plan is None:
+            return []
+        return self._build_hybrid_temporal_group_plans(wave_plan)
+
+    def _bind_hybrid_temporal_group_plans(
         self,
         input_fits_in_drafter: bool,
     ) -> None:
-        if not self._hybrid_temporal_preload_supported() or not input_fits_in_drafter:
-            return
-
-        num_reqs = self.input_batch.num_reqs
-        req_ids_to_mark_preloaded: set[str] = set()
-        for kv_cache_gid, kv_cache_spec, layers in self._get_hybrid_gdn_layers_by_group():
-            preload_plan = self._build_hybrid_temporal_preload_plan(
-                num_reqs, kv_cache_gid, kv_cache_spec
-            )
-            if preload_plan is None:
-                continue
-
+        del input_fits_in_drafter
+        for layers, group_plan in self.build_hybrid_temporal_group_plans():
             for layer in layers:
-                layer.stage_temporal_preload(**preload_plan)
-
-            req_ids_to_mark_preloaded.update(preload_plan["req_ids"])
-
-        for req_id in req_ids_to_mark_preloaded:
-            self.requests[req_id].reload_mode = int(
-                HybridSpecReloadMode.PRELOADED
-            )
+                layer.set_hybrid_temporal_group_plan(group_plan)
 
     def _update_states(self, scheduler_output: "SchedulerOutput") -> Callable | None:
         """Update the cached states and the persistent batch with the scheduler
@@ -1906,7 +2027,6 @@ class GPUModelRunner(
                     self.num_spec_tokens,
                     num_reqs,
                 )
-
     def _update_streaming_request(
         self, req_id: str, new_req_data: NewRequestData
     ) -> CachedRequestState:
@@ -4554,6 +4674,9 @@ class GPUModelRunner(
                     slot_mappings=slot_mappings_by_group,
                 )
             )
+            self._bind_hybrid_temporal_group_plans(
+                input_fits_in_drafter=True
+            )
 
             (
                 input_ids,
@@ -4788,7 +4911,6 @@ class GPUModelRunner(
                 or spec_config.uses_draft_model()
                 or spec_config.uses_extract_hidden_states()
             ) and not spec_config.disable_padded_drafter_batch
-            self._stage_hybrid_temporal_preloads(input_fits_in_drafter)
             if use_gpu_toks:
                 # EAGLE/DraftModel speculative decoding can use the GPU sampled tokens
                 # as inputs, and does not need to wait for bookkeeping to finish.
@@ -6822,7 +6944,7 @@ class GPUModelRunner(
         torch.accelerator.synchronize()
         torch.accelerator.empty_cache()
 
-        self._reserve_hybrid_temporal_scratch_workspaces()
+        self.initialize_hybrid_temporal_runtime()
 
         # Lock workspace to prevent resizing during execution.
         # Max workspace sizes should have been captured during warmup/profiling.

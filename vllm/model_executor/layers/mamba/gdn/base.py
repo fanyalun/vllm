@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
 import torch
 from transformers import PretrainedConfig
 
@@ -62,7 +63,7 @@ class GatedDeltaNetAttention(PluggableLayer, MambaBase):
             self.cache_config.mamba_ssm_cache_dtype,
         )
 
-    def get_hybrid_temporal_scratch_spec(
+    def get_hybrid_temporal_verify_scratch_spec(
         self, max_rows: int
     ) -> tuple[tuple[int, ...], torch.dtype]:
         state_shapes = tuple(self.get_state_shape())
@@ -70,16 +71,60 @@ class GatedDeltaNetAttention(PluggableLayer, MambaBase):
         _, temporal_state_dtype = self.get_state_dtype()
         return (max_rows, *state_shapes[1]), temporal_state_dtype
 
+    def get_hybrid_temporal_replay_buffer_specs(
+        self,
+        max_rows: int,
+        max_tokens: int,
+    ) -> tuple[tuple[tuple[int, ...], torch.dtype], ...]:
+        state_shapes = tuple(self.get_state_shape())
+        assert len(state_shapes) >= 2
+        _, temporal_state_dtype = self.get_state_dtype()
+        h = self.num_k_heads // self.tp_size
+        hv = self.num_v_heads // self.tp_size
+        forward_dtype = self.model_config.dtype
+        return (
+            ((max_rows, *state_shapes[1]), temporal_state_dtype),
+            ((max_tokens, h, self.head_k_dim), forward_dtype),
+            ((max_tokens, hv, self.head_v_dim), forward_dtype),
+            ((max_tokens, hv), torch.float32),
+            ((max_tokens, hv), torch.float32),
+            ((max_tokens, *state_shapes[1]), temporal_state_dtype),
+        )
+
     def reserve_hybrid_temporal_scratch(
         self, max_num_reqs: int
     ) -> tuple[tuple[int, ...], torch.dtype]:
-        spec = self.get_hybrid_temporal_scratch_spec(
-            max_num_reqs * (self.num_spec + 1)
+        max_num_tokens = max_num_reqs * (self.num_spec + 1)
+        verify_spec = self.get_hybrid_temporal_verify_scratch_spec(max_num_tokens)
+        replay_specs = self.get_hybrid_temporal_replay_buffer_specs(
+            max_num_reqs,
+            max_num_tokens,
         )
-        current_workspace_manager().reserve_simultaneous_for_all_ubatches(spec)
-        return spec
+        manager = current_workspace_manager()
+        verify_bytes = manager._required_workspace_bytes(verify_spec)
+        replay_bytes = manager._required_workspace_bytes(*replay_specs)
+        reserve_specs = (verify_spec,) if verify_bytes >= replay_bytes else replay_specs
+        # Preserve the workspace-manager contract for recurrent scratch.
+        # A fixed-size ring is not sufficient when eager verify batches
+        # overlap multiple simultaneous GDN scratch users.
+        manager.reserve_simultaneous_for_all_ubatches(*reserve_specs)
+        return verify_spec
 
-    def acquire_hybrid_temporal_scratch(self, num_rows: int) -> torch.Tensor:
-        spec = self.get_hybrid_temporal_scratch_spec(num_rows)
+    def acquire_hybrid_temporal_verify_scratch(
+        self,
+        num_tokens: int,
+    ) -> torch.Tensor:
+        spec = self.get_hybrid_temporal_verify_scratch_spec(num_tokens)
         (scratch,) = current_workspace_manager().get_simultaneous(spec)
         return scratch
+
+    def acquire_hybrid_temporal_replay_buffers(
+        self,
+        num_rows: int,
+        num_tokens: int,
+    ) -> tuple[torch.Tensor, ...]:
+        specs = self.get_hybrid_temporal_replay_buffer_specs(num_rows, num_tokens)
+        return tuple(current_workspace_manager().get_simultaneous(*specs))
+
+    def get_mamba_state_align_copy_mask(self) -> tuple[bool, ...]:
+        return tuple(True for _ in self.get_state_shape())

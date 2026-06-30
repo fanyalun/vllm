@@ -8,6 +8,11 @@ import numpy as np
 import pytest
 import torch
 
+from tests.v1.attention.utils import (
+    BatchSpec,
+    create_common_attn_metadata,
+    create_vllm_config,
+)
 import vllm.v1.worker.gpu_model_runner as gpu_model_runner_module
 from vllm.config import (
     AttentionConfig,
@@ -15,6 +20,7 @@ from vllm.config import (
     ModelConfig,
     ParallelConfig,
     SchedulerConfig,
+    SpeculativeConfig,
     VllmConfig,
     set_current_vllm_config,
 )
@@ -30,6 +36,7 @@ from vllm.utils.mem_constants import GiB_bytes
 from vllm.utils.system_utils import update_environment_variables
 from vllm.utils.torch_utils import set_random_seed
 from vllm.v1.attention.backend import MultipleOf
+from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
 from vllm.v1.core.kv_cache_utils import estimate_max_model_len, get_kv_cache_configs
 from vllm.v1.core.sched.output import CachedRequestData, NewRequestData, SchedulerOutput
@@ -42,7 +49,11 @@ from vllm.v1.kv_cache_interface import (
 )
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
-from vllm.v1.hybrid_spec_offload import HybridSpecReloadMode
+from vllm.v1.hybrid_spec_replay import (
+    HybridSpecRepairMode,
+    HybridTemporalGroupPlan,
+    HybridTemporalWavePlan,
+)
 from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.utils import select_common_block_size
@@ -248,6 +259,48 @@ def _make_cached_request_state(req_id: str) -> CachedRequestState:
     )
 
 
+def _make_wave_plan(
+    *,
+    req_ids: list[str] | None = None,
+    spec_req_slots: list[int] | None = None,
+    spec_query_start_locs: list[int] | None = None,
+    predicted_accept_lens: list[int] | None = None,
+    next_replay_generations: list[int] | None = None,
+) -> HybridTemporalWavePlan:
+    return HybridTemporalWavePlan(
+        req_ids=req_ids or ["req-a"],
+        spec_req_slots=spec_req_slots or [4],
+        spec_query_start_locs=spec_query_start_locs or [0, 3],
+        predicted_accept_lens=predicted_accept_lens or [2],
+        next_replay_generations=next_replay_generations or [1],
+    )
+
+
+def _make_group_plan(
+    *,
+    wave_plan: HybridTemporalWavePlan | None = None,
+    running_block_ids: list[int] | None = None,
+    source_block_ids: list[int] | None = None,
+    repair_row_indices: list[int] | None = None,
+    repair_req_slots: list[int] | None = None,
+    repair_target_slots: list[int] | None = None,
+    resident_slots: list[int] | None = None,
+    repair_modes: list[HybridSpecRepairMode] | None = None,
+    repair_generations: list[int] | None = None,
+) -> HybridTemporalGroupPlan:
+    return HybridTemporalGroupPlan(
+        wave_plan=wave_plan or _make_wave_plan(),
+        running_block_ids=running_block_ids or [7],
+        source_block_ids=source_block_ids or [6],
+        repair_row_indices=repair_row_indices or [0],
+        repair_req_slots=repair_req_slots or [4],
+        repair_target_slots=repair_target_slots or [2],
+        resident_slots=resident_slots or [1],
+        repair_modes=repair_modes or [HybridSpecRepairMode.FROM_START],
+        repair_generations=repair_generations or [9],
+    )
+
+
 def test_select_common_block_size_prefers_manager_block_size():
     backend_a = _make_mock_backend_for_kernel_block_size([MultipleOf(32)])
     backend_b = _make_mock_backend_for_kernel_block_size([64, MultipleOf(16)])
@@ -281,8 +334,8 @@ def test_hybrid_spec_request_state_updates_only_spec_rows():
         "req-b": req_b,
     }
 
-    assert req_a.hybrid_spec_offload_slot == 0
-    assert req_b.hybrid_spec_offload_slot == 1
+    assert req_a.hybrid_spec_slot == 0
+    assert req_b.hybrid_spec_slot == 1
     assert req_a.predicted_accept_len == 5
     assert req_b.predicted_accept_len == 5
 
@@ -292,17 +345,19 @@ def test_hybrid_spec_request_state_updates_only_spec_rows():
         scheduled_spec_decode_tokens={"req-a": [11, 12, 13, 14]},
     )
 
-    assert req_a.reload_required is True
-    assert req_a.reload_slot == 2
-    assert req_a.reload_generation == 1
-    assert req_a.reload_mode == int(HybridSpecReloadMode.CPU_SHADOW)
+    assert req_a.repair_required is True
+    assert req_a.repair_target_slot == 2
+    assert req_a.resident_slot == 4
+    assert req_a.repair_generation == 1
+    assert req_a.repair_mode == int(HybridSpecRepairMode.FROM_START)
     assert req_a.accepted_len_ewma == pytest.approx(4.0)
     assert req_a.predicted_accept_len == 4
 
-    assert req_b.reload_required is False
-    assert req_b.reload_slot == 0
-    assert req_b.reload_generation == 0
-    assert req_b.reload_mode == int(HybridSpecReloadMode.NONE)
+    assert req_b.repair_required is False
+    assert req_b.repair_target_slot == 0
+    assert req_b.resident_slot == 0
+    assert req_b.repair_generation == 0
+    assert req_b.repair_mode == int(HybridSpecRepairMode.NONE)
     assert req_b.accepted_len_ewma == pytest.approx(3.0)
     assert req_b.predicted_accept_len == 3
 
@@ -316,6 +371,77 @@ def test_hybrid_spec_request_state_updates_only_spec_rows():
     assert stats.accepted_len_sum == 3
 
 
+def test_hybrid_spec_request_state_underpredict_uses_from_resident_repair():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner.hybrid_spec_state_offload_enabled = True
+    runner.num_spec_tokens = 4
+    runner.hybrid_spec_state_ewma_alpha = 0.5
+    runner.hybrid_spec_prediction_total = 0
+    runner.hybrid_spec_prediction_exact_match = 0
+    runner.hybrid_spec_prediction_within_one = 0
+    runner.hybrid_spec_prediction_abs_error_sum = 0
+    runner.hybrid_spec_prediction_signed_error_sum = 0
+    runner.hybrid_spec_prediction_predicted_sum = 0
+    runner.hybrid_spec_prediction_accepted_sum = 0
+
+    req = _make_cached_request_state("req-a")
+    req.predicted_accept_len = 2
+    req.accepted_len_ewma = 2.0
+    runner.requests = {"req-a": req}
+
+    runner._update_hybrid_spec_offload_request_states(
+        req_ids=["req-a"],
+        accepted_lens=[4],
+        scheduled_spec_decode_tokens={"req-a": [11, 12, 13]},
+    )
+
+    assert req.repair_required is True
+    assert req.repair_target_slot == 3
+    assert req.resident_slot == 1
+    assert req.repair_generation == 1
+    assert req.repair_mode == int(HybridSpecRepairMode.FROM_RESIDENT)
+
+
+def test_hybrid_spec_request_state_clips_prediction_to_actual_draft_len():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner.hybrid_spec_state_offload_enabled = True
+    runner.num_spec_tokens = 4
+    runner.hybrid_spec_state_ewma_alpha = 0.5
+    runner.hybrid_spec_prediction_total = 0
+    runner.hybrid_spec_prediction_exact_match = 0
+    runner.hybrid_spec_prediction_within_one = 0
+    runner.hybrid_spec_prediction_abs_error_sum = 0
+    runner.hybrid_spec_prediction_signed_error_sum = 0
+    runner.hybrid_spec_prediction_predicted_sum = 0
+    runner.hybrid_spec_prediction_accepted_sum = 0
+
+    req = _make_cached_request_state("req-a")
+    req.predicted_accept_len = 5
+    req.accepted_len_ewma = 5.0
+    runner.requests = {"req-a": req}
+
+    runner._update_hybrid_spec_offload_request_states(
+        req_ids=["req-a"],
+        accepted_lens=[2],
+        scheduled_spec_decode_tokens={"req-a": [11]},
+    )
+
+    assert req.repair_required is False
+    assert req.repair_target_slot == 1
+    assert req.resident_slot == 1
+    assert req.repair_generation == 0
+    assert req.repair_mode == int(HybridSpecRepairMode.NONE)
+
+    stats = runner.snapshot_hybrid_spec_prediction_stats()
+    assert stats.total_predictions == 1
+    assert stats.exact_match_count == 1
+    assert stats.within_one_count == 1
+    assert stats.abs_error_sum == 0
+    assert stats.signed_error_sum == 0
+    assert stats.predicted_accept_len_sum == 2
+    assert stats.accepted_len_sum == 2
+
+
 def test_build_hybrid_gdn_attn_metadata_args_uses_request_state_source():
     runner = GPUModelRunner.__new__(GPUModelRunner)
     runner.device = torch.device("cpu")
@@ -326,20 +452,20 @@ def test_build_hybrid_gdn_attn_metadata_args_uses_request_state_source():
     )
 
     req_a = _make_cached_request_state("req-a")
-    req_a.hybrid_spec_offload_slot = 7
+    req_a.hybrid_spec_slot = 7
     req_a.predicted_accept_len = 4
-    req_a.reload_required = True
-    req_a.reload_slot = 2
-    req_a.reload_generation = 5
-    req_a.reload_mode = int(HybridSpecReloadMode.PRELOADED)
+    req_a.repair_required = True
+    req_a.repair_target_slot = 2
+    req_a.repair_generation = 5
+    req_a.repair_mode = int(HybridSpecRepairMode.FROM_RESIDENT)
 
     req_b = _make_cached_request_state("req-b")
-    req_b.hybrid_spec_offload_slot = 8
+    req_b.hybrid_spec_slot = 8
     req_b.predicted_accept_len = 5
-    req_b.reload_required = True
-    req_b.reload_slot = 1
-    req_b.reload_generation = 3
-    req_b.reload_mode = int(HybridSpecReloadMode.CPU_SHADOW)
+    req_b.repair_required = True
+    req_b.repair_target_slot = 1
+    req_b.repair_generation = 3
+    req_b.repair_mode = int(HybridSpecRepairMode.FROM_START)
 
     runner.requests = {
         "req-a": req_a,
@@ -348,45 +474,98 @@ def test_build_hybrid_gdn_attn_metadata_args_uses_request_state_source():
 
     metadata_args = runner._build_hybrid_gdn_attn_metadata_args(4)
 
-    assert metadata_args["num_accepted_tokens"].tolist() == [3, 1, 1, 1]
+    assert "num_accepted_tokens" not in metadata_args
     assert metadata_args["spec_req_indices_cpu"].tolist() == [7, 8, -1, -1]
     assert metadata_args["predicted_accept_len_cpu"].tolist() == [4, 1, 1, 1]
-    assert metadata_args["temporal_reload_mode_cpu"].tolist() == [2, 0, 0, 0]
-    assert metadata_args["reload_slot_cpu"].tolist() == [2, 1, 0, 0]
-    assert metadata_args["reload_generation_cpu"].tolist() == [5, 3, 0, 0]
+    assert metadata_args["temporal_repair_mode_cpu"].tolist() == [2, 0, 0, 0]
+    assert metadata_args["repair_target_slot_cpu"].tolist() == [2, 1, 0, 0]
+    assert metadata_args["repair_generation_cpu"].tolist() == [5, 3, 0, 0]
+    assert metadata_args["next_replay_generation_cpu"].tolist() == [6, 4, 1, 1]
 
 
-def test_build_hybrid_temporal_preload_plan_uses_running_block_ids():
+def test_build_hybrid_temporal_wave_plan_matches_gdn_spec_row_order():
     runner = GPUModelRunner.__new__(GPUModelRunner)
-    runner.cache_config = SimpleNamespace(mamba_cache_mode="align")
-    runner.seq_lens = torch.tensor([1, 5], dtype=torch.int32)
     runner.input_batch = SimpleNamespace(
-        req_ids=["req-a", "req-b"],
-        num_reqs=2,
-        block_table={
-            0: SimpleNamespace(
-                get_device_tensor=lambda num_reqs: torch.tensor(
-                    [[7, 8], [11, 12]], dtype=torch.int32
-                )
-            )
-        },
+        req_ids=["req-a", "req-b", "req-c", "req-d"],
+        num_reqs=4,
+    )
+    runner.num_decode_draft_tokens = SimpleNamespace(
+        np=np.array([2, -1, 0, 3], dtype=np.int32)
     )
 
-    req_a = _make_cached_request_state("req-a")
-    req_a.hybrid_spec_offload_slot = 4
-    req_a.reload_required = True
-    req_a.reload_slot = 2
-    req_a.reload_generation = 9
-    req_a.reload_mode = int(HybridSpecReloadMode.CPU_SHADOW)
+    req_states = {}
+    for req_id, slot, predicted_len, repair_generation in [
+        ("req-a", 10, 3, 0),
+        ("req-b", 11, 5, 4),
+        ("req-c", 12, 1, 7),
+        ("req-d", 13, 9, 2),
+    ]:
+        req_state = _make_cached_request_state(req_id)
+        req_state.hybrid_spec_slot = slot
+        req_state.predicted_accept_len = predicted_len
+        req_state.repair_generation = repair_generation
+        req_states[req_id] = req_state
+    runner.requests = req_states
 
-    req_b = _make_cached_request_state("req-b")
-    req_b.hybrid_spec_offload_slot = 5
-    req_b.reload_required = True
-    req_b.reload_slot = 1
-    req_b.reload_generation = 3
-    req_b.reload_mode = int(HybridSpecReloadMode.NONE)
+    wave_plan = runner._build_hybrid_temporal_wave_plan(num_reqs=4)
 
-    runner.requests = {"req-a": req_a, "req-b": req_b}
+    assert wave_plan == HybridTemporalWavePlan(
+        req_ids=["req-a", "req-c", "req-d"],
+        spec_req_slots=[10, 12, 13],
+        spec_query_start_locs=[0, 3, 4, 8],
+        predicted_accept_lens=[3, 1, 4],
+        next_replay_generations=[1, 8, 3],
+    )
+
+    vllm_config = create_vllm_config(block_size=BLOCK_SIZE)
+    vllm_config.speculative_config = SpeculativeConfig(
+        method="ngram",
+        num_speculative_tokens=3,
+        hybrid_spec_state_offload_mode="predict_last",
+    )
+    builder = GDNAttentionMetadataBuilder(
+        kv_cache_spec=MambaSpec(
+            block_size=BLOCK_SIZE,
+            shapes=((16, 64),),
+            dtypes=(torch.float16,),
+        ),
+        layer_names=["layer.0"],
+        vllm_config=vllm_config,
+        device=torch.device("cpu"),
+    )
+    common = create_common_attn_metadata(
+        BatchSpec(
+            seq_lens=[65, 20, 30, 40],
+            query_lens=[3, 1, 1, 4],
+        ),
+        BLOCK_SIZE,
+        torch.device("cpu"),
+    )
+    metadata = builder.build(
+        common_prefix_len=0,
+        common_attn_metadata=common,
+        num_accepted_tokens=torch.ones(4, dtype=torch.int32),
+        num_decode_draft_tokens_cpu=torch.tensor(
+            [2, -1, 0, 3], dtype=torch.int32
+        ),
+        spec_req_indices_cpu=torch.tensor([10, 11, 12, 13], dtype=torch.int32),
+        predicted_accept_len_cpu=torch.tensor([3, 5, 1, 4], dtype=torch.int32),
+    )
+
+    assert metadata.spec_req_indices_cpu is not None
+    assert metadata.spec_query_start_loc_cpu is not None
+    assert metadata.predicted_accept_len_cpu is not None
+    assert metadata.spec_req_indices_cpu.tolist() == wave_plan.spec_req_slots
+    assert metadata.spec_query_start_loc_cpu.tolist() == wave_plan.spec_query_start_locs
+    assert metadata.predicted_accept_len_cpu.tolist() == wave_plan.predicted_accept_lens
+
+
+def test_build_hybrid_temporal_group_plans_aligns_reload_rows_per_group():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner.cache_config = SimpleNamespace(mamba_cache_mode="align")
+    runner.seq_lens = torch.tensor([1, 5, 2, 7], dtype=torch.int32)
+    layer_a0 = SimpleNamespace()
+    layer_b0 = SimpleNamespace()
     kv_cache_spec = MambaSpec(
         block_size=4,
         shapes=((1, 1),),
@@ -394,79 +573,186 @@ def test_build_hybrid_temporal_preload_plan_uses_running_block_ids():
         mamba_cache_mode="align",
         resident_speculative_blocks=0,
     )
-
-    preload_plan = runner._build_hybrid_temporal_preload_plan(
-        num_reqs=2,
-        kv_cache_gid=0,
-        kv_cache_spec=kv_cache_spec,
+    runner.input_batch = SimpleNamespace(
+        req_ids=["req-a", "req-b", "req-c", "req-d"],
+        num_reqs=4,
+        block_table={
+            0: SimpleNamespace(get_device_tensor=lambda num_reqs: torch.zeros(4, 1)),
+            1: SimpleNamespace(get_device_tensor=lambda num_reqs: torch.zeros(4, 1)),
+        },
     )
+    runner._get_hybrid_gdn_layers_by_group = lambda: [
+        (0, kv_cache_spec, [layer_a0]),
+        (1, kv_cache_spec, [layer_b0]),
+    ]
+    req_states = {}
+    for req_id, slot, repair_required, repair_target_slot, repair_generation in [
+        ("req-a", 4, True, 2, 9),
+        ("req-b", 5, False, 0, 0),
+        ("req-c", 6, False, 0, 1),
+        ("req-d", 7, True, 1, 3),
+    ]:
+        req_state = _make_cached_request_state(req_id)
+        req_state.hybrid_spec_slot = slot
+        req_state.repair_required = repair_required
+        req_state.repair_target_slot = repair_target_slot
+        req_state.resident_slot = 0
+        req_state.repair_mode = int(HybridSpecRepairMode.FROM_START)
+        req_state.repair_generation = repair_generation
+        req_state.hybrid_spec_source_block_ids = {0: 91 + slot, 1: 191 + slot}
+        req_states[req_id] = req_state
+    runner.requests = req_states
 
-    assert preload_plan == {
-        "req_ids": ["req-a"],
-        "req_slots": [4],
-        "reload_slots": [2],
-        "running_block_ids": [7],
-        "reload_generations": [9],
+    running_block_calls: list[int] = []
+    running_block_ids_by_group = {
+        0: torch.tensor([[101], [102], [103], [104]], dtype=torch.int32),
+        1: torch.tensor([[201], [202], [203], [204]], dtype=torch.int32),
     }
 
+    def fake_get_running_state_block_ids(
+        block_table_tensor, seq_lens, kv_cache_spec_arg, mamba_cache_mode
+    ):
+        del seq_lens, kv_cache_spec_arg, mamba_cache_mode
+        for gid, candidate in running_block_ids_by_group.items():
+            if block_table_tensor is candidate:
+                running_block_calls.append(gid)
+                return candidate
+        raise AssertionError("unexpected block table tensor")
 
-def test_stage_hybrid_temporal_preloads_marks_preloaded_after_all_groups():
+    runner.input_batch.block_table = {
+        gid: SimpleNamespace(get_device_tensor=lambda num_reqs, gid=gid: running_block_ids_by_group[gid])
+        for gid in running_block_ids_by_group
+    }
+    wave_plan = HybridTemporalWavePlan(
+        req_ids=["req-a", "req-c", "req-d"],
+        spec_req_slots=[4, 6, 7],
+        spec_query_start_locs=[0, 3, 4, 8],
+        predicted_accept_lens=[3, 1, 4],
+        next_replay_generations=[10, 2, 4],
+    )
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        gpu_model_runner_module,
+        "mamba_get_running_state_block_ids",
+        fake_get_running_state_block_ids,
+    )
+    try:
+        group_plans = runner._build_hybrid_temporal_group_plans(wave_plan)
+    finally:
+        monkeypatch.undo()
+
+    assert running_block_calls == [0, 1]
+    assert group_plans == [
+        (
+            [layer_a0],
+            HybridTemporalGroupPlan(
+                wave_plan=wave_plan,
+                running_block_ids=[101, 103, 104],
+                source_block_ids=[95, 97, 98],
+                repair_row_indices=[0, 2],
+                repair_req_slots=[4, 7],
+                repair_target_slots=[2, 1],
+                resident_slots=[0, 0],
+                repair_modes=[
+                    HybridSpecRepairMode.FROM_START,
+                    HybridSpecRepairMode.FROM_START,
+                ],
+                repair_generations=[9, 3],
+            ),
+        ),
+        (
+            [layer_b0],
+            HybridTemporalGroupPlan(
+                wave_plan=wave_plan,
+                running_block_ids=[201, 203, 204],
+                source_block_ids=[195, 197, 198],
+                repair_row_indices=[0, 2],
+                repair_req_slots=[4, 7],
+                repair_target_slots=[2, 1],
+                resident_slots=[0, 0],
+                repair_modes=[
+                    HybridSpecRepairMode.FROM_START,
+                    HybridSpecRepairMode.FROM_START,
+                ],
+                repair_generations=[9, 3],
+            ),
+        ),
+    ]
+
+
+def test_build_hybrid_temporal_group_plans_returns_full_layer_group():
     runner = GPUModelRunner.__new__(GPUModelRunner)
-    runner.input_batch = SimpleNamespace(num_reqs=1)
-
-    req_a = _make_cached_request_state("req-a")
-    req_a.reload_required = True
-    req_a.reload_mode = int(HybridSpecReloadMode.CPU_SHADOW)
-    runner.requests = {"req-a": req_a}
-
+    runner.input_batch = SimpleNamespace(num_reqs=2)
     runner._hybrid_temporal_preload_supported = lambda: True
 
-    layer_a = SimpleNamespace(stage_temporal_preload=Mock())
-    layer_b = SimpleNamespace(stage_temporal_preload=Mock())
+    layer_a0 = SimpleNamespace()
+    layer_a1 = SimpleNamespace()
+    layer_b0 = SimpleNamespace()
     kv_cache_spec = SimpleNamespace()
     runner._get_hybrid_gdn_layers_by_group = lambda: [
-        (0, kv_cache_spec, [layer_a]),
-        (1, kv_cache_spec, [layer_b]),
+        (0, kv_cache_spec, [layer_a0, layer_a1]),
+        (1, kv_cache_spec, [layer_b0]),
+    ]
+    wave_plan = _make_wave_plan(req_ids=["req-a"])
+    plan_a = _make_group_plan(wave_plan=wave_plan)
+    plan_b = _make_group_plan(
+        wave_plan=_make_wave_plan(req_ids=["req-b"], spec_req_slots=[5]),
+        running_block_ids=[11],
+        source_block_ids=[10],
+        repair_req_slots=[5],
+        repair_generations=[3],
+    )
+
+    runner._build_hybrid_temporal_wave_plan = lambda num_reqs: wave_plan
+    runner._build_hybrid_temporal_group_plans = lambda built_wave_plan: [
+        ([layer_a0, layer_a1], plan_a),
+        ([layer_b0], plan_b),
     ]
 
-    observed_reload_modes: list[int] = []
-
-    def build_preload_plan(num_reqs: int, kv_cache_gid: int, kv_cache_spec_arg):
-        del num_reqs, kv_cache_gid, kv_cache_spec_arg
-        observed_reload_modes.append(runner.requests["req-a"].reload_mode)
-        return {
-            "req_ids": ["req-a"],
-            "req_slots": [4],
-            "reload_slots": [2],
-            "running_block_ids": [7],
-            "reload_generations": [9],
-        }
-
-    runner._build_hybrid_temporal_preload_plan = build_preload_plan
-
-    runner._stage_hybrid_temporal_preloads(input_fits_in_drafter=True)
-
-    assert observed_reload_modes == [
-        int(HybridSpecReloadMode.CPU_SHADOW),
-        int(HybridSpecReloadMode.CPU_SHADOW),
+    assert runner.build_hybrid_temporal_group_plans() == [
+        ([layer_a0, layer_a1], plan_a),
+        ([layer_b0], plan_b),
     ]
-    layer_a.stage_temporal_preload.assert_called_once_with(
-        req_ids=["req-a"],
-        req_slots=[4],
-        reload_slots=[2],
-        running_block_ids=[7],
-        reload_generations=[9],
+
+
+def test_bind_hybrid_temporal_group_plans_binds_all_layers():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    layer_a0 = SimpleNamespace(set_hybrid_temporal_group_plan=Mock())
+    layer_a1 = SimpleNamespace(set_hybrid_temporal_group_plan=Mock())
+    layer_b0 = SimpleNamespace(set_hybrid_temporal_group_plan=Mock())
+    plan_a = _make_group_plan()
+    plan_b = _make_group_plan(
+        wave_plan=_make_wave_plan(req_ids=["req-b"], spec_req_slots=[5]),
+        running_block_ids=[11],
+        source_block_ids=[10],
+        repair_req_slots=[5],
+        repair_generations=[3],
     )
-    layer_b.stage_temporal_preload.assert_called_once_with(
-        req_ids=["req-a"],
-        req_slots=[4],
-        reload_slots=[2],
-        running_block_ids=[7],
-        reload_generations=[9],
+    runner.build_hybrid_temporal_group_plans = Mock(
+        return_value=[([layer_a0, layer_a1], plan_a), ([layer_b0], plan_b)]
     )
-    assert runner.requests["req-a"].reload_mode == int(
-        HybridSpecReloadMode.PRELOADED
+
+    runner._bind_hybrid_temporal_group_plans(input_fits_in_drafter=True)
+
+    runner.build_hybrid_temporal_group_plans.assert_called_once_with()
+    layer_a0.set_hybrid_temporal_group_plan.assert_called_once_with(plan_a)
+    layer_a1.set_hybrid_temporal_group_plan.assert_called_once_with(plan_a)
+    layer_b0.set_hybrid_temporal_group_plan.assert_called_once_with(plan_b)
+
+
+def test_bind_hybrid_temporal_group_plans_ignores_drafter_fit_gate():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    layer0 = SimpleNamespace(set_hybrid_temporal_group_plan=Mock())
+    plan = _make_group_plan()
+    runner.build_hybrid_temporal_group_plans = Mock(
+        return_value=[([layer0], plan)]
     )
+
+    runner._bind_hybrid_temporal_group_plans(input_fits_in_drafter=False)
+
+    runner.build_hybrid_temporal_group_plans.assert_called_once_with()
+    layer0.set_hybrid_temporal_group_plan.assert_called_once_with(plan)
 
 
 def test_reserve_hybrid_temporal_scratch_workspaces_uses_max_num_reqs():
@@ -484,6 +770,141 @@ def test_reserve_hybrid_temporal_scratch_workspaces_uses_max_num_reqs():
 
     layer_a.reserve_hybrid_temporal_scratch.assert_called_once_with(8)
     layer_b.reserve_hybrid_temporal_scratch.assert_called_once_with(8)
+
+
+def test_initialize_hybrid_temporal_runtime_is_idempotent():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner.max_num_reqs = 8
+    runner._hybrid_temporal_runtime_initialized = False
+    runner._hybrid_temporal_preload_supported = lambda: True
+
+    layer_a = SimpleNamespace(reserve_hybrid_temporal_scratch=Mock())
+    layer_b = SimpleNamespace(reserve_hybrid_temporal_scratch=Mock())
+    runner._get_hybrid_gdn_layers_by_group = lambda: [
+        (0, SimpleNamespace(), [layer_a]),
+        (1, SimpleNamespace(), [layer_b]),
+    ]
+
+    runner.initialize_hybrid_temporal_runtime()
+    runner.initialize_hybrid_temporal_runtime()
+
+    layer_a.reserve_hybrid_temporal_scratch.assert_called_once_with(8)
+    layer_b.reserve_hybrid_temporal_scratch.assert_called_once_with(8)
+    assert runner._hybrid_temporal_runtime_initialized is True
+
+
+def test_initialize_hybrid_temporal_runtime_skips_without_supported_layers():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner._hybrid_temporal_runtime_initialized = False
+    runner._hybrid_temporal_preload_supported = lambda: True
+    runner._get_hybrid_gdn_layers_by_group = lambda: []
+
+    runner.initialize_hybrid_temporal_runtime()
+
+    assert runner._hybrid_temporal_runtime_initialized is False
+
+
+def test_initialize_hybrid_temporal_runtime_binds_all_three_gdn_groups(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner.max_num_reqs = 8
+    runner._hybrid_temporal_runtime_initialized = False
+    runner._hybrid_temporal_preload_supported = lambda: True
+    runner.vllm_config = SimpleNamespace()
+    runner.kv_cache_config = SimpleNamespace(
+        kv_cache_groups=[
+            SimpleNamespace(
+                layer_names=[f"model.layers.{idx}.gdn" for idx in range(0, 40, 4)],
+                kv_cache_spec=MambaSpec(
+                    block_size=4,
+                    shapes=((1, 1),),
+                    dtypes=(torch.float16,),
+                ),
+            ),
+            SimpleNamespace(
+                layer_names=[f"model.layers.{idx}.gdn" for idx in range(1, 41, 4)],
+                kv_cache_spec=MambaSpec(
+                    block_size=4,
+                    shapes=((1, 1),),
+                    dtypes=(torch.float16,),
+                ),
+            ),
+            SimpleNamespace(
+                layer_names=[f"model.layers.{idx}.gdn" for idx in range(2, 42, 4)],
+                kv_cache_spec=MambaSpec(
+                    block_size=4,
+                    shapes=((1, 1),),
+                    dtypes=(torch.float16,),
+                ),
+            ),
+            SimpleNamespace(
+                layer_names=["model.layers.3.attn"],
+                kv_cache_spec=FullAttentionSpec(
+                    block_size=4,
+                    num_kv_heads=1,
+                    head_size=1,
+                    dtype=torch.float16,
+                ),
+            ),
+        ]
+    )
+
+    class FakeLayer:
+
+        def __init__(self, name: str):
+            self.name = name
+            self.reserved_max_num_reqs = None
+            self.bound_plan = None
+
+        def set_hybrid_temporal_group_plan(self, plan) -> None:
+            self.bound_plan = plan
+
+        def reserve_hybrid_temporal_scratch(self, max_num_reqs: int) -> None:
+            self.reserved_max_num_reqs = max_num_reqs
+
+    layer_names = [
+        f"model.layers.{idx}.gdn"
+        for start in range(3)
+        for idx in range(start, start + 40, 4)
+    ]
+    fake_layers = {
+        layer_name: FakeLayer(layer_name) for layer_name in layer_names
+    }
+    monkeypatch.setattr(
+        gpu_model_runner_module,
+        "get_layers_from_vllm_config",
+        lambda vllm_config, layer_cls: fake_layers,
+    )
+
+    runner.initialize_hybrid_temporal_runtime()
+    grouped_layers = runner._get_hybrid_gdn_layers_by_group()
+
+    assert len(grouped_layers) == 3
+    for _, _, layers in grouped_layers:
+        assert len(layers) == 10
+        assert all(layer.reserved_max_num_reqs == 8 for layer in layers)
+
+        plan = _make_group_plan(
+            wave_plan=_make_wave_plan(
+                req_ids=["req-a"],
+                spec_req_slots=[0],
+                spec_query_start_locs=[0, 2],
+                predicted_accept_lens=[1],
+                next_replay_generations=[4],
+            ),
+            repair_row_indices=[0],
+            running_block_ids=[2],
+            source_block_ids=[1],
+            repair_req_slots=[0],
+            repair_target_slots=[1],
+            resident_slots=[0],
+            repair_modes=[HybridSpecRepairMode.FROM_START],
+            repair_generations=[5],
+        )
+        for layer in layers:
+            layer.set_hybrid_temporal_group_plan(plan)
+        assert all(layer.bound_plan is plan for layer in layers)
 
 
 @pytest.mark.parametrize(

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # Datastructures defining a GPU input batch
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
 
 import numpy as np
@@ -26,7 +26,7 @@ from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.thinking_budget_state import (
     maybe_create_thinking_budget_state_holder,
 )
-from vllm.v1.hybrid_spec_offload import HybridSpecReloadMode
+from vllm.v1.hybrid_spec_replay import HybridSpecRepairMode
 from vllm.v1.utils import copy_slice
 from vllm.v1.worker.block_table import MultiGroupBlockTable
 
@@ -61,11 +61,13 @@ class CachedRequestState:
     prev_num_draft_len: int = 0
     accepted_len_ewma: float = 1.0
     predicted_accept_len: int = 1
-    reload_required: bool = False
-    reload_slot: int = 0
-    reload_generation: int = 0
-    reload_mode: int = HybridSpecReloadMode.NONE
-    hybrid_spec_offload_slot: int = -1
+    repair_required: bool = False
+    repair_target_slot: int = 0
+    resident_slot: int = 0
+    repair_generation: int = 0
+    repair_mode: int = HybridSpecRepairMode.NONE
+    hybrid_spec_slot: int = -1
+    hybrid_spec_source_block_ids: dict[int, int] = field(default_factory=dict)
 
     # for pooling models
     pooling_params: PoolingParams | None = None

@@ -43,6 +43,7 @@ def postprocess_mamba_fused_kernel(
     state_inner_sizes_ptr,  # number of elements in inner dimensions
     state_conv_widths_ptr,  # conv width for conv states (0 for temporal)
     state_group_indices_ptr,  # maps state_idx to group index in block table
+    state_copy_enabled_ptr,  # whether align owns this state copy
     # Output: num_accepted_tokens update (for src==dst case)
     num_accepted_tokens_out_ptr,
     # Runtime parameter (varies per batch - NOT constexpr to avoid recompilation)
@@ -98,6 +99,9 @@ def postprocess_mamba_fused_kernel(
     state_elem_size = tl.load(state_elem_sizes_ptr + state_idx)
     state_inner_size = tl.load(state_inner_sizes_ptr + state_idx)
     conv_width = tl.load(state_conv_widths_ptr + state_idx)
+    copy_enabled = tl.load(state_copy_enabled_ptr + state_idx)
+    if copy_enabled == 0:
+        return
 
     # Load the group index for this state, then index into the correct
     # group's block table. Each mamba group has independently allocated
@@ -215,6 +219,26 @@ def get_mamba_groups(kv_cache_config: KVCacheConfig) -> tuple[list[int], MambaSp
     return mamba_group_ids, mamba_specs[0]
 
 
+def get_mamba_state_align_copy_mask(
+    attention: Any,
+    num_states: int,
+) -> tuple[bool, ...]:
+    attention_dict = getattr(attention, "__dict__", {})
+    if (
+        "get_mamba_state_align_copy_mask" not in attention_dict
+        and not hasattr(type(attention), "get_mamba_state_align_copy_mask")
+    ):
+        return (True,) * num_states
+    mask_getter = getattr(attention, "get_mamba_state_align_copy_mask")
+
+    mask = tuple(bool(enabled) for enabled in mask_getter())
+    if len(mask) != num_states:
+        raise ValueError(
+            "get_mamba_state_align_copy_mask must align with kv_cache state order"
+        )
+    return mask
+
+
 @dataclasses.dataclass
 class MambaCopyBuffers:
     src_ptrs: CpuGpuBuffer
@@ -271,6 +295,7 @@ class MambaSpecDecodeGPUContext:
     state_inner_sizes: torch.Tensor  # int64: elements in inner dimensions
     state_conv_widths: torch.Tensor  # int32: conv width (0 for temporal states)
     state_group_indices: torch.Tensor  # int32: maps state_idx to group index
+    state_copy_enabled: torch.Tensor  # bool: whether align owns this state copy
 
     # Configuration
     block_size: int
@@ -337,6 +362,9 @@ class MambaSpecDecodeGPUContext:
             ),
             state_group_indices=torch.zeros(
                 total_states, dtype=torch.int32, device=device
+            ),
+            state_copy_enabled=torch.zeros(
+                total_states, dtype=torch.bool, device=device
             ),
             block_size=mamba_spec.block_size,
             num_layers=num_layers,
@@ -406,8 +434,13 @@ class MambaSpecDecodeGPUContext:
             for layer_name in layer_names:
                 attention = forward_context[layer_name]
                 kv_caches: list[torch.Tensor] = attention.kv_cache
+                copy_mask = get_mamba_state_align_copy_mask(
+                    attention,
+                    len(kv_caches),
+                )
 
                 for state_type_idx, state in enumerate(kv_caches):
+                    self.state_copy_enabled[idx] = copy_mask[state_type_idx]
                     # Base address
                     self.state_base_addrs[idx] = state.data_ptr()
 
@@ -429,6 +462,12 @@ class MambaSpecDecodeGPUContext:
                         copy_func is get_conv_copy_spec
                         or copy_func is get_temporal_copy_spec
                     ), f"unexpected copy func: {copy_func}"
+                    if not copy_mask[state_type_idx]:
+                        self.state_conv_widths[idx] = 0
+                        self.state_inner_sizes[idx] = 0
+                        self.state_group_indices[idx] = group_local_idx
+                        idx += 1
+                        continue
                     if copy_func is get_conv_copy_spec:
                         # Conv state: conv_width is state.size(1)
                         # inner_size is stride(1) = elements per conv position,
@@ -521,6 +560,7 @@ class MambaSpecDecodeGPUContext:
             self.state_inner_sizes,
             self.state_conv_widths,
             self.state_group_indices,
+            self.state_copy_enabled,
             self.num_accepted_tokens_out,
             num_reqs,
             block_size=self.block_size,
@@ -595,7 +635,15 @@ def collect_mamba_copy_meta(
         for layer_name in layer_names:
             attention = forward_context[layer_name]
             kv_caches: list[torch.Tensor] = attention.kv_cache
-            for state, state_copy_func in zip(kv_caches, mamba_state_copy_funcs):
+            copy_mask = get_mamba_state_align_copy_mask(
+                attention,
+                len(kv_caches),
+            )
+            for state, state_copy_func, copy_enabled in zip(
+                kv_caches, mamba_state_copy_funcs, copy_mask
+            ):
+                if not copy_enabled:
+                    continue
                 copy_spec = state_copy_func(
                     state, block_ids, src_block_idx, accept_token_bias + 1
                 )
@@ -687,6 +735,13 @@ def preprocess_mamba(
         # And use block 1 to save the running state.
         curr_state_idx = num_blocks - 1 - num_speculative_blocks
         mamba_state_idx[req_id] = curr_state_idx
+        source_state_idx = curr_state_idx if prev_state_idx == -1 else prev_state_idx
+        source_block_ids = getattr(req_state, "hybrid_spec_source_block_ids", None)
+        if source_block_ids is not None:
+            for mamba_group_id in mamba_group_ids:
+                req_state.hybrid_spec_source_block_ids[mamba_group_id] = (
+                    req_state.block_ids[mamba_group_id][source_state_idx]
+                )
         if prev_state_idx != -1 and prev_state_idx != curr_state_idx:
             collect_mamba_copy_meta(
                 copy_bufs,

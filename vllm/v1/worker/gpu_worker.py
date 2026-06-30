@@ -604,6 +604,8 @@ class Worker(WorkerBase):
         # Warmup and tune the kernels used during model execution before
         # cuda graph capture.
         kernel_warmup(self)
+        if self.model_config.enforce_eager:
+            self.model_runner.initialize_hybrid_temporal_runtime()
 
         cuda_graph_memory_bytes = 0
         if not self.model_config.enforce_eager:

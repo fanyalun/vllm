@@ -8,7 +8,7 @@ from typing import Literal
 import torch
 
 from vllm.config import VllmConfig
-from vllm.v1.hybrid_spec_offload import HybridSpecReloadMode
+from vllm.v1.hybrid_spec_replay import HybridSpecRepairMode
 from vllm.v1.attention.backend import (
     AttentionBackend,
     AttentionCGSupport,
@@ -67,10 +67,12 @@ class GDNAttentionMetadata:
     spec_query_start_loc_cpu: torch.Tensor | None = None
     spec_req_indices_cpu: torch.Tensor | None = None
     non_spec_req_indices_cpu: torch.Tensor | None = None
+    non_spec_repair_generation_cpu: torch.Tensor | None = None
     predicted_accept_len_cpu: torch.Tensor | None = None
-    temporal_reload_mode_cpu: torch.Tensor | None = None
-    reload_slot_cpu: torch.Tensor | None = None
-    reload_generation_cpu: torch.Tensor | None = None
+    temporal_repair_mode_cpu: torch.Tensor | None = None
+    repair_target_slot_cpu: torch.Tensor | None = None
+    repair_generation_cpu: torch.Tensor | None = None
+    next_replay_generation_cpu: torch.Tensor | None = None
 
     # Pre-computed FLA chunk metadata (avoids GPU->CPU sync in prepare_chunk_indices)
     chunk_indices: torch.Tensor | None = None
@@ -223,9 +225,10 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
         spec_req_indices_cpu: torch.Tensor | None = None,
         predicted_accept_len_cpu: torch.Tensor | None = None,
         needs_reload_from_cpu: torch.Tensor | None = None,
-        temporal_reload_mode_cpu: torch.Tensor | None = None,
-        reload_slot_cpu: torch.Tensor | None = None,
-        reload_generation_cpu: torch.Tensor | None = None,
+        temporal_repair_mode_cpu: torch.Tensor | None = None,
+        repair_target_slot_cpu: torch.Tensor | None = None,
+        repair_generation_cpu: torch.Tensor | None = None,
+        next_replay_generation_cpu: torch.Tensor | None = None,
         fast_build: bool = False,
     ) -> GDNAttentionMetadata:
         m = common_attn_metadata
@@ -241,17 +244,17 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             self.vllm_config.cache_config.mamba_cache_mode,
         )
 
-        if temporal_reload_mode_cpu is None and needs_reload_from_cpu is not None:
-            temporal_reload_mode_cpu = torch.where(
+        if temporal_repair_mode_cpu is None and needs_reload_from_cpu is not None:
+            temporal_repair_mode_cpu = torch.where(
                 needs_reload_from_cpu,
                 torch.full(
                     needs_reload_from_cpu.shape,
-                    int(HybridSpecReloadMode.CPU_SHADOW),
+                    int(HybridSpecRepairMode.FROM_START),
                     dtype=torch.int32,
                 ),
                 torch.full(
                     needs_reload_from_cpu.shape,
-                    int(HybridSpecReloadMode.NONE),
+                    int(HybridSpecRepairMode.NONE),
                     dtype=torch.int32,
                 ),
             )
@@ -259,6 +262,7 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
         spec_sequence_masks_cpu: torch.Tensor | None = None
         spec_query_start_loc_cpu: torch.Tensor | None = None
         non_spec_req_indices_cpu: torch.Tensor | None = None
+        non_spec_repair_generation_cpu: torch.Tensor | None = None
         if (
             not self.use_spec_decode
             or num_decode_draft_tokens_cpu is None
@@ -294,6 +298,7 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             non_spec_query_start_loc_cpu = query_start_loc_cpu
             num_accepted_tokens = None
             non_spec_req_indices_cpu = spec_req_indices_cpu
+            non_spec_repair_generation_cpu = repair_generation_cpu
         else:
             query_lens = query_start_loc[1:] - query_start_loc[:-1]
             assert spec_sequence_masks_cpu is not None
@@ -415,14 +420,23 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                 predicted_accept_len_cpu = predicted_accept_len_cpu[
                     spec_sequence_masks_cpu
                 ]
-            if temporal_reload_mode_cpu is not None:
-                temporal_reload_mode_cpu = temporal_reload_mode_cpu[
+            if temporal_repair_mode_cpu is not None:
+                temporal_repair_mode_cpu = temporal_repair_mode_cpu[
                     spec_sequence_masks_cpu
                 ]
-            if reload_slot_cpu is not None:
-                reload_slot_cpu = reload_slot_cpu[spec_sequence_masks_cpu]
-            if reload_generation_cpu is not None:
-                reload_generation_cpu = reload_generation_cpu[
+            if repair_target_slot_cpu is not None:
+                repair_target_slot_cpu = repair_target_slot_cpu[
+                    spec_sequence_masks_cpu
+                ]
+            if repair_generation_cpu is not None:
+                non_spec_repair_generation_cpu = repair_generation_cpu[
+                    ~spec_sequence_masks_cpu
+                ]
+                repair_generation_cpu = repair_generation_cpu[
+                    spec_sequence_masks_cpu
+                ]
+            if next_replay_generation_cpu is not None:
+                next_replay_generation_cpu = next_replay_generation_cpu[
                     spec_sequence_masks_cpu
                 ]
 
@@ -576,10 +590,12 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             num_accepted_tokens=num_accepted_tokens,
             spec_req_indices_cpu=spec_req_indices_cpu,
             non_spec_req_indices_cpu=non_spec_req_indices_cpu,
+            non_spec_repair_generation_cpu=non_spec_repair_generation_cpu,
             predicted_accept_len_cpu=predicted_accept_len_cpu,
-            temporal_reload_mode_cpu=temporal_reload_mode_cpu,
-            reload_slot_cpu=reload_slot_cpu,
-            reload_generation_cpu=reload_generation_cpu,
+            temporal_repair_mode_cpu=temporal_repair_mode_cpu,
+            repair_target_slot_cpu=repair_target_slot_cpu,
+            repair_generation_cpu=repair_generation_cpu,
+            next_replay_generation_cpu=next_replay_generation_cpu,
             nums_dict=nums_dict,
             batch_ptr=batch_ptr,
             token_chunk_offset_ptr=token_chunk_offset_ptr,

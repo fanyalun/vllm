@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -209,11 +210,15 @@ def _make_postprocess_scheduler_output(
 
 
 def _make_mock_attention(
-    conv_state: torch.Tensor, temporal_state: torch.Tensor
-) -> MagicMock:
+    conv_state: torch.Tensor,
+    temporal_state: torch.Tensor,
+    *,
+    copy_mask: tuple[bool, ...] | None = None,
+) -> SimpleNamespace:
     """Create a mock attention object with kv_cache."""
-    attention = MagicMock()
-    attention.kv_cache = [conv_state, temporal_state]
+    attention = SimpleNamespace(kv_cache=[conv_state, temporal_state])
+    if copy_mask is not None:
+        attention.get_mamba_state_align_copy_mask = lambda: copy_mask
     return attention
 
 
@@ -263,6 +268,82 @@ def _make_dual_states(
         for name, c, t in zip(layer_names, conv_gpu, temporal_gpu)
     }
     return conv_py, temporal_py, conv_gpu, temporal_gpu, fwd_py, fwd_gpu
+
+
+def test_collect_mamba_copy_meta_skips_temporal_state_when_align_mask_disables_it():
+    cfg = _TestConfig(num_layers=1, num_reqs=1, max_num_reqs=1)
+    device = torch.device("cpu")
+    kv_cache_config = _make_kv_cache_config(cfg, ["layer_0"])
+    copy_bufs = MambaCopyBuffers.create(
+        max_num_reqs=1,
+        kv_cache_config=kv_cache_config,
+        copy_funcs=_COPY_FUNCS,
+        make_buffer=lambda n, dtype: _MockCpuGpuBuffer(n, dtype, device),
+    )
+    conv = torch.randn(
+        cfg.num_blocks,
+        cfg.conv_width,
+        cfg.conv_inner_dim,
+        dtype=cfg.dtype,
+        device=device,
+    )
+    temporal = torch.randn(
+        cfg.num_blocks,
+        cfg.temporal_state_dim,
+        dtype=cfg.dtype,
+        device=device,
+    )
+    req_state = SimpleNamespace(block_ids=(list(range(cfg.num_blocks)),))
+    forward_context = {
+        "layer_0": _make_mock_attention(conv, temporal, copy_mask=(True, False))
+    }
+
+    collect_mamba_copy_meta(
+        copy_bufs,
+        kv_cache_config,
+        _COPY_FUNCS,
+        [0],
+        0,
+        1,
+        0,
+        req_state,
+        forward_context,
+    )
+
+    assert copy_bufs.offset == 1
+
+
+def test_initialize_from_forward_context_tracks_align_copy_mask():
+    cfg = _TestConfig(num_layers=1)
+    device = torch.device("cpu")
+    kv_cache_config = _make_kv_cache_config(cfg, ["layer_0"])
+    gpu_ctx = _make_gpu_ctx(cfg, kv_cache_config, device)
+    conv = torch.randn(
+        cfg.num_blocks,
+        cfg.conv_width,
+        cfg.conv_inner_dim,
+        dtype=cfg.dtype,
+        device=device,
+    )
+    temporal = torch.randn(
+        cfg.num_blocks,
+        cfg.temporal_state_dim,
+        dtype=cfg.dtype,
+        device=device,
+    )
+    forward_context = {
+        "layer_0": _make_mock_attention(conv, temporal, copy_mask=(True, False))
+    }
+    block_table = torch.zeros((1, 2), dtype=torch.int32, device=device)
+
+    gpu_ctx.initialize_from_forward_context(
+        kv_cache_config,
+        forward_context,
+        _COPY_FUNCS,
+        [block_table],
+    )
+
+    assert gpu_ctx.state_copy_enabled.tolist() == [True, False]
 
 
 def _make_dual_layer_state(

@@ -42,6 +42,9 @@ class WorkspaceManager:
         self._current_workspaces: list[torch.Tensor | None] = [
             None
         ] * self._num_ubatches
+        self._pending_reuse_events: list[list[torch.Event]] = [
+            [] for _ in range(self._num_ubatches)
+        ]
         self._locked: bool = False
 
     @staticmethod
@@ -107,7 +110,11 @@ class WorkspaceManager:
         # Calculate cumulative offsets using itertools.accumulate
         offsets = list(accumulate([0] + aligned_bytes[:-1]))
 
-        current_workspace = self._ensure_workspace_size(total_bytes)
+        ubatch_id = dbo_current_ubatch_id()
+        self._wait_for_pending_reuse_event(ubatch_id)
+        current_workspace = self._ensure_workspace_size_for_ubatch(
+            total_bytes, ubatch_id
+        )
 
         return [
             current_workspace[offsets[i] : offsets[i] + actual_bytes[i]]
@@ -130,6 +137,22 @@ class WorkspaceManager:
         required_bytes = self._required_workspace_bytes(*shapes_and_dtypes)
         for ubatch_id in range(self._num_ubatches):
             self._ensure_workspace_size_for_ubatch(required_bytes, ubatch_id)
+
+    def mark_in_use_until(
+        self, event: torch.Event, ubatch_id: int | None = None
+    ) -> None:
+        if ubatch_id is None:
+            ubatch_id = dbo_current_ubatch_id()
+        self._pending_reuse_events[ubatch_id].append(event)
+
+    def _wait_for_pending_reuse_event(self, ubatch_id: int) -> None:
+        pending_events = self._pending_reuse_events[ubatch_id]
+        if not pending_events:
+            return
+        current_stream = torch.cuda.current_stream()
+        for pending_event in pending_events:
+            current_stream.wait_event(pending_event)
+        pending_events.clear()
 
     def _ensure_workspace_size(self, required_bytes: int) -> torch.Tensor:
         return self._ensure_workspace_size_for_ubatch(

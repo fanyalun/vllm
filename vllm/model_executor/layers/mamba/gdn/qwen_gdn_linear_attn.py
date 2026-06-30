@@ -2,9 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Inference-only Qwen3-Next/Qwen3.5 model."""
 
-from collections import deque
 import functools
-from dataclasses import dataclass
 from typing import Literal
 
 import torch
@@ -30,6 +28,7 @@ from vllm.model_executor.layers.fla.ops import (
     fused_post_conv_prep,
     fused_recurrent_gated_delta_rule_packed_decode,
     fused_sigmoid_gating_delta_rule_update,
+    fused_sigmoid_gating_delta_rule_update_capture_tape,
 )
 from vllm.model_executor.layers.fla.ops.chunk import l2norm_fwd
 from vllm.model_executor.layers.fla.ops.utils import FLA_CHUNK_SIZE
@@ -40,6 +39,10 @@ from vllm.model_executor.layers.linear import (
     RowParallelLinear,
 )
 from vllm.model_executor.layers.mamba.gdn.base import GatedDeltaNetAttention
+from vllm.model_executor.layers.mamba.gdn.hybrid_temporal_replay import (
+    HybridTemporalReplayHelper,
+    HybridTemporalReplayWorkspace,
+)
 from vllm.model_executor.layers.mamba.mamba_mixer2 import mamba_v2_sharded_weight_loader
 from vllm.model_executor.layers.mamba.mamba_utils import (
     MambaStateShapeCalculator,
@@ -66,7 +69,9 @@ from vllm.utils.torch_utils import (
     _resolve_layer_name,
     direct_register_custom_op,
 )
-from vllm.v1.hybrid_spec_offload import HybridSpecReloadMode
+from vllm.v1.hybrid_spec_replay import (
+    HybridTemporalGroupPlan,
+)
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadata
 
 # Optional ROCm AITER Triton kernels for the GDN decode fast-path.
@@ -84,31 +89,6 @@ if GDN_AITER_TRITON_AVAILABLE:
     )
 
 logger = init_logger(__name__)
-
-
-@dataclass
-class HybridSpecStateOffloadWorkspace:
-    temporal_state_cpu_shadow: torch.Tensor
-    shadow_copy_done_event: torch.cuda.Event | None = None
-    preload_stream: torch.cuda.Stream | None = None
-    preload_done_events: list[torch.cuda.Event | None] | None = None
-    preload_generation_per_req: list[int] | None = None
-    pending_preload_timings: deque[
-        tuple[torch.cuda.Event, torch.cuda.Event, int]
-    ] | None = None
-    pending_preloaded_timings: deque[
-        tuple[torch.cuda.Event, torch.cuda.Event, int]
-    ] | None = None
-    pending_fallback_timings: deque[
-        tuple[torch.cuda.Event, torch.cuda.Event, int]
-    ] | None = None
-    preload_total_ms: float = 0.0
-    preload_call_count: int = 0
-    preload_req_count: int = 0
-    preloaded_total_ms: float = 0.0
-    preloaded_row_count: int = 0
-    fallback_total_ms: float = 0.0
-    fallback_row_count: int = 0
 
 
 # TODO(arpera): remove ``_is_libs_cu13_install_intact`` and its caller in
@@ -585,35 +565,55 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         self.enable_packed_recurrent_decode = (
             envs.VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE
         )
-        self.hybrid_spec_state_offload_workspace = None
+        self.hybrid_temporal_replay_workspace = None
+        self.hybrid_temporal_replay_helper = None
         if self.hybrid_spec_state_offload_enabled:
             _, temporal_state_dtype = self.get_state_dtype()
             max_num_reqs = vllm_config.scheduler_config.max_num_seqs
             num_candidate_states = self.num_spec + 1
+            h = self.num_k_heads // self.tp_size
             hv = self.num_v_heads // self.tp_size
-            self.hybrid_spec_state_offload_workspace = (
-                HybridSpecStateOffloadWorkspace(
-                    temporal_state_cpu_shadow=torch.empty(
-                        (
-                            max_num_reqs,
-                            num_candidate_states,
-                            hv,
-                            self.head_v_dim,
-                            self.head_k_dim,
-                        ),
+            forward_dtype = self.model_config.dtype
+            self.hybrid_temporal_replay_workspace = (
+                HybridTemporalReplayWorkspace(
+                    segment_start_cpu_shadow=torch.empty(
+                        (max_num_reqs, hv, self.head_v_dim, self.head_k_dim),
                         dtype=temporal_state_dtype,
                         device="cpu",
                         pin_memory=True,
                     ),
-                    preload_stream=torch.cuda.Stream(
-                        device=current_platform.current_device()
+                    key_tape_cpu_shadow=torch.empty(
+                        (max_num_reqs, num_candidate_states, h, self.head_k_dim),
+                        dtype=forward_dtype,
+                        device="cpu",
+                        pin_memory=True,
                     ),
-                    preload_done_events=[None] * max_num_reqs,
-                    preload_generation_per_req=[-1] * max_num_reqs,
-                    pending_preload_timings=deque(),
-                    pending_preloaded_timings=deque(),
-                    pending_fallback_timings=deque(),
+                    value_tape_cpu_shadow=torch.empty(
+                        (max_num_reqs, num_candidate_states, hv, self.head_v_dim),
+                        dtype=forward_dtype,
+                        device="cpu",
+                        pin_memory=True,
+                    ),
+                    g_tape_cpu_shadow=torch.empty(
+                        (max_num_reqs, num_candidate_states, hv),
+                        dtype=torch.float32,
+                        device="cpu",
+                        pin_memory=True,
+                    ),
+                    beta_tape_cpu_shadow=torch.empty(
+                        (max_num_reqs, num_candidate_states, hv),
+                        dtype=torch.float32,
+                        device="cpu",
+                        pin_memory=True,
+                    ),
+                    saved_generation_per_req=[-1] * max_num_reqs,
                 )
+            )
+            self.hybrid_temporal_replay_helper = HybridTemporalReplayHelper(
+                layer_name=prefix,
+                workspace=self.hybrid_temporal_replay_workspace,
+                ssm_state_getter=lambda: self.kv_cache[1],
+                replay_buffer_getter=self.acquire_hybrid_temporal_replay_buffers,
             )
 
         compilation_config = get_current_vllm_config().compilation_config
@@ -1316,274 +1316,62 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             core_attn_out=core_attn_out,
             )
 
-    def stage_temporal_preload(
+    def _get_hybrid_temporal_replay_helper(self) -> HybridTemporalReplayHelper:
+        helper = getattr(self, "hybrid_temporal_replay_helper", None)
+        workspace = self.hybrid_temporal_replay_workspace
+        if helper is None and workspace is not None:
+            helper = HybridTemporalReplayHelper(
+                layer_name=getattr(self, "prefix", ""),
+                workspace=workspace,
+                ssm_state_getter=lambda: self.kv_cache[1],
+                replay_buffer_getter=self.acquire_hybrid_temporal_replay_buffers,
+            )
+            self.hybrid_temporal_replay_helper = helper
+        assert helper is not None
+        return helper
+
+    def set_hybrid_temporal_group_plan(
         self,
-        req_slots: list[int],
-        reload_slots: list[int],
-        running_block_ids: list[int],
-        reload_generations: list[int],
-        req_ids: list[str] | None = None,
+        plan: HybridTemporalGroupPlan | None,
     ) -> None:
-        del req_ids
-        if not req_slots:
-            return
+        self._get_hybrid_temporal_replay_helper().set_group_plan(plan)
 
-        workspace = self.hybrid_spec_state_offload_workspace
-        assert workspace is not None
-        assert workspace.preload_stream is not None
-        assert workspace.preload_done_events is not None
-        assert workspace.preload_generation_per_req is not None
-        assert workspace.pending_preload_timings is not None
+    def get_mamba_state_align_copy_mask(self) -> tuple[bool, ...]:
+        if self.hybrid_temporal_replay_workspace is None:
+            return super().get_mamba_state_align_copy_mask()
+        return (True, False)
 
-        if workspace.shadow_copy_done_event is not None:
-            workspace.preload_stream.wait_event(workspace.shadow_copy_done_event)
-
-        ssm_state = self.kv_cache[1]
-        with torch.cuda.stream(workspace.preload_stream):
-            start_event = torch.cuda.Event(enable_timing=True)
-            end_event = torch.cuda.Event(enable_timing=True)
-            start_event.record(workspace.preload_stream)
-            for req_slot, reload_slot, running_block_id, reload_generation in zip(
-                req_slots,
-                reload_slots,
-                running_block_ids,
-                reload_generations,
-            ):
-                ssm_state[running_block_id].copy_(
-                    workspace.temporal_state_cpu_shadow[req_slot, reload_slot],
-                    non_blocking=True,
-                )
-                event = workspace.preload_done_events[req_slot]
-                if event is None:
-                    event = torch.cuda.Event()
-                    workspace.preload_done_events[req_slot] = event
-                event.record(workspace.preload_stream)
-                workspace.preload_generation_per_req[req_slot] = reload_generation
-            end_event.record(workspace.preload_stream)
-        workspace.preload_call_count += 1
-        workspace.preload_req_count += len(req_slots)
-        workspace.pending_preload_timings.append(
-            (start_event, end_event, len(req_slots))
-        )
-        self._drain_reload_timing_events(workspace)
-
-    def _drain_reload_timing_events(
-        self,
-        workspace: HybridSpecStateOffloadWorkspace,
-        *,
-        synchronize: bool = False,
-    ) -> None:
-        timing_queues = (
-            ("preload", workspace.pending_preload_timings),
-            ("preloaded", workspace.pending_preloaded_timings),
-            ("fallback", workspace.pending_fallback_timings),
-        )
-        if synchronize:
-            torch.cuda.synchronize()
-        for kind, queue in timing_queues:
-            if queue is None:
-                continue
-            while queue:
-                start_event, end_event, count = queue[0]
-                if not synchronize and not end_event.query():
-                    break
-                queue.popleft()
-                elapsed_ms = float(start_event.elapsed_time(end_event))
-                if kind == "preload":
-                    workspace.preload_total_ms += elapsed_ms
-                elif kind == "preloaded":
-                    workspace.preloaded_total_ms += elapsed_ms
-                    workspace.preloaded_row_count += count
-                else:
-                    workspace.fallback_total_ms += elapsed_ms
-                    workspace.fallback_row_count += count
-
-    def reset_reload_timing_stats(self) -> None:
-        workspace = self.hybrid_spec_state_offload_workspace
+    def reset_repair_timing_stats(self) -> None:
+        workspace = self.hybrid_temporal_replay_workspace
         if workspace is None:
             return
-        self._drain_reload_timing_events(workspace, synchronize=True)
-        if workspace.pending_preload_timings is not None:
-            workspace.pending_preload_timings.clear()
-        if workspace.pending_preloaded_timings is not None:
-            workspace.pending_preloaded_timings.clear()
-        if workspace.pending_fallback_timings is not None:
-            workspace.pending_fallback_timings.clear()
-        workspace.preload_total_ms = 0.0
-        workspace.preload_call_count = 0
-        workspace.preload_req_count = 0
-        workspace.preloaded_total_ms = 0.0
-        workspace.preloaded_row_count = 0
-        workspace.fallback_total_ms = 0.0
-        workspace.fallback_row_count = 0
+        self._get_hybrid_temporal_replay_helper().reset_repair_timing_stats()
 
-    def snapshot_reload_timing_stats(self) -> dict[str, float | int]:
-        workspace = self.hybrid_spec_state_offload_workspace
+    def snapshot_repair_timing_stats(self) -> dict[str, float | int]:
+        workspace = self.hybrid_temporal_replay_workspace
         if workspace is None:
             return {
-                "preload_total_ms": 0.0,
-                "preload_call_count": 0,
-                "preload_req_count": 0,
-                "preloaded_total_ms": 0.0,
-                "preloaded_row_count": 0,
-                "fallback_total_ms": 0.0,
-                "fallback_row_count": 0,
+                "repair_copy_ms": 0.0,
+                "repair_compute_ms": 0.0,
+                "repair_row_count": 0,
+                "repair_from_start_count": 0,
+                "repair_from_resident_count": 0,
+                "checkpoint_save_ms": 0.0,
+                "tape_save_ms": 0.0,
             }
-        self._drain_reload_timing_events(workspace, synchronize=True)
-        return {
-            "preload_total_ms": float(workspace.preload_total_ms),
-            "preload_call_count": int(workspace.preload_call_count),
-            "preload_req_count": int(workspace.preload_req_count),
-            "preloaded_total_ms": float(workspace.preloaded_total_ms),
-            "preloaded_row_count": int(workspace.preloaded_row_count),
-            "fallback_total_ms": float(workspace.fallback_total_ms),
-            "fallback_row_count": int(workspace.fallback_row_count),
-        }
+        return self._get_hybrid_temporal_replay_helper().snapshot_repair_timing_stats()
 
-    def _prepare_temporal_initial_state(
+    def _prepare_temporal_state_for_verify(
         self,
         ssm_state: torch.Tensor,
         running_state_indices: torch.Tensor,
-        attn_metadata: GDNAttentionMetadata,
     ) -> torch.Tensor:
-        initial_state = ssm_state[running_state_indices].contiguous()
-        reload_modes = attn_metadata.temporal_reload_mode_cpu
-        if reload_modes is None or not bool(reload_modes.any().item()):
-            return initial_state
+        return self._get_hybrid_temporal_replay_helper().prepare_temporal_state_for_verify(
+            ssm_state=ssm_state,
+            running_state_indices=running_state_indices,
+        )
 
-        workspace = self.hybrid_spec_state_offload_workspace
-        assert workspace is not None
-        assert attn_metadata.spec_req_indices_cpu is not None
-        assert attn_metadata.reload_slot_cpu is not None
-        assert workspace.preload_done_events is not None
-        assert workspace.preload_generation_per_req is not None
-        assert workspace.pending_preloaded_timings is not None
-        assert workspace.pending_fallback_timings is not None
-
-        current_stream = torch.cuda.current_stream()
-        preloaded_rows: list[tuple[int, int, int]] = []
-        fallback_rows: list[tuple[int, int, int, int]] = []
-        for row, reload_mode in enumerate(reload_modes.tolist()):
-            if reload_mode == int(HybridSpecReloadMode.NONE):
-                continue
-            req_idx = int(attn_metadata.spec_req_indices_cpu[row].item())
-            reload_slot = int(attn_metadata.reload_slot_cpu[row].item())
-            running_idx = int(running_state_indices[row].item())
-            reload_generation = -1
-            if attn_metadata.reload_generation_cpu is not None:
-                reload_generation = int(
-                    attn_metadata.reload_generation_cpu[row].item()
-                )
-
-            if (
-                reload_mode == int(HybridSpecReloadMode.PRELOADED)
-                and workspace.preload_generation_per_req[req_idx]
-                == reload_generation
-            ):
-                preload_done_event = workspace.preload_done_events[req_idx]
-                if preload_done_event is not None:
-                    preloaded_rows.append((row, req_idx, running_idx))
-                    continue
-
-            fallback_rows.append((row, req_idx, reload_slot, running_idx))
-
-        if preloaded_rows:
-            start_event = torch.cuda.Event(enable_timing=True)
-            end_event = torch.cuda.Event(enable_timing=True)
-            start_event.record(current_stream)
-            for row, req_idx, running_idx in preloaded_rows:
-                preload_done_event = workspace.preload_done_events[req_idx]
-                if preload_done_event is not None:
-                    current_stream.wait_event(preload_done_event)
-                initial_state[row].copy_(ssm_state[running_idx], non_blocking=True)
-            end_event.record(current_stream)
-            workspace.pending_preloaded_timings.append(
-                (start_event, end_event, len(preloaded_rows))
-            )
-
-        if fallback_rows:
-            if workspace.shadow_copy_done_event is not None:
-                current_stream.wait_event(workspace.shadow_copy_done_event)
-            start_event = torch.cuda.Event(enable_timing=True)
-            end_event = torch.cuda.Event(enable_timing=True)
-            start_event.record(current_stream)
-            for row, req_idx, reload_slot, running_idx in fallback_rows:
-                shadow_state = workspace.temporal_state_cpu_shadow[
-                    req_idx, reload_slot
-                ]
-                initial_state[row].copy_(shadow_state, non_blocking=True)
-                ssm_state[running_idx].copy_(initial_state[row], non_blocking=True)
-            end_event.record(current_stream)
-            workspace.pending_fallback_timings.append(
-                (start_event, end_event, len(fallback_rows))
-            )
-
-        self._drain_reload_timing_events(workspace)
-        return initial_state
-
-    def _store_temporal_shadow(
-        self,
-        ssm_state: torch.Tensor,
-        running_state_indices: torch.Tensor,
-        final_states: torch.Tensor,
-        attn_metadata: GDNAttentionMetadata,
-    ) -> None:
-        workspace = self.hybrid_spec_state_offload_workspace
-        assert workspace is not None
-        assert attn_metadata.spec_query_start_loc_cpu is not None
-        assert attn_metadata.spec_req_indices_cpu is not None
-        assert attn_metadata.predicted_accept_len_cpu is not None
-
-        query_start_loc = attn_metadata.spec_query_start_loc_cpu.tolist()
-        req_indices = attn_metadata.spec_req_indices_cpu.tolist()
-        predicted_accept_lens = attn_metadata.predicted_accept_len_cpu.tolist()
-        running_state_indices_list = running_state_indices.tolist()
-
-        for row, (start, end) in enumerate(zip(query_start_loc, query_start_loc[1:])):
-            predicted_len = int(predicted_accept_lens[row])
-            predicted_idx = start + predicted_len - 1
-            running_idx = int(running_state_indices_list[row])
-            req_idx = int(req_indices[row])
-
-            ssm_state[running_idx].copy_(final_states[predicted_idx], non_blocking=True)
-            workspace.temporal_state_cpu_shadow[req_idx, : end - start].copy_(
-                final_states[start:end], non_blocking=True
-            )
-
-        self._record_temporal_shadow_copy(workspace)
-
-    def _record_temporal_shadow_copy(
-        self, workspace: HybridSpecStateOffloadWorkspace
-    ) -> None:
-        if workspace.shadow_copy_done_event is None:
-            workspace.shadow_copy_done_event = torch.cuda.Event()
-        workspace.shadow_copy_done_event.record(torch.cuda.current_stream())
-
-    def _store_non_spec_offload_running_states(
-        self,
-        ssm_state: torch.Tensor,
-        running_state_indices: torch.Tensor | None,
-        attn_metadata: GDNAttentionMetadata,
-    ) -> None:
-        if running_state_indices is None:
-            return
-
-        workspace = self.hybrid_spec_state_offload_workspace
-        assert workspace is not None
-        if attn_metadata.non_spec_req_indices_cpu is None:
-            return
-
-        req_indices = attn_metadata.non_spec_req_indices_cpu.tolist()
-        running_state_indices_list = running_state_indices.tolist()
-        for req_idx, running_idx in zip(req_indices, running_state_indices_list):
-            workspace.temporal_state_cpu_shadow[int(req_idx), 0].copy_(
-                ssm_state[int(running_idx)],
-                non_blocking=True,
-            )
-
-        self._record_temporal_shadow_copy(workspace)
-
-    def _forward_core_spec_offload(
+    def _forward_core_spec_replay(
         self,
         query_spec: torch.Tensor,
         key_spec: torch.Tensor,
@@ -1594,13 +1382,14 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         running_state_indices: torch.Tensor,
         attn_metadata: GDNAttentionMetadata,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        workspace = self.hybrid_spec_state_offload_workspace
+        workspace = self.hybrid_temporal_replay_workspace
         assert workspace is not None
         assert attn_metadata.spec_query_start_loc is not None
         assert attn_metadata.num_accepted_tokens is not None
 
-        initial_state = self._prepare_temporal_initial_state(
-            ssm_state, running_state_indices, attn_metadata
+        helper = self._get_hybrid_temporal_replay_helper()
+        initial_state = self._prepare_temporal_state_for_verify(
+            ssm_state, running_state_indices
         )
         num_spec_decodes = attn_metadata.num_spec_decodes
         initial_state_padded = torch.empty(
@@ -1621,10 +1410,15 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             .expand(-1, attn_metadata.spec_max_query_len)
             .contiguous()
         )
-        scratch = self.acquire_hybrid_temporal_scratch(
+        scratch = self.acquire_hybrid_temporal_verify_scratch(
             attn_metadata.num_spec_decode_tokens
         )
-        core_attn_out_spec, final_states = fused_sigmoid_gating_delta_rule_update(
+        (
+            core_attn_out_spec,
+            final_states,
+            saved_g,
+            saved_beta,
+        ) = fused_sigmoid_gating_delta_rule_update_capture_tape(
             A_log=self.A_log,
             a=a,
             b=b,
@@ -1642,8 +1436,17 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             num_accepted_tokens=attn_metadata.num_accepted_tokens,
             use_qk_l2norm_in_kernel=True,
         )
-        self._store_temporal_shadow(
-            ssm_state, running_state_indices, final_states, attn_metadata
+        assert attn_metadata.spec_query_start_loc_cpu is not None
+        assert helper.group_plan is not None
+        helper.store_replay_artifacts(
+            initial_state=initial_state,
+            running_state_indices=running_state_indices,
+            key=key_spec,
+            value=value_spec,
+            saved_g=saved_g,
+            saved_beta=saved_beta,
+            final_states=final_states,
+            wave_plan=helper.group_plan.wave_plan,
         )
         return core_attn_out_spec, final_states
 
@@ -1836,7 +1639,7 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             if self.hybrid_spec_state_offload_enabled:
                 assert spec_state_indices_tensor is not None
                 core_attn_out_spec, last_recurrent_state = (
-                    self._forward_core_spec_offload(
+                    self._forward_core_spec_replay(
                         query_spec=query_spec,
                         key_spec=key_spec,
                         value_spec=value_spec,
@@ -1919,16 +1722,6 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             )
         else:
             core_attn_out_non_spec, last_recurrent_state = None, None
-
-        if (
-            self.hybrid_spec_state_offload_enabled
-            and core_attn_out_non_spec is not None
-        ):
-            self._store_non_spec_offload_running_states(
-                ssm_state=ssm_state,
-                running_state_indices=non_spec_state_indices_tensor,
-                attn_metadata=attn_metadata,
-            )
 
         # 3. Merge core attention output
         if spec_sequence_masks is not None and core_attn_out_non_spec is not None:
@@ -2063,14 +1856,6 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             ssm_state_indices=non_spec_state_indices_tensor[:num_actual_tokens],  # type: ignore[index]
             use_qk_l2norm_in_kernel=True,
         )
-        if self.hybrid_spec_state_offload_enabled:
-            self._store_non_spec_offload_running_states(
-                ssm_state=ssm_state,
-                running_state_indices=non_spec_state_indices_tensor[
-                    :num_actual_tokens
-                ],
-                attn_metadata=attn_metadata,
-            )
         return
 
 
