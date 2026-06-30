@@ -64,7 +64,10 @@ def test_fused_sigmoid_gating_delta_rule_update_non_spec(
     ssm_state = torch.rand(
         total_entries, num_v_heads, head_k_dim, head_v_dim, dtype=dtype
     )
-    state_indices = torch.randperm(total_entries, dtype=torch.int32)[:num_tokens]
+    # Index 0 is reserved as NULL_BLOCK_ID for continuous batching state slots.
+    state_indices = (
+        torch.randperm(total_entries - 1, dtype=torch.int32)[:num_tokens] + 1
+    )
     cu_seqlens = torch.arange(0, num_tokens + 1, dtype=torch.int32)
 
     beta = b.sigmoid()
@@ -150,10 +153,10 @@ def test_fused_sigmoid_gating_delta_rule_update_spec(
     ssm_state = torch.rand(
         total_entries, num_v_heads, head_k_dim, head_v_dim, dtype=dtype
     )
-    state_indices = torch.randperm(
-        total_entries,
-        dtype=torch.int32,
-    )[:num_tokens].view(num_reqs, num_speculative_tokens + 1)
+    # Index 0 is reserved as NULL_BLOCK_ID for continuous batching state slots.
+    state_indices = (
+        torch.randperm(total_entries - 1, dtype=torch.int32)[:num_tokens] + 1
+    ).view(num_reqs, num_speculative_tokens + 1)
     num_accepted_tokens = torch.randint(
         1, num_speculative_tokens + 1, (num_reqs,), dtype=torch.int32
     )
