@@ -256,7 +256,68 @@ def _empty_hybrid_reload_timing_stats() -> dict[str, float | int]:
         "preloaded_row_count": 0,
         "fallback_total_ms": 0.0,
         "fallback_row_count": 0,
+        "prepare_copy_ms": 0.0,
+        "repair_compute_ms": 0.0,
+        "repair_row_count": 0,
+        "repair_from_start_count": 0,
+        "repair_from_resident_count": 0,
+        "verify_attention_ms": 0.0,
+        "spill_copy_ms": 0.0,
+        "layer_total_ms": 0.0,
+        "verify_call_count": 0,
+        "checkpoint_save_ms": 0.0,
+        "post_replay_state_gather_ms": 0.0,
+        "capture_materialize_ms": 0.0,
+        "segment_start_save_ms": 0.0,
+        "tape_save_ms": 0.0,
     }
+
+
+def _accumulate_hybrid_reload_timing_stats(
+    total: dict[str, float | int],
+    worker_stats: dict[str, float | int],
+) -> None:
+    total["preload_total_ms"] += float(worker_stats.get("preload_total_ms", 0.0))
+    total["preload_call_count"] += int(worker_stats.get("preload_call_count", 0))
+    total["preload_req_count"] += int(worker_stats.get("preload_req_count", 0))
+    total["preloaded_total_ms"] += float(
+        worker_stats.get("preloaded_total_ms", 0.0)
+    )
+    total["preloaded_row_count"] += int(
+        worker_stats.get("preloaded_row_count", 0)
+    )
+    total["fallback_total_ms"] += float(worker_stats.get("fallback_total_ms", 0.0))
+    total["fallback_row_count"] += int(worker_stats.get("fallback_row_count", 0))
+    total["prepare_copy_ms"] += float(worker_stats.get("prepare_copy_ms", 0.0))
+    total["repair_compute_ms"] += float(
+        worker_stats.get("repair_compute_ms", 0.0)
+    )
+    total["verify_attention_ms"] += float(
+        worker_stats.get("verify_attention_ms", 0.0)
+    )
+    total["spill_copy_ms"] += float(worker_stats.get("spill_copy_ms", 0.0))
+    total["layer_total_ms"] += float(worker_stats.get("layer_total_ms", 0.0))
+    total["verify_call_count"] += int(worker_stats.get("verify_call_count", 0))
+    total["repair_row_count"] += int(worker_stats.get("repair_row_count", 0))
+    total["repair_from_start_count"] += int(
+        worker_stats.get("repair_from_start_count", 0)
+    )
+    total["repair_from_resident_count"] += int(
+        worker_stats.get("repair_from_resident_count", 0)
+    )
+    total["checkpoint_save_ms"] += float(
+        worker_stats.get("checkpoint_save_ms", 0.0)
+    )
+    total["post_replay_state_gather_ms"] += float(
+        worker_stats.get("post_replay_state_gather_ms", 0.0)
+    )
+    total["capture_materialize_ms"] += float(
+        worker_stats.get("capture_materialize_ms", 0.0)
+    )
+    total["segment_start_save_ms"] += float(
+        worker_stats.get("segment_start_save_ms", 0.0)
+    )
+    total["tape_save_ms"] += float(worker_stats.get("tape_save_ms", 0.0))
 
 
 @dataclass
@@ -310,6 +371,16 @@ class ConditionRawData:
     hybrid_reload_preloaded_row_count: int
     hybrid_reload_fallback_total_ms: float
     hybrid_reload_fallback_row_count: int
+    hybrid_replay_prepare_copy_ms: float
+    hybrid_replay_repair_compute_ms: float
+    hybrid_replay_verify_attention_ms: float
+    hybrid_replay_spill_copy_ms: float
+    hybrid_replay_layer_total_ms: float
+    hybrid_replay_verify_call_count: int
+    hybrid_replay_checkpoint_save_ms: float
+    hybrid_replay_post_replay_state_gather_ms: float
+    hybrid_replay_capture_materialize_ms: float
+    hybrid_replay_segment_start_save_ms: float
     step_histograms: np.ndarray
     step_total_tokens: np.ndarray
     step_total_ms: np.ndarray
@@ -527,6 +598,39 @@ class ConditionRawData:
             "hybrid_reload_fallback_row_count": np.asarray(
                 [self.hybrid_reload_fallback_row_count], dtype=np.int64
             ),
+            "hybrid_replay_prepare_copy_ms": np.asarray(
+                [self.hybrid_replay_prepare_copy_ms], dtype=np.float64
+            ),
+            "hybrid_replay_repair_compute_ms": np.asarray(
+                [self.hybrid_replay_repair_compute_ms], dtype=np.float64
+            ),
+            "hybrid_replay_verify_attention_ms": np.asarray(
+                [self.hybrid_replay_verify_attention_ms], dtype=np.float64
+            ),
+            "hybrid_replay_spill_copy_ms": np.asarray(
+                [self.hybrid_replay_spill_copy_ms], dtype=np.float64
+            ),
+            "hybrid_replay_layer_total_ms": np.asarray(
+                [self.hybrid_replay_layer_total_ms], dtype=np.float64
+            ),
+            "hybrid_replay_verify_call_count": np.asarray(
+                [self.hybrid_replay_verify_call_count], dtype=np.int64
+            ),
+            "hybrid_replay_checkpoint_save_ms": np.asarray(
+                [self.hybrid_replay_checkpoint_save_ms], dtype=np.float64
+            ),
+            "hybrid_replay_post_replay_state_gather_ms": np.asarray(
+                [self.hybrid_replay_post_replay_state_gather_ms],
+                dtype=np.float64,
+            ),
+            "hybrid_replay_capture_materialize_ms": np.asarray(
+                [self.hybrid_replay_capture_materialize_ms],
+                dtype=np.float64,
+            ),
+            "hybrid_replay_segment_start_save_ms": np.asarray(
+                [self.hybrid_replay_segment_start_save_ms],
+                dtype=np.float64,
+            ),
             "step_histograms": self.step_histograms,
             "step_total_tokens": self.step_total_tokens,
             "step_total_ms": self.step_total_ms,
@@ -719,6 +823,16 @@ class CollectedConditionSummary:
     hybrid_reload_preloaded_row_count: int
     hybrid_reload_fallback_total_ms: float
     hybrid_reload_fallback_row_count: int
+    hybrid_replay_prepare_copy_ms: float
+    hybrid_replay_repair_compute_ms: float
+    hybrid_replay_verify_attention_ms: float
+    hybrid_replay_spill_copy_ms: float
+    hybrid_replay_layer_total_ms: float
+    hybrid_replay_verify_call_count: int
+    hybrid_replay_checkpoint_save_ms: float
+    hybrid_replay_post_replay_state_gather_ms: float
+    hybrid_replay_capture_materialize_ms: float
+    hybrid_replay_segment_start_save_ms: float
     num_forward_steps_total: int
     num_captured_steps: int
     num_global_candidate_steps: int
@@ -812,6 +926,16 @@ class RankConditionData:
     hybrid_reload_preloaded_row_count: int
     hybrid_reload_fallback_total_ms: float
     hybrid_reload_fallback_row_count: int
+    hybrid_replay_prepare_copy_ms: float
+    hybrid_replay_repair_compute_ms: float
+    hybrid_replay_verify_attention_ms: float
+    hybrid_replay_spill_copy_ms: float
+    hybrid_replay_layer_total_ms: float
+    hybrid_replay_verify_call_count: int
+    hybrid_replay_checkpoint_save_ms: float
+    hybrid_replay_post_replay_state_gather_ms: float
+    hybrid_replay_capture_materialize_ms: float
+    hybrid_replay_segment_start_save_ms: float
     num_forward_steps_total: int
     num_captured_steps: int
     num_dropped_steps: int
@@ -981,6 +1105,39 @@ class RankConditionData:
             ),
             "hybrid_reload_fallback_row_count": np.asarray(
                 [self.hybrid_reload_fallback_row_count], dtype=np.int64
+            ),
+            "hybrid_replay_prepare_copy_ms": np.asarray(
+                [self.hybrid_replay_prepare_copy_ms], dtype=np.float64
+            ),
+            "hybrid_replay_repair_compute_ms": np.asarray(
+                [self.hybrid_replay_repair_compute_ms], dtype=np.float64
+            ),
+            "hybrid_replay_verify_attention_ms": np.asarray(
+                [self.hybrid_replay_verify_attention_ms], dtype=np.float64
+            ),
+            "hybrid_replay_spill_copy_ms": np.asarray(
+                [self.hybrid_replay_spill_copy_ms], dtype=np.float64
+            ),
+            "hybrid_replay_layer_total_ms": np.asarray(
+                [self.hybrid_replay_layer_total_ms], dtype=np.float64
+            ),
+            "hybrid_replay_verify_call_count": np.asarray(
+                [self.hybrid_replay_verify_call_count], dtype=np.int64
+            ),
+            "hybrid_replay_checkpoint_save_ms": np.asarray(
+                [self.hybrid_replay_checkpoint_save_ms], dtype=np.float64
+            ),
+            "hybrid_replay_post_replay_state_gather_ms": np.asarray(
+                [self.hybrid_replay_post_replay_state_gather_ms],
+                dtype=np.float64,
+            ),
+            "hybrid_replay_capture_materialize_ms": np.asarray(
+                [self.hybrid_replay_capture_materialize_ms],
+                dtype=np.float64,
+            ),
+            "hybrid_replay_segment_start_save_ms": np.asarray(
+                [self.hybrid_replay_segment_start_save_ms],
+                dtype=np.float64,
             ),
             "num_forward_steps_total": np.asarray(
                 [self.num_forward_steps_total], dtype=np.int64
@@ -1296,6 +1453,36 @@ def save_collect_manifest(
                 "hybrid_reload_fallback_row_count": (
                     summary.hybrid_reload_fallback_row_count
                 ),
+                "hybrid_replay_prepare_copy_ms": (
+                    summary.hybrid_replay_prepare_copy_ms
+                ),
+                "hybrid_replay_repair_compute_ms": (
+                    summary.hybrid_replay_repair_compute_ms
+                ),
+                "hybrid_replay_verify_attention_ms": (
+                    summary.hybrid_replay_verify_attention_ms
+                ),
+                "hybrid_replay_spill_copy_ms": (
+                    summary.hybrid_replay_spill_copy_ms
+                ),
+                "hybrid_replay_layer_total_ms": (
+                    summary.hybrid_replay_layer_total_ms
+                ),
+                "hybrid_replay_verify_call_count": (
+                    summary.hybrid_replay_verify_call_count
+                ),
+                "hybrid_replay_checkpoint_save_ms": (
+                    summary.hybrid_replay_checkpoint_save_ms
+                ),
+                "hybrid_replay_post_replay_state_gather_ms": (
+                    summary.hybrid_replay_post_replay_state_gather_ms
+                ),
+                "hybrid_replay_capture_materialize_ms": (
+                    summary.hybrid_replay_capture_materialize_ms
+                ),
+                "hybrid_replay_segment_start_save_ms": (
+                    summary.hybrid_replay_segment_start_save_ms
+                ),
                 "num_forward_steps_total": summary.num_forward_steps_total,
                 "num_captured_steps": summary.num_captured_steps,
                 "num_global_candidate_steps": summary.num_global_candidate_steps,
@@ -1415,6 +1602,36 @@ def load_condition_summary(raw_path: Path) -> CollectedConditionSummary:
         hybrid_reload_fallback_row_count = read_optional_int(
             "hybrid_reload_fallback_row_count"
         )
+        hybrid_replay_prepare_copy_ms = read_optional_float(
+            "hybrid_replay_prepare_copy_ms"
+        )
+        hybrid_replay_repair_compute_ms = read_optional_float(
+            "hybrid_replay_repair_compute_ms"
+        )
+        hybrid_replay_verify_attention_ms = read_optional_float(
+            "hybrid_replay_verify_attention_ms"
+        )
+        hybrid_replay_spill_copy_ms = read_optional_float(
+            "hybrid_replay_spill_copy_ms"
+        )
+        hybrid_replay_layer_total_ms = read_optional_float(
+            "hybrid_replay_layer_total_ms"
+        )
+        hybrid_replay_verify_call_count = read_optional_int(
+            "hybrid_replay_verify_call_count"
+        )
+        hybrid_replay_checkpoint_save_ms = read_optional_float(
+            "hybrid_replay_checkpoint_save_ms"
+        )
+        hybrid_replay_post_replay_state_gather_ms = read_optional_float(
+            "hybrid_replay_post_replay_state_gather_ms"
+        )
+        hybrid_replay_capture_materialize_ms = read_optional_float(
+            "hybrid_replay_capture_materialize_ms"
+        )
+        hybrid_replay_segment_start_save_ms = read_optional_float(
+            "hybrid_replay_segment_start_save_ms"
+        )
         num_forward_steps_total = int(data["num_forward_steps_total"][0])
         num_captured_steps = int(data["num_captured_steps"][0])
         num_global_candidate_steps = int(data["num_global_candidate_steps"][0])
@@ -1474,6 +1691,22 @@ def load_condition_summary(raw_path: Path) -> CollectedConditionSummary:
         hybrid_reload_preloaded_row_count=hybrid_reload_preloaded_row_count,
         hybrid_reload_fallback_total_ms=hybrid_reload_fallback_total_ms,
         hybrid_reload_fallback_row_count=hybrid_reload_fallback_row_count,
+        hybrid_replay_prepare_copy_ms=hybrid_replay_prepare_copy_ms,
+        hybrid_replay_repair_compute_ms=hybrid_replay_repair_compute_ms,
+        hybrid_replay_verify_attention_ms=hybrid_replay_verify_attention_ms,
+        hybrid_replay_spill_copy_ms=hybrid_replay_spill_copy_ms,
+        hybrid_replay_layer_total_ms=hybrid_replay_layer_total_ms,
+        hybrid_replay_verify_call_count=hybrid_replay_verify_call_count,
+        hybrid_replay_checkpoint_save_ms=hybrid_replay_checkpoint_save_ms,
+        hybrid_replay_post_replay_state_gather_ms=(
+            hybrid_replay_post_replay_state_gather_ms
+        ),
+        hybrid_replay_capture_materialize_ms=(
+            hybrid_replay_capture_materialize_ms
+        ),
+        hybrid_replay_segment_start_save_ms=(
+            hybrid_replay_segment_start_save_ms
+        ),
         num_forward_steps_total=num_forward_steps_total,
         num_captured_steps=num_captured_steps,
         num_global_candidate_steps=num_global_candidate_steps,
@@ -2513,14 +2746,78 @@ def collect_hybrid_reload_timing_stats_worker(
     if snapshot is None:
         return _empty_hybrid_reload_timing_stats()
     stats = snapshot()
+    if hasattr(stats, "preload_total_ms"):
+        return {
+            "preload_total_ms": float(stats.preload_total_ms),
+            "preload_call_count": int(stats.preload_call_count),
+            "preload_req_count": int(stats.preload_req_count),
+            "preloaded_total_ms": float(stats.preloaded_total_ms),
+            "preloaded_row_count": int(stats.preloaded_row_count),
+            "fallback_total_ms": float(stats.fallback_total_ms),
+            "fallback_row_count": int(stats.fallback_row_count),
+            "prepare_copy_ms": 0.0,
+            "repair_compute_ms": 0.0,
+            "verify_attention_ms": 0.0,
+            "spill_copy_ms": 0.0,
+            "layer_total_ms": 0.0,
+            "verify_call_count": 0,
+            "checkpoint_save_ms": 0.0,
+            "post_replay_state_gather_ms": 0.0,
+            "capture_materialize_ms": 0.0,
+            "segment_start_save_ms": 0.0,
+            "tape_save_ms": 0.0,
+        }
+
+    # Replay-based predict_last no longer reports the old preload/fallback
+    # breakdown. Map it into the legacy experiment schema so existing collect
+    # and analysis code can keep running while preserving the replay-native
+    # counters for future consumers.
+    repair_copy_ms = float(getattr(stats, "repair_copy_ms", 0.0))
+    repair_compute_ms = float(getattr(stats, "repair_compute_ms", 0.0))
+    repair_row_count = int(getattr(stats, "repair_row_count", 0))
+    repair_from_start_count = int(
+        getattr(stats, "repair_from_start_count", 0)
+    )
+    repair_from_resident_count = int(
+        getattr(stats, "repair_from_resident_count", 0)
+    )
+    verify_attention_ms = float(getattr(stats, "verify_attention_ms", 0.0))
+    layer_total_ms = float(getattr(stats, "layer_total_ms", 0.0))
+    verify_call_count = int(getattr(stats, "verify_call_count", 0))
+    checkpoint_save_ms = float(getattr(stats, "checkpoint_save_ms", 0.0))
+    post_replay_state_gather_ms = float(
+        getattr(stats, "post_replay_state_gather_ms", 0.0)
+    )
+    capture_materialize_ms = float(
+        getattr(stats, "capture_materialize_ms", 0.0)
+    )
+    segment_start_save_ms = float(
+        getattr(stats, "segment_start_save_ms", 0.0)
+    )
+    tape_save_ms = float(getattr(stats, "tape_save_ms", 0.0))
     return {
-        "preload_total_ms": float(stats.preload_total_ms),
-        "preload_call_count": int(stats.preload_call_count),
-        "preload_req_count": int(stats.preload_req_count),
-        "preloaded_total_ms": float(stats.preloaded_total_ms),
-        "preloaded_row_count": int(stats.preloaded_row_count),
-        "fallback_total_ms": float(stats.fallback_total_ms),
-        "fallback_row_count": int(stats.fallback_row_count),
+        "preload_total_ms": checkpoint_save_ms + tape_save_ms,
+        "preload_call_count": 0,
+        "preload_req_count": 0,
+        "preloaded_total_ms": repair_copy_ms + repair_compute_ms,
+        "preloaded_row_count": repair_row_count,
+        "fallback_total_ms": 0.0,
+        "fallback_row_count": 0,
+        "repair_copy_ms": repair_copy_ms,
+        "repair_compute_ms": repair_compute_ms,
+        "repair_row_count": repair_row_count,
+        "repair_from_start_count": repair_from_start_count,
+        "repair_from_resident_count": repair_from_resident_count,
+        "prepare_copy_ms": repair_copy_ms,
+        "checkpoint_save_ms": checkpoint_save_ms,
+        "post_replay_state_gather_ms": post_replay_state_gather_ms,
+        "capture_materialize_ms": capture_materialize_ms,
+        "segment_start_save_ms": segment_start_save_ms,
+        "tape_save_ms": tape_save_ms,
+        "verify_attention_ms": verify_attention_ms,
+        "spill_copy_ms": tape_save_ms,
+        "layer_total_ms": layer_total_ms,
+        "verify_call_count": verify_call_count,
     }
 
 
@@ -3171,19 +3468,41 @@ def _empty_candidate_histograms(args: Namespace) -> np.ndarray:
 
 
 def _check_pending_timings(
-    pending_counts: list[dict[str, int]],
+    pending_counts: list[dict[str, int] | None],
     *,
     batch_size: int,
     draft_length: int,
     round_idx: int,
 ) -> None:
-    pending_values = [item["pending_timings"] for item in pending_counts]
+    valid_counts = [item for item in pending_counts if item is not None]
+    missing_worker_count = len(pending_counts) - len(valid_counts)
+    if not valid_counts:
+        if missing_worker_count:
+            print(
+                "[collect-rank] warning cleanup did not receive pending timing "
+                f"counts from any worker batch_size={batch_size} "
+                f"draft_length={draft_length} round={round_idx} "
+                f"missing_workers={missing_worker_count}",
+                flush=True,
+            )
+        return
+    if missing_worker_count:
+        print(
+            "[collect-rank] warning cleanup received partial pending timing "
+            f"counts batch_size={batch_size} draft_length={draft_length} "
+            f"round={round_idx} missing_workers={missing_worker_count} "
+            f"returned={valid_counts}",
+            flush=True,
+        )
+        return
+
+    pending_values = [int(item.get("pending_timings", 0)) for item in valid_counts]
     if not any(pending_values):
         return
     if len(set(pending_values)) != 1:
         raise RuntimeError(
             "Worker timing queues ended with inconsistent leftover counts: "
-            f"{pending_counts}"
+            f"{valid_counts}"
         )
     print(
         "[collect-rank] warning leftover worker timings were discarded "
@@ -3211,6 +3530,7 @@ def _run_recorded_round(
     trace_steps_limit: int,
 ) -> tuple[Any, SchedulerStepRecorder, float]:
     model_executor.collective_rpc(start_condition_collection_worker, timeout=30)
+    round_error: BaseException | None = None
     try:
         with SchedulerStepRecorder(
             scheduler,
@@ -3230,14 +3550,29 @@ def _run_recorded_round(
                 use_tqdm=False,
             )
             round_latency_ms = (time.perf_counter() - start) * 1000.0
+    except BaseException as exc:
+        round_error = exc
+        raise
     finally:
-        pending_counts = model_executor.collective_rpc(stop_condition_collection_worker)
-        _check_pending_timings(
-            pending_counts,
-            batch_size=batch_size,
-            draft_length=draft_length,
-            round_idx=round_idx,
-        )
+        try:
+            pending_counts = model_executor.collective_rpc(
+                stop_condition_collection_worker
+            )
+            _check_pending_timings(
+                pending_counts,
+                batch_size=batch_size,
+                draft_length=draft_length,
+                round_idx=round_idx,
+            )
+        except Exception as cleanup_exc:
+            if round_error is None:
+                raise
+            print(
+                "[collect-rank] warning cleanup after round failure also "
+                f"failed batch_size={batch_size} draft_length={draft_length} "
+                f"round={round_idx} cleanup_error={cleanup_exc!r}",
+                flush=True,
+            )
     return outputs, recorder, round_latency_ms
 
 
@@ -3716,26 +4051,8 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
             timeout=30,
         )
         for worker_stats in worker_reload_timing_stats:
-            hybrid_reload_timing_stats["preload_total_ms"] += float(
-                worker_stats.get("preload_total_ms", 0.0)
-            )
-            hybrid_reload_timing_stats["preload_call_count"] += int(
-                worker_stats.get("preload_call_count", 0)
-            )
-            hybrid_reload_timing_stats["preload_req_count"] += int(
-                worker_stats.get("preload_req_count", 0)
-            )
-            hybrid_reload_timing_stats["preloaded_total_ms"] += float(
-                worker_stats.get("preloaded_total_ms", 0.0)
-            )
-            hybrid_reload_timing_stats["preloaded_row_count"] += int(
-                worker_stats.get("preloaded_row_count", 0)
-            )
-            hybrid_reload_timing_stats["fallback_total_ms"] += float(
-                worker_stats.get("fallback_total_ms", 0.0)
-            )
-            hybrid_reload_timing_stats["fallback_row_count"] += int(
-                worker_stats.get("fallback_row_count", 0)
+            _accumulate_hybrid_reload_timing_stats(
+                hybrid_reload_timing_stats, worker_stats
             )
         with suppress(Exception):
             llm.llm_engine.engine_core.shutdown()
@@ -4068,6 +4385,36 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
             hybrid_reload_fallback_row_count=int(
                 hybrid_reload_timing_stats["fallback_row_count"]
             ),
+            hybrid_replay_prepare_copy_ms=float(
+                hybrid_reload_timing_stats["prepare_copy_ms"]
+            ),
+            hybrid_replay_repair_compute_ms=float(
+                hybrid_reload_timing_stats["repair_compute_ms"]
+            ),
+            hybrid_replay_verify_attention_ms=float(
+                hybrid_reload_timing_stats["verify_attention_ms"]
+            ),
+            hybrid_replay_spill_copy_ms=float(
+                hybrid_reload_timing_stats["spill_copy_ms"]
+            ),
+            hybrid_replay_layer_total_ms=float(
+                hybrid_reload_timing_stats["layer_total_ms"]
+            ),
+            hybrid_replay_verify_call_count=int(
+                hybrid_reload_timing_stats["verify_call_count"]
+            ),
+            hybrid_replay_checkpoint_save_ms=float(
+                hybrid_reload_timing_stats["checkpoint_save_ms"]
+            ),
+            hybrid_replay_post_replay_state_gather_ms=float(
+                hybrid_reload_timing_stats["post_replay_state_gather_ms"]
+            ),
+            hybrid_replay_capture_materialize_ms=float(
+                hybrid_reload_timing_stats["capture_materialize_ms"]
+            ),
+            hybrid_replay_segment_start_save_ms=float(
+                hybrid_reload_timing_stats["segment_start_save_ms"]
+            ),
             num_forward_steps_total=num_forward_steps_total,
             num_captured_steps=num_captured_steps,
             num_dropped_steps=num_dropped_steps,
@@ -4213,6 +4560,36 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         ),
         hybrid_reload_fallback_row_count=int(
             hybrid_reload_timing_stats["fallback_row_count"]
+        ),
+        hybrid_replay_prepare_copy_ms=float(
+            hybrid_reload_timing_stats["prepare_copy_ms"]
+        ),
+        hybrid_replay_repair_compute_ms=float(
+            hybrid_reload_timing_stats["repair_compute_ms"]
+        ),
+        hybrid_replay_verify_attention_ms=float(
+            hybrid_reload_timing_stats["verify_attention_ms"]
+        ),
+        hybrid_replay_spill_copy_ms=float(
+            hybrid_reload_timing_stats["spill_copy_ms"]
+        ),
+        hybrid_replay_layer_total_ms=float(
+            hybrid_reload_timing_stats["layer_total_ms"]
+        ),
+        hybrid_replay_verify_call_count=int(
+            hybrid_reload_timing_stats["verify_call_count"]
+        ),
+        hybrid_replay_checkpoint_save_ms=float(
+            hybrid_reload_timing_stats["checkpoint_save_ms"]
+        ),
+        hybrid_replay_post_replay_state_gather_ms=float(
+            hybrid_reload_timing_stats["post_replay_state_gather_ms"]
+        ),
+        hybrid_replay_capture_materialize_ms=float(
+            hybrid_reload_timing_stats["capture_materialize_ms"]
+        ),
+        hybrid_replay_segment_start_save_ms=float(
+            hybrid_reload_timing_stats["segment_start_save_ms"]
         ),
         num_forward_steps_total=num_forward_steps_total,
         num_captured_steps=num_captured_steps,
@@ -4479,6 +4856,36 @@ def load_rank_condition_data(path: Path) -> RankConditionData:
             ),
             hybrid_reload_fallback_row_count=read_optional_int(
                 "hybrid_reload_fallback_row_count"
+            ),
+            hybrid_replay_prepare_copy_ms=read_optional_float(
+                "hybrid_replay_prepare_copy_ms"
+            ),
+            hybrid_replay_repair_compute_ms=read_optional_float(
+                "hybrid_replay_repair_compute_ms"
+            ),
+            hybrid_replay_verify_attention_ms=read_optional_float(
+                "hybrid_replay_verify_attention_ms"
+            ),
+            hybrid_replay_spill_copy_ms=read_optional_float(
+                "hybrid_replay_spill_copy_ms"
+            ),
+            hybrid_replay_layer_total_ms=read_optional_float(
+                "hybrid_replay_layer_total_ms"
+            ),
+            hybrid_replay_verify_call_count=read_optional_int(
+                "hybrid_replay_verify_call_count"
+            ),
+            hybrid_replay_checkpoint_save_ms=read_optional_float(
+                "hybrid_replay_checkpoint_save_ms"
+            ),
+            hybrid_replay_post_replay_state_gather_ms=read_optional_float(
+                "hybrid_replay_post_replay_state_gather_ms"
+            ),
+            hybrid_replay_capture_materialize_ms=read_optional_float(
+                "hybrid_replay_capture_materialize_ms"
+            ),
+            hybrid_replay_segment_start_save_ms=read_optional_float(
+                "hybrid_replay_segment_start_save_ms"
             ),
             num_forward_steps_total=int(data["num_forward_steps_total"][0]),
             num_captured_steps=int(data["num_captured_steps"][0]),
@@ -4763,6 +5170,37 @@ def _aggregate_rank_condition_data(
     hybrid_reload_fallback_row_count = sum(
         partial.hybrid_reload_fallback_row_count for partial in partials
     )
+    hybrid_replay_prepare_copy_ms = sum(
+        partial.hybrid_replay_prepare_copy_ms for partial in partials
+    )
+    hybrid_replay_repair_compute_ms = sum(
+        partial.hybrid_replay_repair_compute_ms for partial in partials
+    )
+    hybrid_replay_verify_attention_ms = sum(
+        partial.hybrid_replay_verify_attention_ms for partial in partials
+    )
+    hybrid_replay_spill_copy_ms = sum(
+        partial.hybrid_replay_spill_copy_ms for partial in partials
+    )
+    hybrid_replay_layer_total_ms = sum(
+        partial.hybrid_replay_layer_total_ms for partial in partials
+    )
+    hybrid_replay_verify_call_count = sum(
+        partial.hybrid_replay_verify_call_count for partial in partials
+    )
+    hybrid_replay_checkpoint_save_ms = sum(
+        partial.hybrid_replay_checkpoint_save_ms for partial in partials
+    )
+    hybrid_replay_post_replay_state_gather_ms = sum(
+        partial.hybrid_replay_post_replay_state_gather_ms
+        for partial in partials
+    )
+    hybrid_replay_capture_materialize_ms = sum(
+        partial.hybrid_replay_capture_materialize_ms for partial in partials
+    )
+    hybrid_replay_segment_start_save_ms = sum(
+        partial.hybrid_replay_segment_start_save_ms for partial in partials
+    )
     spec_acceptance_rate = (
         spec_num_accepted_tokens / spec_num_draft_tokens
         if spec_num_draft_tokens > 0
@@ -4832,6 +5270,22 @@ def _aggregate_rank_condition_data(
         hybrid_reload_preloaded_row_count=hybrid_reload_preloaded_row_count,
         hybrid_reload_fallback_total_ms=hybrid_reload_fallback_total_ms,
         hybrid_reload_fallback_row_count=hybrid_reload_fallback_row_count,
+        hybrid_replay_prepare_copy_ms=hybrid_replay_prepare_copy_ms,
+        hybrid_replay_repair_compute_ms=hybrid_replay_repair_compute_ms,
+        hybrid_replay_verify_attention_ms=hybrid_replay_verify_attention_ms,
+        hybrid_replay_spill_copy_ms=hybrid_replay_spill_copy_ms,
+        hybrid_replay_layer_total_ms=hybrid_replay_layer_total_ms,
+        hybrid_replay_verify_call_count=hybrid_replay_verify_call_count,
+        hybrid_replay_checkpoint_save_ms=hybrid_replay_checkpoint_save_ms,
+        hybrid_replay_post_replay_state_gather_ms=(
+            hybrid_replay_post_replay_state_gather_ms
+        ),
+        hybrid_replay_capture_materialize_ms=(
+            hybrid_replay_capture_materialize_ms
+        ),
+        hybrid_replay_segment_start_save_ms=(
+            hybrid_replay_segment_start_save_ms
+        ),
         step_histograms=global_steps.global_step_histograms,
         step_total_tokens=global_steps.global_step_total_tokens,
         step_total_ms=global_steps.global_step_total_ms,
@@ -4988,9 +5442,6 @@ def collect_one_condition(
     )
     partial_dir.mkdir(parents=True, exist_ok=True)
     dp_master_ip = "127.0.0.1"
-    dp_master_port = get_open_port()
-
-    processes: list[subprocess.Popen[str]] = []
     partial_paths: list[Path] = []
     cwd = Path(__file__).resolve().parent.parent.parent.parent
     rank_entrypoint = (
@@ -5000,34 +5451,61 @@ def collect_one_condition(
         / "qwen3_6_mtp_ep_load_balance_experiment.py"
     )
     start = time.perf_counter()
-    for dp_rank in range(args.data_parallel_size):
-        partial_path = partial_dir / f"rank_{dp_rank:02d}.npz"
-        partial_paths.append(partial_path)
-        command = _build_collect_one_rank_command(
-            args,
-            output_dir,
-            rank_entrypoint,
-            dp_rank=dp_rank,
-            dp_local_rank=0,
-            dp_master_ip=dp_master_ip,
-            dp_master_port=dp_master_port,
-            rank_output_path=partial_path,
-        )
-        processes.append(
-            subprocess.Popen(
-                command,
-                cwd=cwd,
-                env=build_collect_subprocess_env(args, dp_rank=dp_rank),
-                text=True,
-            )
-        )
+    partial_paths = [
+        partial_dir / f"rank_{dp_rank:02d}.npz"
+        for dp_rank in range(args.data_parallel_size)
+    ]
+    max_port_retries = 3
     exit_code = 0
-    for proc in processes:
-        proc.wait()
-        if proc.returncode:
-            exit_code = proc.returncode
-    if exit_code:
-        raise subprocess.CalledProcessError(exit_code, "collect --internal-stage rank")
+    for port_attempt in range(max_port_retries):
+        dp_master_port = get_open_port()
+        processes: list[subprocess.Popen[str]] = []
+        for partial_path in partial_paths:
+            partial_path.unlink(missing_ok=True)
+        for dp_rank, partial_path in enumerate(partial_paths):
+            command = _build_collect_one_rank_command(
+                args,
+                output_dir,
+                rank_entrypoint,
+                dp_rank=dp_rank,
+                dp_local_rank=0,
+                dp_master_ip=dp_master_ip,
+                dp_master_port=dp_master_port,
+                rank_output_path=partial_path,
+            )
+            processes.append(
+                subprocess.Popen(
+                    command,
+                    cwd=cwd,
+                    env=build_collect_subprocess_env(args, dp_rank=dp_rank),
+                    text=True,
+                )
+            )
+        exit_code = 0
+        for proc in processes:
+            proc.wait()
+            if proc.returncode:
+                exit_code = proc.returncode
+        if exit_code == 0:
+            break
+        if any(path.exists() for path in partial_paths):
+            raise subprocess.CalledProcessError(
+                exit_code,
+                "collect --internal-stage rank",
+            )
+        if port_attempt + 1 >= max_port_retries:
+            raise subprocess.CalledProcessError(
+                exit_code,
+                "collect --internal-stage rank",
+            )
+        print(
+            "[collect-condition] retrying rank launch after early startup "
+            f"failure batch_size={args.batch_size} draft_length={args.draft_length} "
+            f"attempt={port_attempt + 1}/{max_port_retries} "
+            f"previous_dp_master_port={dp_master_port}",
+            flush=True,
+        )
+        time.sleep(1.0)
 
     partials = [load_rank_condition_data(path) for path in partial_paths]
     raw_data = _aggregate_rank_condition_data(
@@ -5058,9 +5536,9 @@ def _build_collect_one_command(
         "--model",
         args.model,
         "--hybrid-spec-state-offload-mode",
-        args.hybrid_spec_state_offload_mode,
+        getattr(args, "hybrid_spec_state_offload_mode", "disabled"),
         "--hybrid-spec-state-ewma-alpha",
-        str(args.hybrid_spec_state_ewma_alpha),
+        str(getattr(args, "hybrid_spec_state_ewma_alpha", 0.5)),
         "--dataset",
         args.dataset,
         "--dataset-split",

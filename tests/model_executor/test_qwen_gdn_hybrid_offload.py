@@ -87,11 +87,11 @@ def _make_group_plan(
 
 def _make_workspace() -> HybridTemporalReplayWorkspace:
     return HybridTemporalReplayWorkspace(
-        segment_start_cpu_shadow=torch.empty(2, 1, 1, 1),
-        key_tape_cpu_shadow=torch.empty(2, 4, 1, 1),
-        value_tape_cpu_shadow=torch.empty(2, 4, 1, 1),
-        g_tape_cpu_shadow=torch.empty(2, 4, 1),
-        beta_tape_cpu_shadow=torch.empty(2, 4, 1),
+        segment_start_gpu_shadow=torch.empty(2, 1, 1, 1),
+        key_tape_gpu_shadow=torch.empty(2, 4, 1, 1),
+        value_tape_gpu_shadow=torch.empty(2, 4, 1, 1),
+        g_tape_gpu_shadow=torch.empty(2, 4, 1),
+        beta_tape_gpu_shadow=torch.empty(2, 4, 1),
         saved_generation_per_req=[-1, -1],
     )
 
@@ -120,13 +120,23 @@ def _install_fake_replay(
         beta: torch.Tensor,
         *,
         initial_state: torch.Tensor,
-        final_state_out: torch.Tensor,
+        final_state_out: torch.Tensor | None,
         ssm_state_indices: torch.Tensor,
         cu_seqlens: torch.Tensor,
+        resident_final_state_out: torch.Tensor | None = None,
+        resident_state_indices: torch.Tensor | None = None,
+        resident_token_indices: torch.Tensor | None = None,
         **_: object,
     ) -> torch.Tensor:
         packed_k = k.squeeze(0)
         packed_v = v.squeeze(0)
+        if final_state_out is None:
+            final_state_out = torch.empty(
+                int(cu_seqlens[-1].item()),
+                *initial_state.shape[1:],
+                dtype=initial_state.dtype,
+                device=initial_state.device,
+            )
         for row, (start, end) in enumerate(
             zip(cu_seqlens.tolist(), cu_seqlens.tolist()[1:])
         ):
@@ -141,12 +151,78 @@ def _install_fake_replay(
                 )
                 state = state + delta
                 final_state_out[token_idx].copy_(state)
+            if (
+                resident_final_state_out is not None
+                and resident_state_indices is not None
+                and resident_token_indices is not None
+            ):
+                resident_final_state_out[
+                    int(resident_state_indices[row].item())
+                ].copy_(final_state_out[end - 1])
+        return final_state_out
+
+    def fake_replay_from_shadow(
+        shadow_key: torch.Tensor,
+        shadow_value: torch.Tensor,
+        shadow_g: torch.Tensor,
+        shadow_beta: torch.Tensor,
+        *,
+        shadow_req_slots: torch.Tensor,
+        shadow_src_begin: torch.Tensor,
+        shadow_max_seq_len: int,
+        initial_state: torch.Tensor,
+        final_state_out: torch.Tensor | None,
+        ssm_state_indices: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        resident_final_state_out: torch.Tensor | None = None,
+        resident_state_indices: torch.Tensor | None = None,
+        resident_token_indices: torch.Tensor | None = None,
+        **_: object,
+    ) -> torch.Tensor:
+        del shadow_max_seq_len
+        if final_state_out is None:
+            final_state_out = torch.empty(
+                int(cu_seqlens[-1].item()),
+                *initial_state.shape[1:],
+                dtype=initial_state.dtype,
+                device=initial_state.device,
+            )
+        for row, (start, end) in enumerate(
+            zip(cu_seqlens.tolist(), cu_seqlens.tolist()[1:])
+        ):
+            state_idx = int(ssm_state_indices[row, 0].item())
+            state = initial_state[state_idx].clone()
+            req_slot = int(shadow_req_slots[row].item())
+            src_begin = int(shadow_src_begin[row].item())
+            for token_idx in range(start, end):
+                shadow_idx = src_begin + (token_idx - start)
+                delta = (
+                    shadow_key[req_slot, shadow_idx].sum()
+                    + shadow_value[req_slot, shadow_idx].sum()
+                    + shadow_g[req_slot, shadow_idx].sum()
+                    + shadow_beta[req_slot, shadow_idx].sum()
+                )
+                state = state + delta
+                final_state_out[token_idx].copy_(state)
+            if (
+                resident_final_state_out is not None
+                and resident_state_indices is not None
+                and resident_token_indices is not None
+            ):
+                resident_final_state_out[
+                    int(resident_state_indices[row].item())
+                ].copy_(final_state_out[end - 1])
         return final_state_out
 
     monkeypatch.setattr(
         replay_module,
         "fused_sigmoid_gating_delta_rule_replay_from_tape",
         fake_replay_from_tape,
+    )
+    monkeypatch.setattr(
+        replay_module,
+        "fused_sigmoid_gating_delta_rule_replay_from_shadow",
+        fake_replay_from_shadow,
     )
 
 
@@ -155,10 +231,15 @@ def test_hybrid_spec_workspace_is_replay_only() -> None:
 
     assert not hasattr(workspace, "temporal_state_gpu_scratch")
     assert not hasattr(workspace, "preload_stream")
-    assert hasattr(workspace, "segment_start_cpu_shadow")
+    assert not hasattr(workspace, "segment_start_cpu_shadow")
+    assert hasattr(workspace, "segment_start_gpu_shadow")
     assert not hasattr(workspace, "final_state_cpu_shadow")
-    assert hasattr(workspace, "key_tape_cpu_shadow")
-    assert hasattr(workspace, "value_tape_cpu_shadow")
+    assert hasattr(workspace, "key_tape_gpu_shadow")
+    assert hasattr(workspace, "value_tape_gpu_shadow")
+    assert hasattr(workspace, "spill_stream")
+    assert hasattr(workspace, "last_spill_done")
+    assert hasattr(workspace, "initial_state_padded")
+    assert hasattr(workspace, "resident_state_indices")
 
 
 def test_hybrid_temporal_scratch_uses_workspace_manager(
@@ -238,28 +319,33 @@ def test_layer_group_plan_binding_uses_shared_plan() -> None:
     assert attn._get_hybrid_temporal_replay_helper().group_plan is plan
 
 
-def test_store_replay_artifacts_writes_predicted_resident_and_tapes(
-    monkeypatch: pytest.MonkeyPatch,
+def test_snapshot_repair_timing_stats_exposes_replay_phase_breakdown() -> None:
+    attn = object.__new__(QwenGatedDeltaNetAttention)
+    attn.hybrid_temporal_replay_workspace = _make_workspace()
+    attn.prefix = "layer.0"
+    attn.kv_cache = (torch.empty(0), torch.empty(3, 1, 1, 1))
+    attn.acquire_hybrid_temporal_replay_buffers = _make_replay_buffers
+
+    stats = attn.snapshot_repair_timing_stats()
+
+    assert stats["repair_copy_ms"] == 0.0
+    assert stats["prepare_copy_ms"] == 0.0
+    assert stats["repair_compute_ms"] == 0.0
+    assert stats["verify_attention_ms"] == 0.0
+    assert stats["spill_copy_ms"] == 0.0
+    assert stats["layer_total_ms"] == 0.0
+    assert stats["verify_call_count"] == 0
+
+
+def test_store_replay_artifacts_writes_gpu_shadow_tapes(
 ) -> None:
     workspace = HybridTemporalReplayWorkspace(
-        segment_start_cpu_shadow=torch.zeros(1, 1, 1, 1),
-        key_tape_cpu_shadow=torch.zeros(1, 3, 1, 1),
-        value_tape_cpu_shadow=torch.zeros(1, 3, 1, 1),
-        g_tape_cpu_shadow=torch.zeros(1, 3, 1),
-        beta_tape_cpu_shadow=torch.zeros(1, 3, 1),
+        segment_start_gpu_shadow=torch.zeros(1, 1, 1, 1),
+        key_tape_gpu_shadow=torch.zeros(1, 3, 1, 1),
+        value_tape_gpu_shadow=torch.zeros(1, 3, 1, 1),
+        g_tape_gpu_shadow=torch.zeros(1, 3, 1),
+        beta_tape_gpu_shadow=torch.zeros(1, 3, 1),
         saved_generation_per_req=[-1],
-    )
-    marked_events: list[object] = []
-
-    class FakeWorkspaceManager:
-
-        def mark_in_use_until(self, event) -> None:
-            marked_events.append(event)
-
-    monkeypatch.setattr(
-        replay_module,
-        "current_workspace_manager",
-        lambda: FakeWorkspaceManager(),
     )
 
     ssm_state = torch.zeros(2, 1, 1, 1)
@@ -282,18 +368,84 @@ def test_store_replay_artifacts_writes_predicted_resident_and_tapes(
         value=torch.tensor([[[[19.0]], [[23.0]]]]),
         saved_g=torch.tensor([[7.0], [8.0]]),
         saved_beta=torch.tensor([[11.0], [12.0]]),
-        final_states=torch.tensor([[[[29.0]]], [[[31.0]]]]),
+        final_states=None,
         wave_plan=wave_plan,
     )
 
-    assert ssm_state[1].item() == pytest.approx(29.0)
-    assert workspace.segment_start_cpu_shadow[0].item() == pytest.approx(3.0)
-    assert workspace.key_tape_cpu_shadow[0, :2, 0, 0].tolist() == [13.0, 17.0]
-    assert workspace.value_tape_cpu_shadow[0, :2, 0, 0].tolist() == [19.0, 23.0]
-    assert workspace.g_tape_cpu_shadow[0, :2, 0].tolist() == [7.0, 8.0]
-    assert workspace.beta_tape_cpu_shadow[0, :2, 0].tolist() == [11.0, 12.0]
+    assert ssm_state[1].item() == pytest.approx(0.0)
+    assert workspace.segment_start_gpu_shadow[0].item() == pytest.approx(3.0)
+    assert workspace.key_tape_gpu_shadow[0, :2, 0, 0].tolist() == [13.0, 17.0]
+    assert workspace.value_tape_gpu_shadow[0, :2, 0, 0].tolist() == [19.0, 23.0]
+    assert workspace.g_tape_gpu_shadow[0, :2, 0].tolist() == [7.0, 8.0]
+    assert workspace.beta_tape_gpu_shadow[0, :2, 0].tolist() == [11.0, 12.0]
     assert workspace.saved_generation_per_req == [9]
-    assert len(marked_events) == 0
+
+
+def test_store_replay_artifacts_bulk_spill_matches_row_loop_reference() -> None:
+    workspace = HybridTemporalReplayWorkspace(
+        segment_start_gpu_shadow=torch.zeros(2, 1, 1, 1),
+        key_tape_gpu_shadow=torch.zeros(2, 4, 1, 1),
+        value_tape_gpu_shadow=torch.zeros(2, 4, 1, 1),
+        g_tape_gpu_shadow=torch.zeros(2, 4, 1),
+        beta_tape_gpu_shadow=torch.zeros(2, 4, 1),
+        saved_generation_per_req=[-1, -1],
+    )
+    helper = HybridTemporalReplayHelper(
+        layer_name="layer.0",
+        workspace=workspace,
+        ssm_state_getter=lambda: torch.zeros(3, 1, 1, 1),
+        replay_buffer_getter=_make_replay_buffers,
+    )
+    wave_plan = _make_wave_plan(
+        req_ids=["req-a", "req-b"],
+        spec_req_slots=[1, 0],
+        spec_query_start_locs=[0, 2, 5],
+        predicted_accept_lens=[1, 2],
+        next_replay_generations=[7, 8],
+    )
+    initial_state = torch.tensor([[[[3.0]]], [[[5.0]]]])
+    key = torch.tensor([[[[11.0]], [[13.0]], [[17.0]], [[19.0]], [[23.0]]]])
+    value = torch.tensor(
+        [[[[29.0]], [[31.0]], [[37.0]], [[41.0]], [[43.0]]]]
+    )
+    saved_g = torch.tensor([[47.0], [53.0], [59.0], [61.0], [67.0]])
+    saved_beta = torch.tensor([[71.0], [73.0], [79.0], [83.0], [89.0]])
+
+    helper.store_replay_artifacts(
+        initial_state=initial_state,
+        running_state_indices=torch.tensor([1, 2], dtype=torch.int32),
+        key=key,
+        value=value,
+        saved_g=saved_g,
+        saved_beta=saved_beta,
+        final_states=None,
+        wave_plan=wave_plan,
+    )
+
+    ref_segment = torch.zeros_like(workspace.segment_start_gpu_shadow)
+    ref_key = torch.zeros_like(workspace.key_tape_gpu_shadow)
+    ref_value = torch.zeros_like(workspace.value_tape_gpu_shadow)
+    ref_g = torch.zeros_like(workspace.g_tape_gpu_shadow)
+    ref_beta = torch.zeros_like(workspace.beta_tape_gpu_shadow)
+    ref_generations = [-1, -1]
+    flat_key = key.squeeze(0)
+    flat_value = value.squeeze(0)
+    for row, (start, end) in enumerate(zip([0, 2], [2, 5])):
+        req_slot = wave_plan.spec_req_slots[row]
+        token_count = end - start
+        ref_segment[req_slot].copy_(initial_state[row])
+        ref_key[req_slot, :token_count].copy_(flat_key[start:end])
+        ref_value[req_slot, :token_count].copy_(flat_value[start:end])
+        ref_g[req_slot, :token_count].copy_(saved_g[start:end])
+        ref_beta[req_slot, :token_count].copy_(saved_beta[start:end])
+        ref_generations[req_slot] = wave_plan.next_replay_generations[row]
+
+    torch.testing.assert_close(workspace.segment_start_gpu_shadow, ref_segment)
+    torch.testing.assert_close(workspace.key_tape_gpu_shadow, ref_key)
+    torch.testing.assert_close(workspace.value_tape_gpu_shadow, ref_value)
+    torch.testing.assert_close(workspace.g_tape_gpu_shadow, ref_g)
+    torch.testing.assert_close(workspace.beta_tape_gpu_shadow, ref_beta)
+    assert workspace.saved_generation_per_req == ref_generations
 
 
 def test_prepare_temporal_state_from_start_replays_prefix(
@@ -301,11 +453,11 @@ def test_prepare_temporal_state_from_start_replays_prefix(
 ) -> None:
     _install_fake_replay(monkeypatch)
     workspace = _make_workspace()
-    workspace.segment_start_cpu_shadow[0].fill_(10.0)
-    workspace.key_tape_cpu_shadow[0, :2, 0, 0] = torch.tensor([1.0, 2.0])
-    workspace.value_tape_cpu_shadow[0, :2, 0, 0] = torch.tensor([3.0, 4.0])
-    workspace.g_tape_cpu_shadow[0, :2, 0] = torch.tensor([5.0, 6.0])
-    workspace.beta_tape_cpu_shadow[0, :2, 0] = torch.tensor([7.0, 8.0])
+    workspace.segment_start_gpu_shadow[0].fill_(10.0)
+    workspace.key_tape_gpu_shadow[0, :2, 0, 0] = torch.tensor([1.0, 2.0])
+    workspace.value_tape_gpu_shadow[0, :2, 0, 0] = torch.tensor([3.0, 4.0])
+    workspace.g_tape_gpu_shadow[0, :2, 0] = torch.tensor([5.0, 6.0])
+    workspace.beta_tape_gpu_shadow[0, :2, 0] = torch.tensor([7.0, 8.0])
     workspace.saved_generation_per_req = [5, -1]
 
     ssm_state = torch.zeros(3, 1, 1, 1)
@@ -323,11 +475,48 @@ def test_prepare_temporal_state_from_start_replays_prefix(
     )
 
     assert initial_state[0].item() == pytest.approx(46.0)
-    assert ssm_state[2].item() == pytest.approx(46.0)
+    assert ssm_state[2].item() == pytest.approx(0.0)
     stats = helper.snapshot_repair_timing_stats()
     assert stats["repair_row_count"] == 1
     assert stats["repair_from_start_count"] == 1
     assert stats["repair_from_resident_count"] == 0
+
+
+def test_prepare_temporal_state_waits_for_shadow_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _make_workspace()
+    helper = HybridTemporalReplayHelper(
+        layer_name="layer.0",
+        workspace=workspace,
+        ssm_state_getter=lambda: torch.zeros(3, 1, 1, 1),
+        replay_buffer_getter=_make_replay_buffers,
+    )
+    helper.set_group_plan(
+        _make_group_plan(
+            repair_row_indices=[],
+            repair_req_slots=[],
+            repair_target_slots=[],
+            resident_slots=[],
+            repair_modes=[],
+            repair_generations=[],
+        )
+    )
+    waited: list[torch.Tensor] = []
+    workspace.last_spill_done = object()  # type: ignore[assignment]
+
+    monkeypatch.setattr(
+        helper,
+        "_wait_for_shadow_ready",
+        lambda ssm_state: waited.append(ssm_state),
+    )
+
+    helper.prepare_temporal_state_for_verify(
+        ssm_state=torch.zeros(3, 1, 1, 1),
+        running_state_indices=torch.tensor([2], dtype=torch.int32),
+    )
+
+    assert len(waited) == 1
 
 
 def test_prepare_temporal_state_rejects_stale_generation() -> None:
@@ -353,7 +542,7 @@ def test_prepare_temporal_state_rejects_stale_generation() -> None:
         )
 
 
-def test_prepare_temporal_state_none_only_relocates_checkpoint() -> None:
+def test_prepare_temporal_state_none_uses_source_checkpoint_without_relocate() -> None:
     workspace = _make_workspace()
     ssm_state = torch.zeros(4, 1, 1, 1)
     ssm_state[1].fill_(17.0)
@@ -385,7 +574,7 @@ def test_prepare_temporal_state_none_only_relocates_checkpoint() -> None:
         running_state_indices=torch.tensor([3], dtype=torch.int32),
     )
 
-    assert ssm_state[3].item() == pytest.approx(17.0)
+    assert ssm_state[3].item() == pytest.approx(0.0)
     assert initial_state[0].item() == pytest.approx(17.0)
 
 
@@ -394,12 +583,12 @@ def test_prepare_temporal_state_from_resident_replays_suffix(
 ) -> None:
     _install_fake_replay(monkeypatch)
     workspace = _make_workspace()
-    workspace.key_tape_cpu_shadow[0, :4, 0, 0] = torch.tensor([1.0, 2.0, 3.0, 4.0])
-    workspace.value_tape_cpu_shadow[0, :4, 0, 0] = torch.tensor(
+    workspace.key_tape_gpu_shadow[0, :4, 0, 0] = torch.tensor([1.0, 2.0, 3.0, 4.0])
+    workspace.value_tape_gpu_shadow[0, :4, 0, 0] = torch.tensor(
         [5.0, 6.0, 7.0, 8.0]
     )
-    workspace.g_tape_cpu_shadow[0, :4, 0] = torch.tensor([9.0, 10.0, 11.0, 12.0])
-    workspace.beta_tape_cpu_shadow[0, :4, 0] = torch.tensor(
+    workspace.g_tape_gpu_shadow[0, :4, 0] = torch.tensor([9.0, 10.0, 11.0, 12.0])
+    workspace.beta_tape_gpu_shadow[0, :4, 0] = torch.tensor(
         [13.0, 14.0, 15.0, 16.0]
     )
     workspace.saved_generation_per_req = [6, -1]
@@ -435,7 +624,166 @@ def test_prepare_temporal_state_from_resident_replays_suffix(
 
     # Start from resident checkpoint 19, replay token 2 then 3.
     assert initial_state[0].item() == pytest.approx(95.0)
-    assert ssm_state[3].item() == pytest.approx(95.0)
+    assert ssm_state[3].item() == pytest.approx(0.0)
+
+
+def test_stage_replay_batch_bulk_gather_matches_row_loop_reference() -> None:
+    workspace = _make_workspace()
+    workspace.segment_start_gpu_shadow[0].fill_(10.0)
+    workspace.key_tape_gpu_shadow[0, :3, 0, 0] = torch.tensor([1.0, 2.0, 3.0])
+    workspace.value_tape_gpu_shadow[0, :3, 0, 0] = torch.tensor([4.0, 5.0, 6.0])
+    workspace.g_tape_gpu_shadow[0, :3, 0] = torch.tensor([7.0, 8.0, 9.0])
+    workspace.beta_tape_gpu_shadow[0, :3, 0] = torch.tensor([10.0, 11.0, 12.0])
+    workspace.key_tape_gpu_shadow[1, :4, 0, 0] = torch.tensor([13.0, 14.0, 15.0, 16.0])
+    workspace.value_tape_gpu_shadow[1, :4, 0, 0] = torch.tensor([17.0, 18.0, 19.0, 20.0])
+    workspace.g_tape_gpu_shadow[1, :4, 0] = torch.tensor([21.0, 22.0, 23.0, 24.0])
+    workspace.beta_tape_gpu_shadow[1, :4, 0] = torch.tensor([25.0, 26.0, 27.0, 28.0])
+    workspace.saved_generation_per_req = [5, 6]
+
+    ssm_state = torch.zeros(5, 1, 1, 1)
+    ssm_state[4].fill_(30.0)
+    helper = HybridTemporalReplayHelper(
+        layer_name="layer.0",
+        workspace=workspace,
+        ssm_state_getter=lambda: ssm_state,
+        replay_buffer_getter=_make_replay_buffers,
+    )
+    plan = _make_group_plan(
+        wave_plan=_make_wave_plan(
+            req_ids=["req-a", "req-b"],
+            spec_req_slots=[0, 1],
+            spec_query_start_locs=[0, 4, 8],
+            predicted_accept_lens=[2, 2],
+            next_replay_generations=[6, 7],
+        ),
+        running_block_ids=[2, 4],
+        source_block_ids=[2, 4],
+        repair_row_indices=[0, 1],
+        repair_req_slots=[0, 1],
+        repair_target_slots=[2, 3],
+        resident_slots=[0, 1],
+        repair_modes=[
+            HybridSpecRepairMode.FROM_START,
+            HybridSpecRepairMode.FROM_RESIDENT,
+        ],
+        repair_generations=[5, 6],
+    )
+    runtime_metadata = helper._get_runtime_metadata(plan)
+    replay_batch = helper._build_replay_batch(plan, runtime_metadata)
+    (
+        initial_state_buf,
+        key_buf,
+        value_buf,
+        g_buf,
+        beta_buf,
+        _,
+    ) = _make_replay_buffers(replay_batch.num_rows, replay_batch.num_tokens)
+
+    helper._stage_replay_batch(
+        ssm_state,
+        plan,
+        replay_batch,
+        initial_state_buf,
+        key_buf,
+        value_buf,
+        g_buf,
+        beta_buf,
+    )
+
+    expected_initial = torch.tensor([[[[10.0]]], [[[30.0]]]])
+    expected_key = torch.tensor([[[1.0]], [[2.0]], [[3.0]], [[15.0]], [[16.0]]])
+    expected_value = torch.tensor(
+        [[[4.0]], [[5.0]], [[6.0]], [[19.0]], [[20.0]]]
+    )
+    expected_g = torch.tensor([[7.0], [8.0], [9.0], [23.0], [24.0]])
+    expected_beta = torch.tensor([[10.0], [11.0], [12.0], [27.0], [28.0]])
+
+    torch.testing.assert_close(initial_state_buf, expected_initial)
+    torch.testing.assert_close(key_buf, expected_key)
+    torch.testing.assert_close(value_buf, expected_value)
+    torch.testing.assert_close(g_buf, expected_g)
+    torch.testing.assert_close(beta_buf, expected_beta)
+
+
+def test_direct_shadow_replay_matches_tape_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_replay(monkeypatch)
+    workspace = _make_workspace()
+    workspace.segment_start_gpu_shadow[0].fill_(10.0)
+    workspace.key_tape_gpu_shadow[0, :3, 0, 0] = torch.tensor([1.0, 2.0, 3.0])
+    workspace.value_tape_gpu_shadow[0, :3, 0, 0] = torch.tensor([4.0, 5.0, 6.0])
+    workspace.g_tape_gpu_shadow[0, :3, 0] = torch.tensor([7.0, 8.0, 9.0])
+    workspace.beta_tape_gpu_shadow[0, :3, 0] = torch.tensor([10.0, 11.0, 12.0])
+    workspace.saved_generation_per_req = [5, -1]
+
+    helper = HybridTemporalReplayHelper(
+        layer_name="layer.0",
+        workspace=workspace,
+        ssm_state_getter=lambda: torch.zeros(4, 1, 1, 1),
+        replay_buffer_getter=_make_replay_buffers,
+    )
+    plan = _make_group_plan(
+        running_block_ids=[3],
+        source_block_ids=[1],
+        repair_target_slots=[2],
+        repair_generations=[5],
+        wave_plan=_make_wave_plan(
+            spec_query_start_locs=[0, 3],
+            predicted_accept_lens=[1],
+            next_replay_generations=[6],
+        ),
+    )
+    runtime_metadata = helper._get_runtime_metadata(plan)
+    replay_batch = helper._build_replay_batch(plan, runtime_metadata)
+
+    tape_ssm_state = torch.zeros(4, 1, 1, 1)
+    workspace.initial_state_padded.zero_()
+    workspace.initial_state_padded[1].fill_(10.0)
+    helper._stage_replay_batch_direct(
+        metadata=runtime_metadata,
+        replay_batch=replay_batch,
+    )
+    initial_state = workspace.initial_state_padded[:2].clone()
+    initial_indices = workspace.initial_state_indices[
+        : replay_batch.num_rows, :1
+    ].clone()
+    (
+        initial_state_buf,
+        key_buf,
+        value_buf,
+        g_buf,
+        beta_buf,
+        final_state_buf,
+    ) = _make_replay_buffers(replay_batch.num_rows, replay_batch.num_tokens)
+    helper._stage_replay_batch(
+        tape_ssm_state,
+        plan,
+        replay_batch,
+        initial_state_buf,
+        key_buf,
+        value_buf,
+        g_buf,
+        beta_buf,
+    )
+    helper._run_replay_from_tape(
+        replay_batch,
+        initial_state_buf,
+        key_buf,
+        value_buf,
+        g_buf,
+        beta_buf,
+        final_state_buf,
+    )
+    expected = final_state_buf[replay_batch.cu_seqlens[-1] - 1].clone()
+
+    workspace.initial_state_padded[:2].copy_(initial_state)
+    workspace.initial_state_indices[: replay_batch.num_rows, :1].copy_(
+        initial_indices
+    )
+    helper._run_replay_from_shadow(replay_batch)
+
+    torch.testing.assert_close(workspace.initial_state_padded[1], expected)
 
 
 def test_forward_core_spec_replay_stores_replay_artifacts(
@@ -444,7 +792,7 @@ def test_forward_core_spec_replay_stores_replay_artifacts(
     attn = object.__new__(QwenGatedDeltaNetAttention)
     attn.A_log = torch.zeros(1)
     attn.dt_bias = torch.zeros(1)
-    attn.hybrid_temporal_replay_workspace = object()
+    attn.hybrid_temporal_replay_workspace = _make_workspace()
 
     query_spec = torch.randn(1, 2, 1, 1)
     key_spec = torch.randn(1, 2, 1, 1)
@@ -468,19 +816,17 @@ def test_forward_core_spec_replay_stores_replay_artifacts(
     attn._get_hybrid_temporal_replay_helper = lambda: fake_helper
     attn.acquire_hybrid_temporal_verify_scratch = lambda num_tokens: scratch
 
-    def fake_capture_tape(**kwargs):
+    def fake_capture_shadow(**kwargs):
         captured.update(kwargs)
         return (
             torch.empty_like(query_spec),
             scratch,
-            torch.full((2, 1), 7.0),
-            torch.full((2, 1), 11.0),
         )
 
     monkeypatch.setattr(
         qwen_gdn_module,
-        "fused_sigmoid_gating_delta_rule_update_capture_tape",
-        fake_capture_tape,
+        "fused_sigmoid_gating_delta_rule_update_capture_shadow",
+        fake_capture_shadow,
     )
 
     metadata = SimpleNamespace(
@@ -510,5 +856,13 @@ def test_forward_core_spec_replay_stores_replay_artifacts(
     assert initial_state[0].item() == pytest.approx(0.0)
     assert initial_state[1].item() == pytest.approx(23.0)
     assert initial_state_indices.tolist() == [[1, 1]]
+    resident_state_out = captured["resident_final_state_out"]
+    resident_state_indices = captured["resident_state_indices"]
+    assert resident_state_out is ssm_state
+    assert isinstance(resident_state_indices, torch.Tensor)
+    assert resident_state_indices.tolist() == [1]
+    resident_token_indices = captured["resident_token_indices"]
+    assert isinstance(resident_token_indices, torch.Tensor)
+    assert resident_token_indices.tolist() == [0]
     assert "prepare" in captured
     assert "store" in captured

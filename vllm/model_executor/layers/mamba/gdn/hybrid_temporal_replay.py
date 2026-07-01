@@ -12,14 +12,15 @@ from typing import Callable
 import torch
 
 from vllm.model_executor.layers.fla.ops import (
+    fused_sigmoid_gating_delta_rule_replay_from_shadow,
     fused_sigmoid_gating_delta_rule_replay_from_tape,
 )
 from vllm.v1.hybrid_spec_replay import (
     HybridSpecRepairMode,
     HybridTemporalGroupPlan,
+    HybridTemporalRuntimeMetadataBundle,
     HybridTemporalWavePlan,
 )
-from vllm.v1.worker.workspace import current_workspace_manager
 
 
 TimingQueue = deque[tuple[str, torch.cuda.Event, torch.cuda.Event, int]]
@@ -34,24 +35,213 @@ def _trace_predict_last(message: str) -> None:
 
 @dataclass
 class HybridTemporalReplayWorkspace:
-    segment_start_cpu_shadow: torch.Tensor
-    key_tape_cpu_shadow: torch.Tensor
-    value_tape_cpu_shadow: torch.Tensor
-    g_tape_cpu_shadow: torch.Tensor
-    beta_tape_cpu_shadow: torch.Tensor
+    segment_start_gpu_shadow: torch.Tensor
+    key_tape_gpu_shadow: torch.Tensor
+    value_tape_gpu_shadow: torch.Tensor
+    g_tape_gpu_shadow: torch.Tensor
+    beta_tape_gpu_shadow: torch.Tensor
     saved_generation_per_req: list[int]
+    spill_stream: torch.cuda.Stream | None = None
+    last_spill_done: torch.cuda.Event | None = None
+    pending_spill_refs: list[tuple[torch.cuda.Event, tuple[torch.Tensor, ...]]] = (
+        field(default_factory=list)
+    )
+    spill_req_slots: torch.Tensor | None = None
+    spill_row_starts: torch.Tensor | None = None
+    spill_dst_linear_indices: torch.Tensor | None = None
+    replay_req_slots: torch.Tensor | None = None
+    replay_src_begin: torch.Tensor | None = None
+    replay_src_end: torch.Tensor | None = None
+    replay_lengths: torch.Tensor | None = None
+    replay_cu_seqlens: torch.Tensor | None = None
+    replay_src_linear_indices: torch.Tensor | None = None
+    replay_running_block_ids: torch.Tensor | None = None
+    replay_output_row_ids: torch.Tensor | None = None
+    replay_from_start_rows: torch.Tensor | None = None
+    replay_from_start_req_slots: torch.Tensor | None = None
+    replay_from_resident_rows: torch.Tensor | None = None
+    replay_from_resident_running_blocks: torch.Tensor | None = None
+    token_offsets: torch.Tensor | None = None
+    state_row_ids: torch.Tensor | None = None
+    initial_state_padded: torch.Tensor | None = None
+    initial_state_indices: torch.Tensor | None = None
+    resident_state_indices: torch.Tensor | None = None
+    resident_token_indices: torch.Tensor | None = None
+    capture_source_block_ids: torch.Tensor | None = None
+    checkpoint_src_blocks: torch.Tensor | None = None
+    checkpoint_dst_blocks: torch.Tensor | None = None
     repair_copy_ms: float = 0.0
     repair_compute_ms: float = 0.0
     repair_row_count: int = 0
     repair_from_start_count: int = 0
     repair_from_resident_count: int = 0
+    verify_attention_ms: float = 0.0
+    layer_total_ms: float = 0.0
+    verify_call_count: int = 0
     checkpoint_save_ms: float = 0.0
+    post_replay_state_gather_ms: float = 0.0
+    capture_materialize_ms: float = 0.0
+    segment_start_save_ms: float = 0.0
     tape_save_ms: float = 0.0
     pending_timing_events: TimingQueue = field(default_factory=deque)
+
+    def __post_init__(self) -> None:
+        max_num_reqs = int(self.segment_start_gpu_shadow.shape[0])
+        max_candidate_states = int(self.key_tape_gpu_shadow.shape[1])
+        max_num_tokens = max_num_reqs * max_candidate_states
+        device = self.segment_start_gpu_shadow.device
+
+        if device.type == "cuda" and self.spill_stream is None:
+            self.spill_stream = torch.cuda.Stream(device=device)
+        if self.spill_req_slots is None:
+            self.spill_req_slots = torch.empty(
+                max_num_reqs,
+                dtype=torch.long,
+                device=device,
+            )
+        if self.spill_row_starts is None:
+            self.spill_row_starts = torch.empty(
+                max_num_reqs + 1,
+                dtype=torch.int32,
+                device=device,
+            )
+        if self.spill_dst_linear_indices is None:
+            self.spill_dst_linear_indices = torch.empty(
+                max_num_tokens,
+                dtype=torch.long,
+                device=device,
+            )
+        if self.replay_req_slots is None:
+            self.replay_req_slots = torch.empty(
+                max_num_reqs,
+                dtype=torch.long,
+                device=device,
+            )
+        if self.replay_src_begin is None:
+            self.replay_src_begin = torch.empty(
+                max_num_reqs,
+                dtype=torch.long,
+                device=device,
+            )
+        if self.replay_src_end is None:
+            self.replay_src_end = torch.empty(
+                max_num_reqs,
+                dtype=torch.long,
+                device=device,
+            )
+        if self.replay_cu_seqlens is None:
+            self.replay_cu_seqlens = torch.empty(
+                max_num_reqs + 1,
+                dtype=torch.int32,
+                device=device,
+            )
+        if self.replay_lengths is None:
+            self.replay_lengths = torch.empty(
+                max_num_reqs,
+                dtype=torch.int32,
+                device=device,
+            )
+        if self.replay_src_linear_indices is None:
+            self.replay_src_linear_indices = torch.empty(
+                max_num_tokens,
+                dtype=torch.long,
+                device=device,
+            )
+        if self.replay_running_block_ids is None:
+            self.replay_running_block_ids = torch.empty(
+                max_num_reqs,
+                dtype=torch.int32,
+                device=device,
+            )
+        if self.replay_output_row_ids is None:
+            self.replay_output_row_ids = torch.empty(
+                max_num_reqs,
+                dtype=torch.int32,
+                device=device,
+            )
+        if self.replay_from_start_rows is None:
+            self.replay_from_start_rows = torch.empty(
+                max_num_reqs,
+                dtype=torch.long,
+                device=device,
+            )
+        if self.replay_from_start_req_slots is None:
+            self.replay_from_start_req_slots = torch.empty(
+                max_num_reqs,
+                dtype=torch.long,
+                device=device,
+            )
+        if self.replay_from_resident_rows is None:
+            self.replay_from_resident_rows = torch.empty(
+                max_num_reqs,
+                dtype=torch.long,
+                device=device,
+            )
+        if self.replay_from_resident_running_blocks is None:
+            self.replay_from_resident_running_blocks = torch.empty(
+                max_num_reqs,
+                dtype=torch.long,
+                device=device,
+            )
+        if self.token_offsets is None:
+            self.token_offsets = torch.arange(
+                max_num_tokens,
+                dtype=torch.long,
+                device=device,
+            )
+        if self.state_row_ids is None:
+            self.state_row_ids = torch.arange(
+                max_num_reqs + 1,
+                dtype=torch.int32,
+                device=device,
+            )
+        if self.initial_state_padded is None:
+            self.initial_state_padded = torch.empty(
+                (max_num_reqs + 1, *self.segment_start_gpu_shadow.shape[1:]),
+                dtype=self.segment_start_gpu_shadow.dtype,
+                device=device,
+            )
+        if self.initial_state_indices is None:
+            self.initial_state_indices = torch.empty(
+                (max_num_reqs, max_candidate_states),
+                dtype=torch.int32,
+                device=device,
+            )
+        if self.resident_state_indices is None:
+            self.resident_state_indices = torch.empty(
+                (max_num_reqs, max_candidate_states),
+                dtype=torch.int32,
+                device=device,
+            )
+        if self.resident_token_indices is None:
+            self.resident_token_indices = torch.empty(
+                max_num_reqs,
+                dtype=torch.int32,
+                device=device,
+            )
+        if self.capture_source_block_ids is None:
+            self.capture_source_block_ids = torch.empty(
+                max_num_reqs,
+                dtype=torch.long,
+                device=device,
+            )
+        if self.checkpoint_src_blocks is None:
+            self.checkpoint_src_blocks = torch.empty(
+                max_num_reqs,
+                dtype=torch.long,
+                device=device,
+            )
+        if self.checkpoint_dst_blocks is None:
+            self.checkpoint_dst_blocks = torch.empty(
+                max_num_reqs,
+                dtype=torch.long,
+                device=device,
+            )
 
 
 @dataclass(frozen=True)
 class ReplayBatch:
+    repair_plan_indices: list[int]
     row_indices: list[int]
     running_block_ids: list[int]
     req_slots: list[int]
@@ -88,6 +278,114 @@ class HybridTemporalReplayHelper:
     def set_group_plan(self, plan: HybridTemporalGroupPlan | None) -> None:
         self.group_plan = plan
 
+    def _get_runtime_metadata(
+        self,
+        plan: HybridTemporalGroupPlan,
+    ) -> HybridTemporalRuntimeMetadataBundle:
+        metadata = plan.runtime_metadata
+        if metadata is not None:
+            return metadata
+
+        resident_token_indices = [
+            max(
+                0,
+                min(
+                    int(plan.wave_plan.predicted_accept_lens[row_idx]),
+                    int(
+                        plan.wave_plan.spec_query_start_locs[row_idx + 1]
+                        - plan.wave_plan.spec_query_start_locs[row_idx]
+                    ),
+                )
+                - 1,
+            )
+            for row_idx in range(len(plan.wave_plan.req_ids))
+        ]
+        packed_repair_req_slots: list[int] = []
+        packed_repair_src_begin: list[int] = []
+        packed_repair_lengths: list[int] = []
+        packed_replay_cu_seqlens = [0]
+        packed_replay_output_row_ids: list[int] = []
+        from_start_rows: list[int] = []
+        from_start_req_slots: list[int] = []
+        from_resident_rows: list[int] = []
+        from_resident_source_blocks: list[int] = []
+
+        for repair_idx, row_idx in enumerate(plan.repair_row_indices):
+            mode = HybridSpecRepairMode(plan.repair_modes[repair_idx])
+            if mode == HybridSpecRepairMode.NONE:
+                continue
+            target_slot = int(plan.repair_target_slots[repair_idx])
+            resident_slot = int(plan.resident_slots[repair_idx])
+            if mode == HybridSpecRepairMode.FROM_START:
+                src_begin = 0
+                from_start_rows.append(int(row_idx))
+                from_start_req_slots.append(int(plan.repair_req_slots[repair_idx]))
+            else:
+                src_begin = resident_slot + 1
+                from_resident_rows.append(int(row_idx))
+                from_resident_source_blocks.append(int(plan.source_block_ids[row_idx]))
+            replay_length = target_slot + 1 - src_begin
+            if replay_length <= 0:
+                continue
+            packed_repair_req_slots.append(int(plan.repair_req_slots[repair_idx]))
+            packed_repair_src_begin.append(src_begin)
+            packed_repair_lengths.append(replay_length)
+            packed_replay_cu_seqlens.append(
+                packed_replay_cu_seqlens[-1] + replay_length
+            )
+            packed_replay_output_row_ids.append(int(row_idx) + 1)
+
+        return HybridTemporalRuntimeMetadataBundle(
+            shadow_req_slots_cpu=torch.tensor(
+                plan.wave_plan.spec_req_slots,
+                dtype=torch.long,
+            ).contiguous(),
+            resident_token_indices_cpu=torch.tensor(
+                resident_token_indices,
+                dtype=torch.int32,
+            ).contiguous(),
+            source_block_ids_cpu=torch.tensor(
+                plan.source_block_ids,
+                dtype=torch.long,
+            ).contiguous(),
+            repair_req_slots_cpu=torch.tensor(
+                packed_repair_req_slots,
+                dtype=torch.long,
+            ).contiguous(),
+            repair_src_begin_cpu=torch.tensor(
+                packed_repair_src_begin,
+                dtype=torch.long,
+            ).contiguous(),
+            repair_lengths_cpu=torch.tensor(
+                packed_repair_lengths,
+                dtype=torch.int32,
+            ).contiguous(),
+            replay_cu_seqlens_cpu=torch.tensor(
+                packed_replay_cu_seqlens,
+                dtype=torch.int32,
+            ).contiguous(),
+            replay_output_row_ids_cpu=torch.tensor(
+                packed_replay_output_row_ids,
+                dtype=torch.int32,
+            ).contiguous(),
+            from_start_rows_cpu=torch.tensor(
+                from_start_rows,
+                dtype=torch.long,
+            ).contiguous(),
+            from_start_req_slots_cpu=torch.tensor(
+                from_start_req_slots,
+                dtype=torch.long,
+            ).contiguous(),
+            from_resident_rows_cpu=torch.tensor(
+                from_resident_rows,
+                dtype=torch.long,
+            ).contiguous(),
+            from_resident_source_blocks_cpu=torch.tensor(
+                from_resident_source_blocks,
+                dtype=torch.long,
+            ).contiguous(),
+        )
+
     def prepare_temporal_state_for_verify(
         self,
         ssm_state: torch.Tensor,
@@ -115,6 +413,8 @@ class HybridTemporalReplayHelper:
         )
 
         workspace = self.workspace
+        metadata = self._get_runtime_metadata(plan)
+        self._wait_for_shadow_ready(ssm_state)
         use_cuda_timing = ssm_state.is_cuda
         copy_start = copy_end = compute_start = compute_end = None
         if use_cuda_timing:
@@ -122,77 +422,51 @@ class HybridTemporalReplayHelper:
             copy_end = torch.cuda.Event(enable_timing=True)
             compute_start = torch.cuda.Event(enable_timing=True)
             compute_end = torch.cuda.Event(enable_timing=True)
-            copy_start.record(torch.cuda.current_stream())
+            copy_start.record(torch.cuda.current_stream(ssm_state.device))
 
-        self._relocate_predict_checkpoints(ssm_state, plan)
-        replay_batch = self._build_replay_batch(ssm_state, plan)
+        prepared = self._materialize_capture_initial_state(
+            ssm_state=ssm_state,
+            plan=plan,
+            metadata=metadata,
+        )
+        replay_batch = self._build_replay_batch(plan, metadata)
         if replay_batch.num_rows == 0:
             if use_cuda_timing and copy_end is not None:
-                copy_end.record(torch.cuda.current_stream())
+                copy_end.record(torch.cuda.current_stream(ssm_state.device))
                 workspace.pending_timing_events.append(
                     ("repair_copy_ms", copy_start, copy_end, 0)
                 )
                 self._drain_timing_events()
-            prepared = ssm_state[running_state_indices].contiguous()
             _trace_predict_last(
                 f"prepare_done layer={self.layer_name} no_replay "
                 f"first_scalar={float(prepared[0].reshape(-1)[0].item())}"
             )
             return prepared
 
-        (
-            initial_state_buf,
-            key_buf,
-            value_buf,
-            g_buf,
-            beta_buf,
-            final_state_buf,
-        ) = self._replay_buffer_getter(
-            replay_batch.num_rows,
-            replay_batch.num_tokens,
+        self._stage_replay_batch_direct(
+            metadata=metadata,
+            replay_batch=replay_batch,
         )
-        self._stage_replay_batch(
-            ssm_state,
-            plan,
-            replay_batch,
-            initial_state_buf,
-            key_buf,
-            value_buf,
-            g_buf,
-            beta_buf,
-        )
-        if use_cuda_timing and copy_end is not None:
-            copy_end.record(torch.cuda.current_stream())
+        if use_cuda_timing and copy_end is not None and compute_start is not None:
+            copy_end.record(torch.cuda.current_stream(ssm_state.device))
             workspace.pending_timing_events.append(
                 ("repair_copy_ms", copy_start, copy_end, 0)
             )
-            compute_start.record(torch.cuda.current_stream())
-        self._run_replay_from_tape(
-            replay_batch,
-            initial_state_buf,
-            key_buf,
-            value_buf,
-            g_buf,
-            beta_buf,
-            final_state_buf,
-        )
+            compute_start.record(torch.cuda.current_stream(ssm_state.device))
+        self._run_replay_from_shadow(replay_batch)
         if use_cuda_timing and compute_end is not None:
-            compute_end.record(torch.cuda.current_stream())
+            compute_end.record(torch.cuda.current_stream(ssm_state.device))
             workspace.pending_timing_events.append(
                 ("repair_compute_ms", compute_start, compute_end, 0)
             )
-
         for row_idx, running_block_id, end in zip(
             replay_batch.row_indices,
             replay_batch.running_block_ids,
             replay_batch.cu_seqlens[1:],
         ):
-            repaired = final_state_buf[end - 1]
-            ssm_state[int(running_block_id)].copy_(repaired, non_blocking=True)
             _trace_predict_last(
                 f"repair layer={self.layer_name} row={row_idx} running="
-                f"{running_block_id} final_slot={end - 1} "
-                f"first_scalar={float(repaired.reshape(-1)[0].item())}"
+                f"{running_block_id} final_slot={end - 1}"
             )
 
         workspace.repair_row_count += replay_batch.num_rows
@@ -200,7 +474,6 @@ class HybridTemporalReplayHelper:
         workspace.repair_from_resident_count += replay_batch.mode_counts[1]
         if use_cuda_timing:
             self._drain_timing_events()
-        prepared = ssm_state[running_state_indices].contiguous()
         _trace_predict_last(
             f"prepare_done layer={self.layer_name} repaired_rows="
             f"{replay_batch.num_rows} "
@@ -208,15 +481,62 @@ class HybridTemporalReplayHelper:
         )
         return prepared
 
+    def _materialize_capture_initial_state(
+        self,
+        *,
+        ssm_state: torch.Tensor,
+        plan: HybridTemporalGroupPlan,
+        metadata: HybridTemporalRuntimeMetadataBundle,
+    ) -> torch.Tensor:
+        workspace = self.workspace
+        assert workspace.initial_state_padded is not None
+        assert workspace.capture_source_block_ids is not None
+        assert workspace.replay_from_start_rows is not None
+        assert workspace.replay_from_start_req_slots is not None
+
+        num_rows = len(plan.wave_plan.req_ids)
+        capture_state = workspace.initial_state_padded[: num_rows + 1]
+        capture_state[0].zero_()
+        state_out = capture_state[1:]
+        source_block_ids = workspace.capture_source_block_ids[:num_rows]
+        source_block_ids.copy_(
+            metadata.source_block_ids_cpu,
+            non_blocking=ssm_state.is_cuda,
+        )
+        torch.index_select(ssm_state, 0, source_block_ids, out=state_out)
+
+        from_start_count = int(metadata.from_start_rows_cpu.numel())
+        if from_start_count > 0:
+            from_start_rows = workspace.replay_from_start_rows[:from_start_count]
+            from_start_req_slots = workspace.replay_from_start_req_slots[
+                :from_start_count
+            ]
+            from_start_rows.copy_(
+                metadata.from_start_rows_cpu,
+                non_blocking=ssm_state.is_cuda,
+            )
+            from_start_req_slots.copy_(
+                metadata.from_start_req_slots_cpu,
+                non_blocking=ssm_state.is_cuda,
+            )
+            start_states = torch.index_select(
+                workspace.segment_start_gpu_shadow,
+                0,
+                from_start_req_slots,
+            )
+            state_out.index_copy_(0, from_start_rows, start_states)
+
+        return state_out
+
     def store_replay_artifacts(
         self,
         initial_state: torch.Tensor,
         running_state_indices: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
-        saved_g: torch.Tensor,
-        saved_beta: torch.Tensor,
-        final_states: torch.Tensor,
+        key: torch.Tensor | None,
+        value: torch.Tensor | None,
+        saved_g: torch.Tensor | None,
+        saved_beta: torch.Tensor | None,
+        final_states: torch.Tensor | None,
         wave_plan: HybridTemporalWavePlan,
     ) -> None:
         if not wave_plan.req_ids:
@@ -225,96 +545,114 @@ class HybridTemporalReplayHelper:
         workspace = self.workspace
         ssm_state = self._ssm_state_getter()
         running_state_indices_list = [int(idx) for idx in running_state_indices.tolist()]
-        key = key.squeeze(0)
-        value = value.squeeze(0)
-
         use_cuda_timing = ssm_state.is_cuda
-        checkpoint_start = checkpoint_end = tape_start = tape_end = None
-        if use_cuda_timing:
-            checkpoint_start = torch.cuda.Event(enable_timing=True)
-            checkpoint_end = torch.cuda.Event(enable_timing=True)
-            tape_start = torch.cuda.Event(enable_timing=True)
-            tape_end = torch.cuda.Event(enable_timing=True)
-            checkpoint_start.record(torch.cuda.current_stream())
+        if key is not None and value is not None and saved_g is not None and saved_beta is not None:
+            key = key.squeeze(0)
+            value = value.squeeze(0)
+            self._release_completed_spill_refs()
+            tape_start = tape_end = None
+            if use_cuda_timing:
+                tape_start = torch.cuda.Event(enable_timing=True)
+                tape_end = torch.cuda.Event(enable_timing=True)
+            del final_states
 
-        for row, (start, end) in enumerate(
-            zip(
-                wave_plan.spec_query_start_locs,
-                wave_plan.spec_query_start_locs[1:],
+            if use_cuda_timing and workspace.spill_stream is not None:
+                verify_done = torch.cuda.Event()
+                verify_done.record(torch.cuda.current_stream(ssm_state.device))
+                workspace.spill_stream.wait_event(verify_done)
+                with torch.cuda.stream(workspace.spill_stream):
+                    if tape_start is not None:
+                        tape_start.record(workspace.spill_stream)
+                    self._spill_replay_wave(
+                        initial_state=initial_state,
+                        key=key,
+                        value=value,
+                        saved_g=saved_g,
+                        saved_beta=saved_beta,
+                        wave_plan=wave_plan,
+                    )
+                    if tape_end is not None:
+                        tape_end.record(workspace.spill_stream)
+                    spill_done = torch.cuda.Event()
+                    spill_done.record(workspace.spill_stream)
+                workspace.last_spill_done = spill_done
+                self._record_pending_spill(
+                    spill_done,
+                    initial_state,
+                    key,
+                    value,
+                    saved_g,
+                    saved_beta,
+                )
+            else:
+                self._spill_replay_wave(
+                    initial_state=initial_state,
+                    key=key,
+                    value=value,
+                    saved_g=saved_g,
+                    saved_beta=saved_beta,
+                    wave_plan=wave_plan,
+                )
+                workspace.last_spill_done = None
+                workspace.pending_spill_refs.clear()
+            if use_cuda_timing and tape_start is not None and tape_end is not None:
+                workspace.pending_timing_events.append(
+                    ("tape_save_ms", tape_start, tape_end, 0)
+                )
+                self._drain_timing_events()
+        else:
+            assert workspace.spill_req_slots is not None
+            req_slots = workspace.spill_req_slots[: len(wave_plan.spec_req_slots)]
+            metadata = (
+                self._get_runtime_metadata(self.group_plan)
+                if self.group_plan is not None
+                and self.group_plan.wave_plan.req_ids == wave_plan.req_ids
+                else None
             )
-        ):
-            resident_len = max(
-                1,
-                min(int(wave_plan.predicted_accept_lens[row]), end - start),
+            if metadata is not None:
+                req_slots.copy_(
+                    metadata.shadow_req_slots_cpu,
+                    non_blocking=ssm_state.is_cuda,
+                )
+            else:
+                for idx, req_slot in enumerate(wave_plan.spec_req_slots):
+                    req_slots[idx] = int(req_slot)
+            segment_start = segment_end = None
+            if use_cuda_timing:
+                segment_start = torch.cuda.Event(enable_timing=True)
+                segment_end = torch.cuda.Event(enable_timing=True)
+                segment_start.record(torch.cuda.current_stream(ssm_state.device))
+            workspace.segment_start_gpu_shadow.index_copy_(0, req_slots, initial_state)
+            if use_cuda_timing:
+                assert segment_end is not None
+                segment_end.record(torch.cuda.current_stream(ssm_state.device))
+                workspace.pending_timing_events.append(
+                    ("segment_start_save_ms", segment_start, segment_end, 0)
+                )
+                spill_done = torch.cuda.Event()
+                spill_done.record(torch.cuda.current_stream(ssm_state.device))
+                workspace.last_spill_done = spill_done
+            else:
+                workspace.last_spill_done = None
+            workspace.pending_spill_refs.clear()
+            if use_cuda_timing:
+                self._drain_timing_events()
+
+        for row, req_slot in enumerate(wave_plan.spec_req_slots):
+            token_count = (
+                wave_plan.spec_query_start_locs[row + 1]
+                - wave_plan.spec_query_start_locs[row]
             )
-            predicted_slot = start + resident_len - 1
-            ssm_state[running_state_indices_list[row]].copy_(
-                final_states[predicted_slot],
-                non_blocking=True,
+            workspace.saved_generation_per_req[int(req_slot)] = int(
+                wave_plan.next_replay_generations[row]
             )
             _trace_predict_last(
                 f"store layer={self.layer_name} row={row} running="
                 f"{running_state_indices_list[row]} predicted_len="
-                f"{int(wave_plan.predicted_accept_lens[row])} predicted_slot="
-                f"{predicted_slot} first_scalar="
-                f"{float(final_states[predicted_slot].reshape(-1)[0].item())}"
+                f"{int(wave_plan.predicted_accept_lens[row])} token_count="
+                f"{token_count} replay_gen="
+                f"{int(wave_plan.next_replay_generations[row])}"
             )
-        if use_cuda_timing and checkpoint_end is not None:
-            checkpoint_end.record(torch.cuda.current_stream())
-
-        if use_cuda_timing and tape_start is not None:
-            tape_start.record(torch.cuda.current_stream())
-        for row, (start, end) in enumerate(
-            zip(
-                wave_plan.spec_query_start_locs,
-                wave_plan.spec_query_start_locs[1:],
-            )
-        ):
-            req_slot = int(wave_plan.spec_req_slots[row])
-            token_count = end - start
-            workspace.segment_start_cpu_shadow[req_slot].copy_(
-                initial_state[row],
-                non_blocking=True,
-            )
-            workspace.key_tape_cpu_shadow[req_slot, :token_count].copy_(
-                key[start:end],
-                non_blocking=True,
-            )
-            workspace.value_tape_cpu_shadow[req_slot, :token_count].copy_(
-                value[start:end],
-                non_blocking=True,
-            )
-            workspace.g_tape_cpu_shadow[req_slot, :token_count].copy_(
-                saved_g[start:end],
-                non_blocking=True,
-            )
-            workspace.beta_tape_cpu_shadow[req_slot, :token_count].copy_(
-                saved_beta[start:end],
-                non_blocking=True,
-            )
-            workspace.saved_generation_per_req[req_slot] = int(
-                wave_plan.next_replay_generations[row]
-            )
-        if use_cuda_timing and tape_end is not None:
-            tape_end.record(torch.cuda.current_stream())
-            tape_done = torch.cuda.Event()
-            tape_done.record(torch.cuda.current_stream())
-            current_workspace_manager().mark_in_use_until(tape_done)
-
-        if (
-            use_cuda_timing
-            and checkpoint_start is not None
-            and checkpoint_end is not None
-            and tape_start is not None
-            and tape_end is not None
-        ):
-            workspace.pending_timing_events.append(
-                ("checkpoint_save_ms", checkpoint_start, checkpoint_end, 0)
-            )
-            workspace.pending_timing_events.append(
-                ("tape_save_ms", tape_start, tape_end, 0)
-            )
-            self._drain_timing_events()
 
     def reset_repair_timing_stats(self) -> None:
         self._drain_timing_events(synchronize=True)
@@ -325,22 +663,42 @@ class HybridTemporalReplayHelper:
         workspace.repair_row_count = 0
         workspace.repair_from_start_count = 0
         workspace.repair_from_resident_count = 0
+        workspace.verify_attention_ms = 0.0
+        workspace.layer_total_ms = 0.0
+        workspace.verify_call_count = 0
         workspace.checkpoint_save_ms = 0.0
+        workspace.post_replay_state_gather_ms = 0.0
+        workspace.capture_materialize_ms = 0.0
+        workspace.segment_start_save_ms = 0.0
         workspace.tape_save_ms = 0.0
+        workspace.last_spill_done = None
+        workspace.pending_spill_refs.clear()
 
     def snapshot_repair_timing_stats(self) -> dict[str, float | int]:
         self._drain_timing_events(synchronize=True)
         workspace = self.workspace
         return {
             "repair_copy_ms": float(workspace.repair_copy_ms),
+            "prepare_copy_ms": float(workspace.repair_copy_ms),
             "repair_compute_ms": float(workspace.repair_compute_ms),
             "repair_row_count": int(workspace.repair_row_count),
             "repair_from_start_count": int(workspace.repair_from_start_count),
             "repair_from_resident_count": int(
                 workspace.repair_from_resident_count
             ),
+            "verify_attention_ms": float(workspace.verify_attention_ms),
+            "layer_total_ms": float(workspace.layer_total_ms),
+            "verify_call_count": int(workspace.verify_call_count),
             "checkpoint_save_ms": float(workspace.checkpoint_save_ms),
+            "post_replay_state_gather_ms": float(
+                workspace.post_replay_state_gather_ms
+            ),
+            "capture_materialize_ms": float(
+                workspace.capture_materialize_ms
+            ),
+            "segment_start_save_ms": float(workspace.segment_start_save_ms),
             "tape_save_ms": float(workspace.tape_save_ms),
+            "spill_copy_ms": float(workspace.tape_save_ms),
         }
 
     def _relocate_predict_checkpoints(
@@ -348,28 +706,38 @@ class HybridTemporalReplayHelper:
         ssm_state: torch.Tensor,
         plan: HybridTemporalGroupPlan,
     ) -> None:
-        for source_block_id, running_block_id in zip(
-            plan.source_block_ids,
-            plan.running_block_ids,
-        ):
-            if source_block_id == running_block_id:
-                continue
-            ssm_state[int(running_block_id)].copy_(
-                ssm_state[int(source_block_id)],
-                non_blocking=True,
+        pairs = [
+            (int(source_block_id), int(running_block_id))
+            for source_block_id, running_block_id in zip(
+                plan.source_block_ids,
+                plan.running_block_ids,
             )
+            if source_block_id != running_block_id
+        ]
+        if not pairs:
+            return
+        workspace = self.workspace
+        assert workspace.checkpoint_src_blocks is not None
+        assert workspace.checkpoint_dst_blocks is not None
+        src_blocks = workspace.checkpoint_src_blocks[: len(pairs)]
+        dst_blocks = workspace.checkpoint_dst_blocks[: len(pairs)]
+        for idx, (src, dst) in enumerate(pairs):
+            src_blocks[idx] = src
+            dst_blocks[idx] = dst
+        relocated = torch.index_select(ssm_state, 0, src_blocks)
+        ssm_state.index_copy_(0, dst_blocks, relocated)
 
     def _build_replay_batch(
         self,
-        ssm_state: torch.Tensor,
         plan: HybridTemporalGroupPlan,
+        metadata: HybridTemporalRuntimeMetadataBundle,
     ) -> ReplayBatch:
-        del ssm_state
         workspace = self.workspace
+        repair_plan_indices: list[int] = []
         row_indices: list[int] = []
         running_block_ids: list[int] = []
         req_slots: list[int] = []
-        cu_seqlens = [0]
+        cu_seqlens = metadata.replay_cu_seqlens_cpu.tolist()
         from_start = 0
         from_resident = 0
 
@@ -386,24 +754,23 @@ class HybridTemporalReplayHelper:
                     f"expected generation={generation}, got={saved_generation}"
                 )
 
-            target_slot = int(plan.repair_target_slots[idx])
-            resident_slot = int(plan.resident_slots[idx])
             if mode == HybridSpecRepairMode.FROM_START:
-                replay_tokens = target_slot + 1
                 from_start += 1
             elif mode == HybridSpecRepairMode.FROM_RESIDENT:
-                replay_tokens = target_slot - resident_slot
                 from_resident += 1
             else:
                 continue
-            if replay_tokens <= 0:
+            if len(repair_plan_indices) >= int(metadata.repair_lengths_cpu.numel()):
                 continue
+            if int(metadata.repair_lengths_cpu[len(repair_plan_indices)].item()) <= 0:
+                continue
+            repair_plan_indices.append(int(idx))
             row_indices.append(int(row_idx))
             running_block_ids.append(int(plan.running_block_ids[row_idx]))
             req_slots.append(req_slot)
-            cu_seqlens.append(cu_seqlens[-1] + replay_tokens)
 
         return ReplayBatch(
+            repair_plan_indices=repair_plan_indices,
             row_indices=row_indices,
             running_block_ids=running_block_ids,
             req_slots=req_slots,
@@ -423,55 +790,210 @@ class HybridTemporalReplayHelper:
         beta_buf: torch.Tensor,
     ) -> None:
         workspace = self.workspace
-        repair_idx_by_row = {
-            row_idx: idx for idx, row_idx in enumerate(plan.repair_row_indices)
-        }
+        assert workspace.replay_req_slots is not None
+        assert workspace.replay_src_begin is not None
+        assert workspace.replay_src_end is not None
+        assert workspace.replay_src_linear_indices is not None
+        assert workspace.token_offsets is not None
+
+        from_start_rows: list[int] = []
+        from_start_req_slots: list[int] = []
+        from_resident_rows: list[int] = []
+        from_resident_running_blocks: list[int] = []
         cursor = 0
-        packed_row = 0
-        for row_idx in replay_batch.row_indices:
-            repair_idx = repair_idx_by_row[row_idx]
+        tokens_per_req = int(workspace.key_tape_gpu_shadow.shape[1])
+
+        for packed_row, (row_idx, repair_idx) in enumerate(
+            zip(replay_batch.row_indices, replay_batch.repair_plan_indices)
+        ):
             mode = HybridSpecRepairMode(plan.repair_modes[repair_idx])
             req_slot = int(plan.repair_req_slots[repair_idx])
             target_slot = int(plan.repair_target_slots[repair_idx])
             resident_slot = int(plan.resident_slots[repair_idx])
-            row_start = int(plan.wave_plan.spec_query_start_locs[row_idx])
             if mode == HybridSpecRepairMode.FROM_START:
                 src_begin = 0
-                src_end = target_slot + 1
-                initial_state_buf[packed_row].copy_(
-                    workspace.segment_start_cpu_shadow[req_slot],
-                    non_blocking=True,
-                )
+                from_start_rows.append(packed_row)
+                from_start_req_slots.append(req_slot)
             else:
                 src_begin = resident_slot + 1
-                src_end = target_slot + 1
-                initial_state_buf[packed_row].copy_(
-                    ssm_state[int(plan.running_block_ids[row_idx])],
-                    non_blocking=True,
+                from_resident_rows.append(packed_row)
+                from_resident_running_blocks.append(
+                    int(plan.running_block_ids[row_idx])
                 )
+            src_end = target_slot + 1
             replay_tokens = src_end - src_begin
-            key_buf[cursor : cursor + replay_tokens].copy_(
-                workspace.key_tape_cpu_shadow[req_slot, src_begin:src_end],
-                non_blocking=True,
-            )
-            value_buf[cursor : cursor + replay_tokens].copy_(
-                workspace.value_tape_cpu_shadow[req_slot, src_begin:src_end],
-                non_blocking=True,
-            )
-            g_buf[cursor : cursor + replay_tokens].copy_(
-                workspace.g_tape_cpu_shadow[req_slot, src_begin:src_end],
-                non_blocking=True,
-            )
-            beta_buf[cursor : cursor + replay_tokens].copy_(
-                workspace.beta_tape_cpu_shadow[req_slot, src_begin:src_end],
-                non_blocking=True,
-            )
+            workspace.replay_req_slots[packed_row] = req_slot
+            workspace.replay_src_begin[packed_row] = src_begin
+            workspace.replay_src_end[packed_row] = src_end
+            linear_slice = workspace.replay_src_linear_indices[
+                cursor : cursor + replay_tokens
+            ]
+            linear_slice.copy_(workspace.token_offsets[:replay_tokens])
+            linear_slice.add_(req_slot * tokens_per_req + src_begin)
             _trace_predict_last(
                 f"stage layer={self.layer_name} row={row_idx} req_slot={req_slot} "
-                f"mode={int(mode)} tape=[{src_begin},{src_end}) row_start={row_start}"
+                f"mode={int(mode)} tape=[{src_begin},{src_end}) row_start="
+                f"{int(plan.wave_plan.spec_query_start_locs[row_idx])}"
             )
             cursor += replay_tokens
-            packed_row += 1
+
+        if from_start_req_slots:
+            start_req_slots = torch.tensor(
+                from_start_req_slots,
+                dtype=torch.long,
+                device=workspace.segment_start_gpu_shadow.device,
+            )
+            start_states = torch.index_select(
+                workspace.segment_start_gpu_shadow,
+                0,
+                start_req_slots,
+            )
+            initial_state_buf.index_copy_(
+                0,
+                torch.tensor(
+                    from_start_rows,
+                    dtype=torch.long,
+                    device=initial_state_buf.device,
+                ),
+                start_states,
+            )
+        if from_resident_running_blocks:
+            resident_running_blocks = torch.tensor(
+                from_resident_running_blocks,
+                dtype=torch.long,
+                device=ssm_state.device,
+            )
+            resident_states = torch.index_select(
+                ssm_state,
+                0,
+                resident_running_blocks,
+            )
+            initial_state_buf.index_copy_(
+                0,
+                torch.tensor(
+                    from_resident_rows,
+                    dtype=torch.long,
+                    device=initial_state_buf.device,
+                ),
+                resident_states,
+            )
+
+        src_linear_indices = workspace.replay_src_linear_indices[:cursor]
+        flat_key_shadow = workspace.key_tape_gpu_shadow.view(
+            -1, *workspace.key_tape_gpu_shadow.shape[2:]
+        )
+        flat_value_shadow = workspace.value_tape_gpu_shadow.view(
+            -1, *workspace.value_tape_gpu_shadow.shape[2:]
+        )
+        flat_g_shadow = workspace.g_tape_gpu_shadow.view(
+            -1, *workspace.g_tape_gpu_shadow.shape[2:]
+        )
+        flat_beta_shadow = workspace.beta_tape_gpu_shadow.view(
+            -1, *workspace.beta_tape_gpu_shadow.shape[2:]
+        )
+        torch.index_select(flat_key_shadow, 0, src_linear_indices, out=key_buf)
+        torch.index_select(flat_value_shadow, 0, src_linear_indices, out=value_buf)
+        torch.index_select(flat_g_shadow, 0, src_linear_indices, out=g_buf)
+        torch.index_select(flat_beta_shadow, 0, src_linear_indices, out=beta_buf)
+
+    def _stage_replay_batch_direct(
+        self,
+        metadata: HybridTemporalRuntimeMetadataBundle,
+        replay_batch: ReplayBatch,
+    ) -> None:
+        workspace = self.workspace
+        assert workspace.replay_req_slots is not None
+        assert workspace.replay_src_begin is not None
+        assert workspace.replay_lengths is not None
+        assert workspace.replay_output_row_ids is not None
+        assert workspace.replay_cu_seqlens is not None
+        assert workspace.initial_state_indices is not None
+        assert workspace.resident_token_indices is not None
+
+        replay_req_slots = workspace.replay_req_slots[: replay_batch.num_rows]
+        replay_src_begin = workspace.replay_src_begin[: replay_batch.num_rows]
+        replay_lengths = workspace.replay_lengths[: replay_batch.num_rows]
+        replay_output_row_ids = workspace.replay_output_row_ids[
+            : replay_batch.num_rows
+        ]
+        cu_seqlens = workspace.replay_cu_seqlens[: replay_batch.num_rows + 1]
+        resident_token_indices = workspace.resident_token_indices[
+            : replay_batch.num_rows
+        ]
+        replay_req_slots.copy_(
+            metadata.repair_req_slots_cpu,
+            non_blocking=replay_req_slots.is_cuda,
+        )
+        replay_src_begin.copy_(
+            metadata.repair_src_begin_cpu,
+            non_blocking=replay_src_begin.is_cuda,
+        )
+        replay_lengths.copy_(
+            metadata.repair_lengths_cpu,
+            non_blocking=replay_lengths.is_cuda,
+        )
+        cu_seqlens.copy_(
+            metadata.replay_cu_seqlens_cpu,
+            non_blocking=cu_seqlens.is_cuda,
+        )
+        replay_output_row_ids.copy_(
+            metadata.replay_output_row_ids_cpu,
+            non_blocking=replay_output_row_ids.is_cuda,
+        )
+        resident_token_indices.copy_(replay_lengths - 1)
+        workspace.initial_state_indices[: replay_batch.num_rows, :1].copy_(
+            replay_output_row_ids.view(-1, 1)
+        )
+
+        for row_idx, req_slot, src_begin, replay_len in zip(
+            replay_batch.row_indices,
+            replay_batch.req_slots,
+            metadata.repair_src_begin_cpu.tolist(),
+            metadata.repair_lengths_cpu.tolist(),
+        ):
+            _trace_predict_last(
+                f"stage_direct layer={self.layer_name} row={row_idx} "
+                f"req_slot={req_slot} tape=[{src_begin},{src_begin + replay_len})"
+            )
+
+    def _run_replay_from_shadow(
+        self,
+        replay_batch: ReplayBatch,
+    ) -> None:
+        workspace = self.workspace
+        assert workspace.initial_state_padded is not None
+        assert workspace.replay_req_slots is not None
+        assert workspace.replay_src_begin is not None
+        assert workspace.replay_cu_seqlens is not None
+        assert workspace.initial_state_indices is not None
+        assert workspace.replay_output_row_ids is not None
+        assert workspace.resident_token_indices is not None
+
+        fused_sigmoid_gating_delta_rule_replay_from_shadow(
+            shadow_key=workspace.key_tape_gpu_shadow,
+            shadow_value=workspace.value_tape_gpu_shadow,
+            shadow_g=workspace.g_tape_gpu_shadow,
+            shadow_beta=workspace.beta_tape_gpu_shadow,
+            shadow_req_slots=workspace.replay_req_slots[: replay_batch.num_rows],
+            shadow_src_begin=workspace.replay_src_begin[: replay_batch.num_rows],
+            shadow_max_seq_len=int(workspace.key_tape_gpu_shadow.shape[1]),
+            initial_state=workspace.initial_state_padded[
+                : replay_batch.num_rows + 1
+            ],
+            final_state_out=None,
+            cu_seqlens=workspace.replay_cu_seqlens[: replay_batch.num_rows + 1],
+            ssm_state_indices=workspace.initial_state_indices[
+                : replay_batch.num_rows, :1
+            ],
+            resident_final_state_out=workspace.initial_state_padded,
+            resident_state_indices=workspace.replay_output_row_ids[
+                : replay_batch.num_rows
+            ],
+            resident_token_indices=workspace.resident_token_indices[
+                : replay_batch.num_rows
+            ],
+            use_qk_l2norm_in_kernel=self._use_qk_l2norm_in_kernel,
+        )
 
     def _run_replay_from_tape(
         self,
@@ -483,28 +1005,27 @@ class HybridTemporalReplayHelper:
         beta_buf: torch.Tensor,
         final_state_buf: torch.Tensor,
     ) -> None:
-        initial_state_padded = torch.empty(
-            (replay_batch.num_rows + 1, *initial_state_buf.shape[1:]),
-            dtype=initial_state_buf.dtype,
-            device=initial_state_buf.device,
-        )
+        workspace = self.workspace
+        assert workspace.initial_state_padded is not None
+        assert workspace.initial_state_indices is not None
+        assert workspace.replay_cu_seqlens is not None
+        assert workspace.state_row_ids is not None
+
+        initial_state_padded = workspace.initial_state_padded[
+            : replay_batch.num_rows + 1
+        ]
         initial_state_padded[0].zero_()
         initial_state_padded[1:].copy_(initial_state_buf)
-        cu_seqlens = torch.tensor(
-            replay_batch.cu_seqlens,
-            dtype=torch.int32,
-            device=key_buf.device,
-        )
-        initial_state_indices = (
-            torch.arange(
-                1,
-                replay_batch.num_rows + 1,
-                dtype=torch.int32,
-                device=key_buf.device,
-            )
-            .unsqueeze(1)
+        cu_seqlens = workspace.replay_cu_seqlens[: replay_batch.num_rows + 1]
+        for idx, cu_seq in enumerate(replay_batch.cu_seqlens):
+            cu_seqlens[idx] = cu_seq
+        initial_state_indices = workspace.initial_state_indices[
+            : replay_batch.num_rows, :1
+        ]
+        initial_state_indices.copy_(
+            workspace.state_row_ids[1 : replay_batch.num_rows + 1]
+            .view(-1, 1)
             .expand(-1, 1)
-            .contiguous()
         )
         fused_sigmoid_gating_delta_rule_replay_from_tape(
             k=key_buf.unsqueeze(0),
@@ -517,6 +1038,103 @@ class HybridTemporalReplayHelper:
             ssm_state_indices=initial_state_indices,
             use_qk_l2norm_in_kernel=self._use_qk_l2norm_in_kernel,
         )
+
+    def _wait_for_shadow_ready(self, ssm_state: torch.Tensor) -> None:
+        self._release_completed_spill_refs()
+        event = self.workspace.last_spill_done
+        if event is None or not ssm_state.is_cuda:
+            return
+        torch.cuda.current_stream(ssm_state.device).wait_event(event)
+
+    def _release_completed_spill_refs(self) -> None:
+        workspace = self.workspace
+        if not workspace.pending_spill_refs:
+            return
+        remaining: list[tuple[torch.cuda.Event, tuple[torch.Tensor, ...]]] = []
+        for event, refs in workspace.pending_spill_refs:
+            if not event.query():
+                remaining.append((event, refs))
+        workspace.pending_spill_refs = remaining
+        if not remaining and workspace.last_spill_done is not None:
+            if workspace.last_spill_done.query():
+                workspace.last_spill_done = None
+
+    def _record_pending_spill(
+        self,
+        event: torch.cuda.Event,
+        *refs: torch.Tensor,
+    ) -> None:
+        workspace = self.workspace
+        stream = workspace.spill_stream
+        if stream is None:
+            return
+        kept_refs = tuple(refs)
+        for ref in kept_refs:
+            ref.record_stream(stream)
+        workspace.pending_spill_refs.append((event, kept_refs))
+
+    def _spill_replay_wave(
+        self,
+        *,
+        initial_state: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        saved_g: torch.Tensor,
+        saved_beta: torch.Tensor,
+        wave_plan: HybridTemporalWavePlan,
+    ) -> None:
+        workspace = self.workspace
+        num_rows = len(wave_plan.req_ids)
+        if num_rows == 0:
+            return
+
+        assert workspace.spill_req_slots is not None
+        assert workspace.spill_row_starts is not None
+        assert workspace.spill_dst_linear_indices is not None
+        assert workspace.token_offsets is not None
+
+        req_slots = workspace.spill_req_slots[:num_rows]
+        for row, req_slot in enumerate(wave_plan.spec_req_slots):
+            req_slots[row] = int(req_slot)
+        workspace.segment_start_gpu_shadow.index_copy_(0, req_slots, initial_state)
+
+        row_starts = workspace.spill_row_starts[: num_rows + 1]
+        for idx, row_start in enumerate(wave_plan.spec_query_start_locs):
+            row_starts[idx] = int(row_start)
+
+        total_tokens = int(wave_plan.spec_query_start_locs[-1])
+        dst_linear_indices = workspace.spill_dst_linear_indices[:total_tokens]
+        cursor = 0
+        tokens_per_req = int(workspace.key_tape_gpu_shadow.shape[1])
+        for row, (start, end) in enumerate(
+            zip(
+                wave_plan.spec_query_start_locs,
+                wave_plan.spec_query_start_locs[1:],
+            )
+        ):
+            del start
+            token_count = int(end - wave_plan.spec_query_start_locs[row])
+            linear_slice = dst_linear_indices[cursor : cursor + token_count]
+            linear_slice.copy_(workspace.token_offsets[:token_count])
+            linear_slice.add_(int(wave_plan.spec_req_slots[row]) * tokens_per_req)
+            cursor += token_count
+
+        flat_key_shadow = workspace.key_tape_gpu_shadow.view(
+            -1, *workspace.key_tape_gpu_shadow.shape[2:]
+        )
+        flat_value_shadow = workspace.value_tape_gpu_shadow.view(
+            -1, *workspace.value_tape_gpu_shadow.shape[2:]
+        )
+        flat_g_shadow = workspace.g_tape_gpu_shadow.view(
+            -1, *workspace.g_tape_gpu_shadow.shape[2:]
+        )
+        flat_beta_shadow = workspace.beta_tape_gpu_shadow.view(
+            -1, *workspace.beta_tape_gpu_shadow.shape[2:]
+        )
+        flat_key_shadow.index_copy_(0, dst_linear_indices, key[:total_tokens])
+        flat_value_shadow.index_copy_(0, dst_linear_indices, value[:total_tokens])
+        flat_g_shadow.index_copy_(0, dst_linear_indices, saved_g[:total_tokens])
+        flat_beta_shadow.index_copy_(0, dst_linear_indices, saved_beta[:total_tokens])
 
     def _drain_timing_events(self, *, synchronize: bool = False) -> None:
         workspace = self.workspace

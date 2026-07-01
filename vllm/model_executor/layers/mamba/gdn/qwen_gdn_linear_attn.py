@@ -28,7 +28,7 @@ from vllm.model_executor.layers.fla.ops import (
     fused_post_conv_prep,
     fused_recurrent_gated_delta_rule_packed_decode,
     fused_sigmoid_gating_delta_rule_update,
-    fused_sigmoid_gating_delta_rule_update_capture_tape,
+    fused_sigmoid_gating_delta_rule_update_capture_shadow,
 )
 from vllm.model_executor.layers.fla.ops.chunk import l2norm_fwd
 from vllm.model_executor.layers.fla.ops.utils import FLA_CHUNK_SIZE
@@ -576,35 +576,30 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             forward_dtype = self.model_config.dtype
             self.hybrid_temporal_replay_workspace = (
                 HybridTemporalReplayWorkspace(
-                    segment_start_cpu_shadow=torch.empty(
+                    segment_start_gpu_shadow=torch.empty(
                         (max_num_reqs, hv, self.head_v_dim, self.head_k_dim),
                         dtype=temporal_state_dtype,
-                        device="cpu",
-                        pin_memory=True,
+                        device=current_platform.current_device(),
                     ),
-                    key_tape_cpu_shadow=torch.empty(
+                    key_tape_gpu_shadow=torch.empty(
                         (max_num_reqs, num_candidate_states, h, self.head_k_dim),
                         dtype=forward_dtype,
-                        device="cpu",
-                        pin_memory=True,
+                        device=current_platform.current_device(),
                     ),
-                    value_tape_cpu_shadow=torch.empty(
+                    value_tape_gpu_shadow=torch.empty(
                         (max_num_reqs, num_candidate_states, hv, self.head_v_dim),
                         dtype=forward_dtype,
-                        device="cpu",
-                        pin_memory=True,
+                        device=current_platform.current_device(),
                     ),
-                    g_tape_cpu_shadow=torch.empty(
+                    g_tape_gpu_shadow=torch.empty(
                         (max_num_reqs, num_candidate_states, hv),
                         dtype=torch.float32,
-                        device="cpu",
-                        pin_memory=True,
+                        device=current_platform.current_device(),
                     ),
-                    beta_tape_cpu_shadow=torch.empty(
+                    beta_tape_gpu_shadow=torch.empty(
                         (max_num_reqs, num_candidate_states, hv),
                         dtype=torch.float32,
-                        device="cpu",
-                        pin_memory=True,
+                        device=current_platform.current_device(),
                     ),
                     saved_generation_per_req=[-1] * max_num_reqs,
                 )
@@ -1352,12 +1347,20 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         if workspace is None:
             return {
                 "repair_copy_ms": 0.0,
+                "prepare_copy_ms": 0.0,
                 "repair_compute_ms": 0.0,
                 "repair_row_count": 0,
                 "repair_from_start_count": 0,
                 "repair_from_resident_count": 0,
+                "verify_attention_ms": 0.0,
+                "layer_total_ms": 0.0,
+                "verify_call_count": 0,
                 "checkpoint_save_ms": 0.0,
+                "post_replay_state_gather_ms": 0.0,
+                "capture_materialize_ms": 0.0,
+                "segment_start_save_ms": 0.0,
                 "tape_save_ms": 0.0,
+                "spill_copy_ms": 0.0,
             }
         return self._get_hybrid_temporal_replay_helper().snapshot_repair_timing_stats()
 
@@ -1370,6 +1373,99 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             ssm_state=ssm_state,
             running_state_indices=running_state_indices,
         )
+
+    def _get_hybrid_temporal_replay_workspace(
+        self,
+    ) -> HybridTemporalReplayWorkspace:
+        workspace = self.hybrid_temporal_replay_workspace
+        assert workspace is not None
+        return workspace
+
+    def _build_capture_initial_state_padded(
+        self,
+        initial_state: torch.Tensor,
+        num_rows: int,
+    ) -> torch.Tensor:
+        workspace = self._get_hybrid_temporal_replay_workspace()
+        assert workspace.initial_state_padded is not None
+        initial_state_padded = workspace.initial_state_padded[: num_rows + 1]
+        initial_state_padded[0].zero_()
+        if initial_state.data_ptr() != initial_state_padded[1:].data_ptr():
+            initial_state_padded[1 : num_rows + 1].copy_(initial_state)
+        return initial_state_padded
+
+    def _build_capture_state_indices(
+        self,
+        num_rows: int,
+        spec_max_query_len: int,
+    ) -> torch.Tensor:
+        workspace = self._get_hybrid_temporal_replay_workspace()
+        assert workspace.initial_state_indices is not None
+        assert workspace.state_row_ids is not None
+        initial_state_indices = workspace.initial_state_indices[
+            :num_rows, :spec_max_query_len
+        ]
+        initial_state_indices.copy_(
+            workspace.state_row_ids[1 : num_rows + 1]
+            .view(-1, 1)
+            .expand(-1, spec_max_query_len)
+        )
+        return initial_state_indices
+
+    def _build_predicted_resident_metadata(
+        self,
+        running_state_indices: torch.Tensor,
+        wave_plan,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        workspace = self._get_hybrid_temporal_replay_workspace()
+        helper = self._get_hybrid_temporal_replay_helper()
+        assert helper.group_plan is not None
+        assert workspace.resident_state_indices is not None
+        assert workspace.resident_token_indices is not None
+        resident_state_indices = workspace.resident_state_indices[
+            : len(wave_plan.req_ids), :1
+        ]
+        resident_state_indices[:, 0].copy_(
+            running_state_indices[: len(wave_plan.req_ids)].to(torch.int32)
+        )
+        resident_token_indices = workspace.resident_token_indices[
+            : len(wave_plan.req_ids)
+        ]
+        if hasattr(helper, "_get_runtime_metadata"):
+            metadata = helper._get_runtime_metadata(helper.group_plan)
+            resident_token_indices.copy_(
+                metadata.resident_token_indices_cpu,
+                non_blocking=running_state_indices.is_cuda,
+            )
+        else:
+            for row, (start, end) in enumerate(
+                zip(
+                    wave_plan.spec_query_start_locs,
+                    wave_plan.spec_query_start_locs[1:],
+                )
+            ):
+                resident_token_indices[row] = max(
+                    0,
+                    min(int(wave_plan.predicted_accept_lens[row]), end - start) - 1,
+                )
+        return resident_state_indices[:, 0], resident_token_indices
+
+    def _build_shadow_req_slots(self, wave_plan) -> torch.Tensor:
+        workspace = self._get_hybrid_temporal_replay_workspace()
+        helper = self._get_hybrid_temporal_replay_helper()
+        assert helper.group_plan is not None
+        assert workspace.spill_req_slots is not None
+        shadow_req_slots = workspace.spill_req_slots[: len(wave_plan.req_ids)]
+        if hasattr(helper, "_get_runtime_metadata"):
+            metadata = helper._get_runtime_metadata(helper.group_plan)
+            shadow_req_slots.copy_(
+                metadata.shadow_req_slots_cpu,
+                non_blocking=shadow_req_slots.is_cuda,
+            )
+        else:
+            for row, req_slot in enumerate(wave_plan.spec_req_slots):
+                shadow_req_slots[row] = int(req_slot)
+        return shadow_req_slots
 
     def _forward_core_spec_replay(
         self,
@@ -1387,38 +1483,55 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         assert attn_metadata.spec_query_start_loc is not None
         assert attn_metadata.num_accepted_tokens is not None
 
+        use_cuda_timing = workspace is not None and ssm_state.is_cuda
+        total_start = total_end = verify_start = verify_end = None
+        capture_start = capture_end = None
+        if use_cuda_timing:
+            total_start = torch.cuda.Event(enable_timing=True)
+            total_end = torch.cuda.Event(enable_timing=True)
+            verify_start = torch.cuda.Event(enable_timing=True)
+            verify_end = torch.cuda.Event(enable_timing=True)
+            capture_start = torch.cuda.Event(enable_timing=True)
+            capture_end = torch.cuda.Event(enable_timing=True)
+            total_start.record(torch.cuda.current_stream())
+
         helper = self._get_hybrid_temporal_replay_helper()
         initial_state = self._prepare_temporal_state_for_verify(
             ssm_state, running_state_indices
         )
         num_spec_decodes = attn_metadata.num_spec_decodes
-        initial_state_padded = torch.empty(
-            (num_spec_decodes + 1, *initial_state.shape[1:]),
-            dtype=initial_state.dtype,
-            device=initial_state.device,
+        if use_cuda_timing and capture_start is not None:
+            capture_start.record(torch.cuda.current_stream())
+        initial_state_padded = self._build_capture_initial_state_padded(
+            initial_state,
+            num_spec_decodes,
         )
-        initial_state_padded[0].zero_()
-        initial_state_padded[1:].copy_(initial_state)
-        initial_state_indices = (
-            torch.arange(
-                1,
-                num_spec_decodes + 1,
-                dtype=torch.int32,
-                device=initial_state.device,
-            )
-            .unsqueeze(1)
-            .expand(-1, attn_metadata.spec_max_query_len)
-            .contiguous()
+        initial_state_indices = self._build_capture_state_indices(
+            num_spec_decodes,
+            attn_metadata.spec_max_query_len,
         )
         scratch = self.acquire_hybrid_temporal_verify_scratch(
             attn_metadata.num_spec_decode_tokens
         )
+        assert helper.group_plan is not None
+        resident_state_indices, resident_token_indices = (
+            self._build_predicted_resident_metadata(
+                running_state_indices=running_state_indices,
+                wave_plan=helper.group_plan.wave_plan,
+            )
+        )
+        shadow_req_slots = self._build_shadow_req_slots(helper.group_plan.wave_plan)
+        if use_cuda_timing and capture_end is not None:
+            capture_end.record(torch.cuda.current_stream())
+            workspace.pending_timing_events.append(
+                ("capture_materialize_ms", capture_start, capture_end, 0)
+            )
+        if use_cuda_timing and verify_start is not None:
+            verify_start.record(torch.cuda.current_stream())
         (
             core_attn_out_spec,
             final_states,
-            saved_g,
-            saved_beta,
-        ) = fused_sigmoid_gating_delta_rule_update_capture_tape(
+        ) = fused_sigmoid_gating_delta_rule_update_capture_shadow(
             A_log=self.A_log,
             a=a,
             b=b,
@@ -1427,27 +1540,52 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             k=key_spec,
             v=value_spec,
             initial_state=initial_state_padded,
-            inplace_final_state=False,
+            shadow_key_out=workspace.key_tape_gpu_shadow,
+            shadow_value_out=workspace.value_tape_gpu_shadow,
+            shadow_g_out=workspace.g_tape_gpu_shadow,
+            shadow_beta_out=workspace.beta_tape_gpu_shadow,
+            shadow_req_slots=shadow_req_slots,
+            shadow_max_seq_len=int(workspace.key_tape_gpu_shadow.shape[1]),
             final_state_out=scratch,
             cu_seqlens=attn_metadata.spec_query_start_loc[
                 : attn_metadata.num_spec_decodes + 1
             ],
             ssm_state_indices=initial_state_indices,
+            resident_final_state_out=ssm_state,
+            resident_state_indices=resident_state_indices,
+            resident_token_indices=resident_token_indices,
             num_accepted_tokens=attn_metadata.num_accepted_tokens,
             use_qk_l2norm_in_kernel=True,
         )
+        if use_cuda_timing and verify_end is not None:
+            verify_end.record(torch.cuda.current_stream())
         assert attn_metadata.spec_query_start_loc_cpu is not None
-        assert helper.group_plan is not None
         helper.store_replay_artifacts(
             initial_state=initial_state,
             running_state_indices=running_state_indices,
-            key=key_spec,
-            value=value_spec,
-            saved_g=saved_g,
-            saved_beta=saved_beta,
-            final_states=final_states,
+            key=None,
+            value=None,
+            saved_g=None,
+            saved_beta=None,
+            final_states=None,
             wave_plan=helper.group_plan.wave_plan,
         )
+        workspace.verify_call_count += 1
+        if (
+            use_cuda_timing
+            and total_start is not None
+            and total_end is not None
+            and verify_start is not None
+            and verify_end is not None
+        ):
+            total_end.record(torch.cuda.current_stream())
+            workspace.pending_timing_events.append(
+                ("verify_attention_ms", verify_start, verify_end, 0)
+            )
+            workspace.pending_timing_events.append(
+                ("layer_total_ms", total_start, total_end, 0)
+            )
+            helper._drain_timing_events()
         return core_attn_out_spec, final_states
 
     def _forward_core(

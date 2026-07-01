@@ -172,6 +172,7 @@ from vllm.v1.outputs import (
 from vllm.v1.hybrid_spec_replay import (
     HybridSpecRepairMode,
     HybridTemporalGroupPlan,
+    HybridTemporalRuntimeMetadataBundle,
     HybridTemporalWavePlan,
 )
 from vllm.v1.pool.metadata import PoolingMetadata, PoolingStates
@@ -450,7 +451,13 @@ class HybridSpecRepairTimingStats(NamedTuple):
     repair_row_count: int
     repair_from_start_count: int
     repair_from_resident_count: int
+    verify_attention_ms: float
+    layer_total_ms: float
+    verify_call_count: int
     checkpoint_save_ms: float
+    post_replay_state_gather_ms: float
+    capture_materialize_ms: float
+    segment_start_save_ms: float
     tape_save_ms: float
 
 
@@ -1218,7 +1225,13 @@ class GPUModelRunner(
         repair_row_count = 0
         repair_from_start_count = 0
         repair_from_resident_count = 0
+        verify_attention_ms = 0.0
+        layer_total_ms = 0.0
+        verify_call_count = 0
         checkpoint_save_ms = 0.0
+        post_replay_state_gather_ms = 0.0
+        capture_materialize_ms = 0.0
+        segment_start_save_ms = 0.0
         tape_save_ms = 0.0
         for _, _, layers in self._get_hybrid_gdn_layers_by_group():
             for layer in layers:
@@ -1232,7 +1245,19 @@ class GPUModelRunner(
                 repair_from_resident_count += int(
                     stats["repair_from_resident_count"]
                 )
+                verify_attention_ms += float(stats["verify_attention_ms"])
+                layer_total_ms += float(stats["layer_total_ms"])
+                verify_call_count += int(stats["verify_call_count"])
                 checkpoint_save_ms += float(stats["checkpoint_save_ms"])
+                post_replay_state_gather_ms += float(
+                    stats["post_replay_state_gather_ms"]
+                )
+                capture_materialize_ms += float(
+                    stats["capture_materialize_ms"]
+                )
+                segment_start_save_ms += float(
+                    stats["segment_start_save_ms"]
+                )
                 tape_save_ms += float(stats["tape_save_ms"])
         return HybridSpecRepairTimingStats(
             repair_copy_ms=repair_copy_ms,
@@ -1240,7 +1265,13 @@ class GPUModelRunner(
             repair_row_count=repair_row_count,
             repair_from_start_count=repair_from_start_count,
             repair_from_resident_count=repair_from_resident_count,
+            verify_attention_ms=verify_attention_ms,
+            layer_total_ms=layer_total_ms,
+            verify_call_count=verify_call_count,
             checkpoint_save_ms=checkpoint_save_ms,
+            post_replay_state_gather_ms=post_replay_state_gather_ms,
+            capture_materialize_ms=capture_materialize_ms,
+            segment_start_save_ms=segment_start_save_ms,
             tape_save_ms=tape_save_ms,
         )
 
@@ -1482,6 +1513,118 @@ class GPUModelRunner(
             next_replay_generations=next_replay_generations,
         )
 
+    def _build_hybrid_temporal_runtime_metadata(
+        self,
+        *,
+        wave_plan: HybridTemporalWavePlan,
+        source_block_ids: list[int],
+        repair_row_indices: list[int],
+        repair_req_slots: list[int],
+        repair_target_slots: list[int],
+        resident_slots: list[int],
+        repair_modes: list[HybridSpecRepairMode],
+    ) -> HybridTemporalRuntimeMetadataBundle:
+        resident_token_indices = [
+            max(
+                0,
+                min(
+                    int(wave_plan.predicted_accept_lens[row_idx]),
+                    int(
+                        wave_plan.spec_query_start_locs[row_idx + 1]
+                        - wave_plan.spec_query_start_locs[row_idx]
+                    ),
+                )
+                - 1,
+            )
+            for row_idx in range(len(wave_plan.req_ids))
+        ]
+
+        packed_repair_req_slots: list[int] = []
+        packed_repair_src_begin: list[int] = []
+        packed_repair_lengths: list[int] = []
+        packed_replay_cu_seqlens = [0]
+        packed_replay_output_row_ids: list[int] = []
+        from_start_rows: list[int] = []
+        from_start_req_slots: list[int] = []
+        from_resident_rows: list[int] = []
+        from_resident_source_blocks: list[int] = []
+
+        for repair_idx, row_idx in enumerate(repair_row_indices):
+            mode = repair_modes[repair_idx]
+            if mode == HybridSpecRepairMode.NONE:
+                continue
+            target_slot = int(repair_target_slots[repair_idx])
+            resident_slot = int(resident_slots[repair_idx])
+            if mode == HybridSpecRepairMode.FROM_START:
+                src_begin = 0
+                from_start_rows.append(int(row_idx))
+                from_start_req_slots.append(int(repair_req_slots[repair_idx]))
+            else:
+                src_begin = resident_slot + 1
+                from_resident_rows.append(int(row_idx))
+                from_resident_source_blocks.append(int(source_block_ids[row_idx]))
+            replay_length = target_slot + 1 - src_begin
+            if replay_length <= 0:
+                continue
+            packed_repair_req_slots.append(int(repair_req_slots[repair_idx]))
+            packed_repair_src_begin.append(src_begin)
+            packed_repair_lengths.append(replay_length)
+            packed_replay_cu_seqlens.append(
+                packed_replay_cu_seqlens[-1] + replay_length
+            )
+            packed_replay_output_row_ids.append(int(row_idx) + 1)
+
+        return HybridTemporalRuntimeMetadataBundle(
+            shadow_req_slots_cpu=torch.tensor(
+                wave_plan.spec_req_slots,
+                dtype=torch.long,
+            ).contiguous(),
+            resident_token_indices_cpu=torch.tensor(
+                resident_token_indices,
+                dtype=torch.int32,
+            ).contiguous(),
+            source_block_ids_cpu=torch.tensor(
+                source_block_ids,
+                dtype=torch.long,
+            ).contiguous(),
+            repair_req_slots_cpu=torch.tensor(
+                packed_repair_req_slots,
+                dtype=torch.long,
+            ).contiguous(),
+            repair_src_begin_cpu=torch.tensor(
+                packed_repair_src_begin,
+                dtype=torch.long,
+            ).contiguous(),
+            repair_lengths_cpu=torch.tensor(
+                packed_repair_lengths,
+                dtype=torch.int32,
+            ).contiguous(),
+            replay_cu_seqlens_cpu=torch.tensor(
+                packed_replay_cu_seqlens,
+                dtype=torch.int32,
+            ).contiguous(),
+            replay_output_row_ids_cpu=torch.tensor(
+                packed_replay_output_row_ids,
+                dtype=torch.int32,
+            ).contiguous(),
+            from_start_rows_cpu=torch.tensor(
+                from_start_rows,
+                dtype=torch.long,
+            ).contiguous(),
+            from_start_req_slots_cpu=torch.tensor(
+                from_start_req_slots,
+                dtype=torch.long,
+            ).contiguous(),
+            from_resident_rows_cpu=torch.tensor(
+                from_resident_rows,
+                dtype=torch.long,
+            ).contiguous(),
+            from_resident_source_blocks_cpu=torch.tensor(
+                from_resident_source_blocks,
+                dtype=torch.long,
+            ).contiguous(),
+        )
+
     def _build_hybrid_temporal_group_plans(
         self,
         wave_plan: HybridTemporalWavePlan,
@@ -1550,6 +1693,16 @@ class GPUModelRunner(
                 f"targets={repair_target_slots} residents={resident_slots}"
             )
 
+            runtime_metadata = self._build_hybrid_temporal_runtime_metadata(
+                wave_plan=wave_plan,
+                source_block_ids=source_block_ids,
+                repair_row_indices=repair_row_indices,
+                repair_req_slots=repair_req_slots,
+                repair_target_slots=repair_target_slots,
+                resident_slots=resident_slots,
+                repair_modes=repair_modes,
+            )
+
             group_plan = HybridTemporalGroupPlan(
                 wave_plan=wave_plan,
                 running_block_ids=running_block_ids,
@@ -1560,6 +1713,7 @@ class GPUModelRunner(
                 resident_slots=resident_slots,
                 repair_modes=repair_modes,
                 repair_generations=repair_generations,
+                runtime_metadata=runtime_metadata,
             )
             group_plans.append((layers, group_plan))
         return group_plans

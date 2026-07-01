@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 
 def _load_module(module_name: str, file_name: str):
@@ -255,6 +256,130 @@ def test_aggregate_worker_step_timings_uses_max_per_component():
     assert timing.ffn_ms == 4.0
     assert timing.all2all_ms == 4.5
     assert timing.unattributed_ms == 0.25
+
+
+def test_check_pending_timings_tolerates_missing_worker_counts(capsys):
+    runtime._check_pending_timings(
+        [{"pending_timings": 0}, None],
+        batch_size=64,
+        draft_length=0,
+        round_idx=1,
+    )
+    captured = capsys.readouterr()
+    assert "warning cleanup received partial pending timing counts" in captured.out
+
+
+def test_run_recorded_round_preserves_original_exception_on_cleanup_issue(
+    monkeypatch,
+):
+    class DummyRecorder:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    class DummyExecutor:
+        def collective_rpc(self, fn, timeout=None):
+            if fn is runtime.start_condition_collection_worker:
+                return [True]
+            if fn is runtime.stop_condition_collection_worker:
+                return [None]
+            raise AssertionError(f"unexpected rpc function: {fn}")
+
+    class DummyLLM:
+        def generate(self, *args, **kwargs):
+            raise TimeoutError("execute_model timed out")
+
+    monkeypatch.setattr(runtime, "SchedulerStepRecorder", DummyRecorder)
+
+    with pytest.raises(TimeoutError, match="execute_model timed out"):
+        runtime._run_recorded_round(
+            DummyLLM(),
+            scheduler=SimpleNamespace(),
+            model_executor=DummyExecutor(),
+            sampling_params=SimpleNamespace(),
+            prompt_batch=[],
+            batch_size=64,
+            draft_length=0,
+            round_idx=0,
+            use_spec_decode=False,
+            layers=(0,),
+            num_experts=256,
+            expert_to_ep_rank=np.asarray([], dtype=np.int64),
+            local_ep_rank=0,
+            trace_steps_limit=0,
+        )
+
+
+def test_collect_hybrid_reload_timing_stats_worker_maps_replay_breakdown():
+    class DummyModelRunner:
+        def snapshot_hybrid_spec_reload_timing_stats(self):
+            return SimpleNamespace(
+                repair_copy_ms=3.5,
+                repair_compute_ms=7.25,
+                repair_row_count=11,
+                repair_from_start_count=2,
+                repair_from_resident_count=9,
+                verify_attention_ms=13.0,
+                layer_total_ms=31.5,
+                verify_call_count=5,
+                checkpoint_save_ms=1.75,
+                post_replay_state_gather_ms=0.25,
+                capture_materialize_ms=0.5,
+                segment_start_save_ms=0.75,
+                tape_save_ms=2.25,
+            )
+
+    stats = runtime.collect_hybrid_reload_timing_stats_worker(
+        SimpleNamespace(model_runner=DummyModelRunner())
+    )
+
+    assert stats["prepare_copy_ms"] == 3.5
+    assert stats["repair_compute_ms"] == 7.25
+    assert stats["verify_attention_ms"] == 13.0
+    assert stats["spill_copy_ms"] == 2.25
+    assert stats["layer_total_ms"] == 31.5
+    assert stats["verify_call_count"] == 5
+    assert stats["preload_total_ms"] == 4.0
+    assert stats["preloaded_total_ms"] == 10.75
+    assert stats["post_replay_state_gather_ms"] == 0.25
+    assert stats["capture_materialize_ms"] == 0.5
+    assert stats["segment_start_save_ms"] == 0.75
+
+
+def test_accumulate_hybrid_reload_timing_stats_keeps_replay_breakdown():
+    total = runtime._empty_hybrid_reload_timing_stats()
+    worker_stats = {
+        "preload_total_ms": 4.0,
+        "preload_call_count": 1,
+        "preload_req_count": 2,
+        "preloaded_total_ms": 10.75,
+        "preloaded_row_count": 11,
+        "fallback_total_ms": 0.5,
+        "fallback_row_count": 1,
+        "prepare_copy_ms": 3.5,
+        "repair_compute_ms": 7.25,
+        "verify_attention_ms": 13.0,
+        "spill_copy_ms": 2.25,
+        "layer_total_ms": 31.5,
+        "verify_call_count": 5,
+        "repair_row_count": 11,
+        "repair_from_start_count": 2,
+        "repair_from_resident_count": 9,
+        "checkpoint_save_ms": 1.75,
+        "post_replay_state_gather_ms": 0.0,
+        "capture_materialize_ms": 0.0,
+        "segment_start_save_ms": 0.0,
+        "tape_save_ms": 2.25,
+    }
+
+    runtime._accumulate_hybrid_reload_timing_stats(total, worker_stats)
+
+    assert total == worker_stats
 
 
 def _rank_candidate_data(

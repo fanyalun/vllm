@@ -4,6 +4,8 @@
 from dataclasses import dataclass
 from enum import IntEnum
 
+import torch
+
 
 class HybridSpecRepairMode(IntEnum):
     NONE = 0
@@ -36,6 +38,22 @@ class HybridTemporalWavePlan:
 
 
 @dataclass(frozen=True)
+class HybridTemporalRuntimeMetadataBundle:
+    shadow_req_slots_cpu: torch.Tensor
+    resident_token_indices_cpu: torch.Tensor
+    source_block_ids_cpu: torch.Tensor
+    repair_req_slots_cpu: torch.Tensor
+    repair_src_begin_cpu: torch.Tensor
+    repair_lengths_cpu: torch.Tensor
+    replay_cu_seqlens_cpu: torch.Tensor
+    replay_output_row_ids_cpu: torch.Tensor
+    from_start_rows_cpu: torch.Tensor
+    from_start_req_slots_cpu: torch.Tensor
+    from_resident_rows_cpu: torch.Tensor
+    from_resident_source_blocks_cpu: torch.Tensor
+
+
+@dataclass(frozen=True)
 class HybridTemporalGroupPlan:
     wave_plan: HybridTemporalWavePlan
     running_block_ids: list[int]
@@ -46,6 +64,7 @@ class HybridTemporalGroupPlan:
     resident_slots: list[int]
     repair_modes: list[HybridSpecRepairMode]
     repair_generations: list[int]
+    runtime_metadata: HybridTemporalRuntimeMetadataBundle | None = None
 
     def __post_init__(self) -> None:
         num_wave_rows = len(self.wave_plan.req_ids)
