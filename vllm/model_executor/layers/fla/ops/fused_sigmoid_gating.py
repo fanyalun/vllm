@@ -21,8 +21,17 @@ from vllm.triton_utils import tl, triton
         "SAVE_G_BETA": lambda args: args["saved_g_out"] is not None,
         "USE_PRECOMPUTED_G_BETA": lambda args: args["precomputed_g"] is not None,
         "WRITE_OUTPUT": lambda args: args["o"] is not None,
+        "WRITE_FINAL_STATE": lambda args: args["ht"] is not None,
         "WRITE_RESIDENT_FINAL_STATE": (
             lambda args: args["resident_final_state_out"] is not None
+        ),
+        "INITIAL_STATE_ROW_IDS": (
+            lambda args: args["ssm_state_indices"] is not None
+            and args["ssm_state_indices"].ndim == 1
+        ),
+        "RESIDENT_STATE_ROW_IDS": (
+            lambda args: args["resident_state_indices"] is not None
+            and args["resident_state_indices"].ndim == 1
         ),
         "WRITE_RESIDENT_BY_TOKEN": (
             lambda args: args["resident_token_indices"] is not None
@@ -91,7 +100,10 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
     SAVE_G_BETA: tl.constexpr,
     USE_PRECOMPUTED_G_BETA: tl.constexpr,
     WRITE_OUTPUT: tl.constexpr,
+    WRITE_FINAL_STATE: tl.constexpr,
     WRITE_RESIDENT_FINAL_STATE: tl.constexpr,
+    INITIAL_STATE_ROW_IDS: tl.constexpr,
+    RESIDENT_STATE_ROW_IDS: tl.constexpr,
     WRITE_RESIDENT_BY_TOKEN: tl.constexpr,
     WRITE_SHADOW_TAPE: tl.constexpr,
     READ_SHADOW_TAPE: tl.constexpr,
@@ -171,15 +183,22 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
     b_h = tl.zeros([BV, BK], dtype=tl.float32)
     if USE_INITIAL_STATE:
         if IS_CONTINUOUS_BATCHING:
-            if IS_SPEC_DECODING:
-                i_t = tl.load(num_accepted_tokens + i_n).to(tl.int64) - 1
+            if INITIAL_STATE_ROW_IDS:
+                state_idx = tl.load(
+                    ssm_state_indices + i_n * stride_indices_seq
+                ).to(tl.int64)
+                if state_idx < 0:
+                    return
             else:
-                i_t = 0
-            state_idx = tl.load(ssm_state_indices + i_n * stride_indices_seq + i_t).to(
-                tl.int64
-            )
-            if state_idx <= 0:
-                return
+                if IS_SPEC_DECODING:
+                    i_t = tl.load(num_accepted_tokens + i_n).to(tl.int64) - 1
+                else:
+                    i_t = 0
+                state_idx = tl.load(
+                    ssm_state_indices + i_n * stride_indices_seq + i_t
+                ).to(tl.int64)
+                if state_idx <= 0:
+                    return
             p_h0 = h0 + state_idx * stride_init_state_token
         else:
             p_h0 = h0 + bos * HV * V * K
@@ -256,18 +275,26 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
             b_o = tl.sum(b_h * b_q[None, :], 1)
             tl.store(p_o, b_o.to(p_o.dtype.element_ty), mask=mask_v)
 
-        if INPLACE_FINAL_STATE:
-            final_state_idx = tl.load(
-                ssm_state_indices + i_n * stride_indices_seq + i_t
-            ).to(tl.int64)
-            if final_state_idx > 0:
-                p_ht = ht + final_state_idx * stride_final_state_token
+        if WRITE_FINAL_STATE:
+            if INPLACE_FINAL_STATE:
+                if INITIAL_STATE_ROW_IDS:
+                    final_state_idx = tl.load(
+                        ssm_state_indices + i_n * stride_indices_seq
+                    ).to(tl.int64)
+                    should_write_final = final_state_idx >= 0
+                else:
+                    final_state_idx = tl.load(
+                        ssm_state_indices + i_n * stride_indices_seq + i_t
+                    ).to(tl.int64)
+                    should_write_final = final_state_idx > 0
+                if should_write_final:
+                    p_ht = ht + final_state_idx * stride_final_state_token
+                    p_ht = p_ht + i_hv * V * K + o_v[:, None] * K + o_k[None, :]
+                    tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), mask=mask_h)
+            else:
+                p_ht = ht + (bos + i_t) * stride_final_state_token
                 p_ht = p_ht + i_hv * V * K + o_v[:, None] * K + o_k[None, :]
                 tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), mask=mask_h)
-        else:
-            p_ht = ht + (bos + i_t) * stride_final_state_token
-            p_ht = p_ht + i_hv * V * K + o_v[:, None] * K + o_k[None, :]
-            tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), mask=mask_h)
         if WRITE_RESIDENT_FINAL_STATE:
             if WRITE_RESIDENT_BY_TOKEN:
                 resident_state_idx = tl.load(
@@ -277,16 +304,22 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
                     resident_token_indices
                     + i_n * stride_resident_token_indices
                 ).to(tl.int64)
-                should_write_resident = (
-                    resident_state_idx > 0 and resident_token_idx == i_t
-                )
+                should_write_resident = resident_token_idx == i_t
+                if not RESIDENT_STATE_ROW_IDS:
+                    should_write_resident = (
+                        should_write_resident and resident_state_idx > 0
+                    )
             else:
                 resident_state_idx = tl.load(
                     resident_state_indices
                     + i_n * stride_resident_indices_seq
                     + i_t * stride_resident_indices_tok
                 ).to(tl.int64)
-                should_write_resident = resident_state_idx > 0
+                should_write_resident = (
+                    resident_state_idx >= 0
+                    if RESIDENT_STATE_ROW_IDS
+                    else resident_state_idx > 0
+                )
             if should_write_resident:
                 p_resident = (
                     resident_final_state_out
@@ -397,7 +430,7 @@ def _launch_fused_sigmoid_gating_delta_rule(
     shadow_src_begin: torch.Tensor | None = None,
     shadow_max_seq_len: int | None = None,
     write_output: bool = True,
-) -> tuple[torch.Tensor | None, torch.Tensor]:
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
     write_shadow_tape = shadow_key_out is not None
     read_shadow_tape = shadow_src_begin is not None
 
@@ -553,29 +586,32 @@ def _launch_fused_sigmoid_gating_delta_rule(
             )
 
     o = q.new_empty(NK, *v.shape) if write_output and q is not None else None
+    write_final_state = inplace_final_state or final_state_out is not None
     if inplace_final_state:
         if final_state_out is not None:
             raise ValueError(
                 "final_state_out is incompatible with inplace_final_state=True."
             )
         final_state = initial_state
-    else:
+    elif final_state_out is not None:
         expected_shape = (T, HV, V, K)
-        if final_state_out is not None:
-            if final_state_out.shape != expected_shape:
-                raise ValueError(
-                    "final_state_out must have shape "
-                    f"{expected_shape}, got {tuple(final_state_out.shape)}."
-                )
-            final_state = final_state_out
-        else:
-            allocator = q if q is not None else k
-            final_state = allocator.new_empty(
-                expected_shape, dtype=initial_state.dtype
+        if final_state_out.shape != expected_shape:
+            raise ValueError(
+                "final_state_out must have shape "
+                f"{expected_shape}, got {tuple(final_state_out.shape)}."
             )
+        final_state = final_state_out
+    elif resident_final_state_out is None and not write_output:
+        allocator = q if q is not None else k
+        final_state = allocator.new_empty(
+            (T, HV, V, K), dtype=initial_state.dtype
+        )
+        write_final_state = True
+    else:
+        final_state = None
 
     stride_init_state_token = initial_state.stride(0)
-    stride_final_state_token = final_state.stride(0)
+    stride_final_state_token = 1 if final_state is None else final_state.stride(0)
     if ssm_state_indices is None:
         stride_indices_seq, stride_indices_tok = 1, 1
     elif ssm_state_indices.ndim == 1:
@@ -807,7 +843,7 @@ def fused_sigmoid_gating_delta_rule_update_capture_shadow(
     num_accepted_tokens: torch.Tensor | None = None,
     use_qk_l2norm_in_kernel: bool = False,
     is_kda: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor | None]:
     o, final_state = _launch_fused_sigmoid_gating_delta_rule(
         A_log=A_log,
         a=a,
@@ -839,6 +875,73 @@ def fused_sigmoid_gating_delta_rule_update_capture_shadow(
     )
     assert o is not None
     return o, final_state
+
+
+def fused_sigmoid_gating_delta_rule_update_capture_shadow_resident(
+    A_log: torch.Tensor,
+    a: torch.Tensor,
+    b: torch.Tensor,
+    dt_bias: torch.Tensor,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    initial_state: torch.Tensor,
+    shadow_key_out: torch.Tensor,
+    shadow_value_out: torch.Tensor,
+    shadow_g_out: torch.Tensor,
+    shadow_beta_out: torch.Tensor,
+    shadow_req_slots: torch.Tensor,
+    shadow_max_seq_len: int,
+    cu_seqlens: torch.Tensor,
+    ssm_state_indices: torch.Tensor,
+    resident_final_state_out: torch.Tensor,
+    resident_state_indices: torch.Tensor,
+    resident_token_indices: torch.Tensor,
+    num_accepted_tokens: torch.Tensor | None = None,
+    use_qk_l2norm_in_kernel: bool = False,
+    is_kda: bool = False,
+) -> torch.Tensor:
+    if ssm_state_indices.ndim != 1:
+        raise ValueError(
+            "capture_shadow_resident requires 1D initial-state row ids."
+        )
+    if resident_state_indices.ndim != 1:
+        raise ValueError(
+            "capture_shadow_resident requires 1D resident-state row ids."
+        )
+    o, final_state = _launch_fused_sigmoid_gating_delta_rule(
+        A_log=A_log,
+        a=a,
+        b=b,
+        dt_bias=dt_bias,
+        q=q,
+        k=k,
+        v=v,
+        beta=1.0,
+        threshold=20.0,
+        scale=None,
+        initial_state=initial_state,
+        inplace_final_state=False,
+        final_state_out=None,
+        cu_seqlens=cu_seqlens,
+        ssm_state_indices=ssm_state_indices,
+        resident_final_state_out=resident_final_state_out,
+        resident_state_indices=resident_state_indices,
+        resident_token_indices=resident_token_indices,
+        num_accepted_tokens=num_accepted_tokens,
+        use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+        is_kda=is_kda,
+        shadow_key_out=shadow_key_out,
+        shadow_value_out=shadow_value_out,
+        shadow_g_out=shadow_g_out,
+        shadow_beta_out=shadow_beta_out,
+        shadow_req_slots=shadow_req_slots,
+        shadow_max_seq_len=shadow_max_seq_len,
+    )
+    assert o is not None
+    assert final_state is None
+    return o
 
 
 def fused_sigmoid_gating_delta_rule_replay_from_tape(
@@ -884,6 +987,7 @@ def fused_sigmoid_gating_delta_rule_replay_from_tape(
         precomputed_beta=beta,
         write_output=False,
     )
+    assert final_state is not None
     return final_state
 
 
@@ -906,7 +1010,7 @@ def fused_sigmoid_gating_delta_rule_replay_from_shadow(
     num_accepted_tokens: torch.Tensor | None = None,
     use_qk_l2norm_in_kernel: bool = False,
     is_kda: bool = False,
-) -> torch.Tensor:
+) -> torch.Tensor | None:
     _, final_state = _launch_fused_sigmoid_gating_delta_rule(
         A_log=None,
         a=None,
@@ -937,3 +1041,62 @@ def fused_sigmoid_gating_delta_rule_replay_from_shadow(
         write_output=False,
     )
     return final_state
+
+
+def fused_sigmoid_gating_delta_rule_replay_from_shadow_resident(
+    shadow_key: torch.Tensor,
+    shadow_value: torch.Tensor,
+    shadow_g: torch.Tensor,
+    shadow_beta: torch.Tensor,
+    *,
+    shadow_req_slots: torch.Tensor,
+    shadow_src_begin: torch.Tensor,
+    shadow_max_seq_len: int,
+    initial_state: torch.Tensor,
+    cu_seqlens: torch.Tensor,
+    ssm_state_indices: torch.Tensor,
+    resident_final_state_out: torch.Tensor,
+    resident_state_indices: torch.Tensor,
+    resident_token_indices: torch.Tensor,
+    num_accepted_tokens: torch.Tensor | None = None,
+    use_qk_l2norm_in_kernel: bool = False,
+    is_kda: bool = False,
+) -> None:
+    if ssm_state_indices.ndim != 1:
+        raise ValueError(
+            "replay_from_shadow_resident requires 1D initial-state row ids."
+        )
+    if resident_state_indices.ndim != 1:
+        raise ValueError(
+            "replay_from_shadow_resident requires 1D resident-state row ids."
+        )
+    _, final_state = _launch_fused_sigmoid_gating_delta_rule(
+        A_log=None,
+        a=None,
+        b=None,
+        dt_bias=None,
+        q=None,
+        k=shadow_key,
+        v=shadow_value,
+        beta=1.0,
+        threshold=20.0,
+        scale=None,
+        initial_state=initial_state,
+        inplace_final_state=False,
+        final_state_out=None,
+        cu_seqlens=cu_seqlens,
+        ssm_state_indices=ssm_state_indices,
+        resident_final_state_out=resident_final_state_out,
+        resident_state_indices=resident_state_indices,
+        resident_token_indices=resident_token_indices,
+        num_accepted_tokens=num_accepted_tokens,
+        use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+        is_kda=is_kda,
+        precomputed_g=shadow_g,
+        precomputed_beta=shadow_beta,
+        shadow_req_slots=shadow_req_slots,
+        shadow_src_begin=shadow_src_begin,
+        shadow_max_seq_len=shadow_max_seq_len,
+        write_output=False,
+    )
+    assert final_state is None

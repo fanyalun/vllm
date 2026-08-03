@@ -120,6 +120,9 @@ class FinishedRequestStatsLogger(StatLoggerBase):
 
 _FINISHED_REQUEST_STATS_LOGGER_ATTR = "_mtp_ep_finished_request_stats_logger"
 _SCHEDULER_CAPACITY_CONFIG_ATTR = "_mtp_ep_scheduler_capacity_config"
+HYBRID_PREDICTION_TRACE_SCHEMA_VERSION = 1
+HYBRID_PREDICTION_TRACE_MODE_CHOICES = ("off", "record", "replay")
+HYBRID_PREDICTION_SIM_MODE_CHOICES = ("exact_upper_bound",)
 
 RTX_5090_NCCL_ENV_DEFAULTS = {
     "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
@@ -247,6 +250,12 @@ def _empty_hybrid_prediction_stats() -> dict[str, int]:
     }
 
 
+def should_collect_hybrid_prediction_trace(args: Any) -> bool:
+    return (
+        getattr(args, "hybrid_prediction_trace_mode", "off") != "off"
+    )
+
+
 def _empty_hybrid_reload_timing_stats() -> dict[str, float | int]:
     return {
         "preload_total_ms": 0.0,
@@ -269,6 +278,7 @@ def _empty_hybrid_reload_timing_stats() -> dict[str, float | int]:
         "post_replay_state_gather_ms": 0.0,
         "capture_materialize_ms": 0.0,
         "segment_start_save_ms": 0.0,
+        "segment_start_wait_ms": 0.0,
         "tape_save_ms": 0.0,
     }
 
@@ -316,6 +326,9 @@ def _accumulate_hybrid_reload_timing_stats(
     )
     total["segment_start_save_ms"] += float(
         worker_stats.get("segment_start_save_ms", 0.0)
+    )
+    total["segment_start_wait_ms"] += float(
+        worker_stats.get("segment_start_wait_ms", 0.0)
     )
     total["tape_save_ms"] += float(worker_stats.get("tape_save_ms", 0.0))
 
@@ -381,6 +394,7 @@ class ConditionRawData:
     hybrid_replay_post_replay_state_gather_ms: float
     hybrid_replay_capture_materialize_ms: float
     hybrid_replay_segment_start_save_ms: float
+    hybrid_replay_segment_start_wait_ms: float
     step_histograms: np.ndarray
     step_total_tokens: np.ndarray
     step_total_ms: np.ndarray
@@ -631,6 +645,10 @@ class ConditionRawData:
                 [self.hybrid_replay_segment_start_save_ms],
                 dtype=np.float64,
             ),
+            "hybrid_replay_segment_start_wait_ms": np.asarray(
+                [self.hybrid_replay_segment_start_wait_ms],
+                dtype=np.float64,
+            ),
             "step_histograms": self.step_histograms,
             "step_total_tokens": self.step_total_tokens,
             "step_total_ms": self.step_total_ms,
@@ -833,6 +851,7 @@ class CollectedConditionSummary:
     hybrid_replay_post_replay_state_gather_ms: float
     hybrid_replay_capture_materialize_ms: float
     hybrid_replay_segment_start_save_ms: float
+    hybrid_replay_segment_start_wait_ms: float
     num_forward_steps_total: int
     num_captured_steps: int
     num_global_candidate_steps: int
@@ -936,6 +955,7 @@ class RankConditionData:
     hybrid_replay_post_replay_state_gather_ms: float
     hybrid_replay_capture_materialize_ms: float
     hybrid_replay_segment_start_save_ms: float
+    hybrid_replay_segment_start_wait_ms: float
     num_forward_steps_total: int
     num_captured_steps: int
     num_dropped_steps: int
@@ -948,6 +968,9 @@ class RankConditionData:
     scheduler_max_num_scheduled_tokens: int
     speculative_max_num_new_slots_for_drafting: int
     trace_samples: list[dict[str, Any]] = field(default_factory=list)
+    hybrid_prediction_trace_events: list[dict[str, int | str]] = field(
+        default_factory=list
+    )
 
     def to_npz_payload(self) -> dict[str, np.ndarray]:
         return {
@@ -1139,6 +1162,10 @@ class RankConditionData:
                 [self.hybrid_replay_segment_start_save_ms],
                 dtype=np.float64,
             ),
+            "hybrid_replay_segment_start_wait_ms": np.asarray(
+                [self.hybrid_replay_segment_start_wait_ms],
+                dtype=np.float64,
+            ),
             "num_forward_steps_total": np.asarray(
                 [self.num_forward_steps_total], dtype=np.int64
             ),
@@ -1276,13 +1303,298 @@ def default_output_dir() -> Path:
 
 def ensure_collect_dirs(output_dir: Path) -> dict[str, Path]:
     raw_dir = output_dir / "raw"
+    prediction_trace_dir = output_dir / "_prediction_traces"
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_dir.mkdir(parents=True, exist_ok=True)
-    return {"root": output_dir, "raw": raw_dir}
+    prediction_trace_dir.mkdir(parents=True, exist_ok=True)
+    return {
+        "root": output_dir,
+        "raw": raw_dir,
+        "prediction_traces": prediction_trace_dir,
+    }
+
+
+def condition_prediction_trace_dir(
+    output_dir: Path,
+    batch_size: int,
+    draft_length: int,
+) -> Path:
+    return ensure_collect_dirs(output_dir)["prediction_traces"] / condition_name(
+        batch_size, draft_length
+    )
+
+
+def rank_prediction_trace_path(
+    output_dir: Path,
+    *,
+    batch_size: int,
+    draft_length: int,
+    dp_rank: int,
+) -> Path:
+    trace_dir = condition_prediction_trace_dir(
+        output_dir,
+        batch_size,
+        draft_length,
+    )
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    return trace_dir / f"rank_{dp_rank:02d}.npz"
+
+
+def hybrid_prediction_trace_exists(
+    output_dir: Path,
+    *,
+    batch_size: int,
+    draft_length: int,
+    data_parallel_size: int,
+) -> bool:
+    return all(
+        rank_prediction_trace_path(
+            output_dir,
+            batch_size=batch_size,
+            draft_length=draft_length,
+            dp_rank=dp_rank,
+        ).exists()
+        for dp_rank in range(data_parallel_size)
+    )
+
+
+def save_rank_hybrid_prediction_trace(
+    path: Path,
+    args: Any,
+    data: RankConditionData,
+) -> None:
+    trace_events = data.hybrid_prediction_trace_events
+    payload = {
+        "schema_version": np.asarray(
+            [HYBRID_PREDICTION_TRACE_SCHEMA_VERSION],
+            dtype=np.int64,
+        ),
+        "batch_size": np.asarray([args.batch_size], dtype=np.int64),
+        "draft_length": np.asarray([args.draft_length], dtype=np.int64),
+        "data_parallel_size": np.asarray([args.data_parallel_size], dtype=np.int64),
+        "dp_rank": np.asarray([args.dp_rank], dtype=np.int64),
+        "event_index": np.asarray(
+            [int(event["event_index"]) for event in trace_events],
+            dtype=np.int64,
+        ),
+        "req_event_index": np.asarray(
+            [int(event["req_event_index"]) for event in trace_events],
+            dtype=np.int64,
+        ),
+        "req_id": np.asarray(
+            [str(event["req_id"]) for event in trace_events],
+            dtype=np.str_,
+        ),
+        "accepted_len": np.asarray(
+            [int(event["accepted_len"]) for event in trace_events],
+            dtype=np.int64,
+        ),
+        "baseline_predicted_len": np.asarray(
+            [int(event["baseline_predicted_len"]) for event in trace_events],
+            dtype=np.int64,
+        ),
+        "effective_predicted_len": np.asarray(
+            [int(event["effective_predicted_len"]) for event in trace_events],
+            dtype=np.int64,
+        ),
+        "req_max_accept_len": np.asarray(
+            [int(event["req_max_accept_len"]) for event in trace_events],
+            dtype=np.int64,
+        ),
+        "draft_len": np.asarray(
+            [int(event["draft_len"]) for event in trace_events],
+            dtype=np.int64,
+        ),
+    }
+    max_trace_tokens = max(
+        (
+            len(tuple(int(token_id) for token_id in event.get("output_token_ids", ())))
+            for event in trace_events
+        ),
+        default=max(0, int(getattr(args, "draft_length", 0)) + 1),
+    )
+    if max_trace_tokens > 0:
+        output_token_ids = np.full(
+            (len(trace_events), max_trace_tokens),
+            fill_value=-1,
+            dtype=np.int64,
+        )
+        for row_idx, event in enumerate(trace_events):
+            token_ids = tuple(
+                int(token_id) for token_id in event.get("output_token_ids", ())
+            )
+            if token_ids:
+                output_token_ids[row_idx, : len(token_ids)] = token_ids
+        payload["output_token_ids"] = output_token_ids
+    np.savez_compressed(path, **payload)
+
+
+def load_rank_hybrid_prediction_trace(path: Path) -> list[dict[str, int | str]]:
+    with np.load(path, allow_pickle=False) as data:
+        schema_version = int(data["schema_version"][0])
+        if schema_version != HYBRID_PREDICTION_TRACE_SCHEMA_VERSION:
+            raise ValueError(
+                "Unsupported hybrid prediction trace schema_version="
+                f"{schema_version} for {path}."
+            )
+        event_indices = np.asarray(data["event_index"], dtype=np.int64)
+        req_event_indices_arr = data.get("req_event_index")
+        req_ids = np.asarray(data["req_id"], dtype=np.str_)
+        accepted_lens = np.asarray(data["accepted_len"], dtype=np.int64)
+        baseline_predicted_lens = np.asarray(
+            data["baseline_predicted_len"],
+            dtype=np.int64,
+        )
+        effective_predicted_lens = np.asarray(
+            data["effective_predicted_len"],
+            dtype=np.int64,
+        )
+        req_max_accept_lens = np.asarray(
+            data["req_max_accept_len"],
+            dtype=np.int64,
+        )
+        draft_lens = np.asarray(data["draft_len"], dtype=np.int64)
+        output_token_ids_arr = data.get("output_token_ids")
+        output_token_ids = (
+            np.asarray(output_token_ids_arr, dtype=np.int64)
+            if output_token_ids_arr is not None
+            else None
+        )
+        if req_event_indices_arr is None:
+            req_event_indices = []
+            req_counts: dict[str, int] = {}
+            for req_id in req_ids.tolist():
+                req_event_index = int(req_counts.get(str(req_id), 0))
+                req_event_indices.append(req_event_index)
+                req_counts[str(req_id)] = req_event_index + 1
+        else:
+            req_event_indices = np.asarray(
+                req_event_indices_arr,
+                dtype=np.int64,
+            ).tolist()
+        return [
+            {
+                "event_index": int(event_index),
+                "req_event_index": int(req_event_index),
+                "req_id": str(req_id),
+                "accepted_len": int(accepted_len),
+                "baseline_predicted_len": int(baseline_predicted_len),
+                "effective_predicted_len": int(effective_predicted_len),
+                "req_max_accept_len": int(req_max_accept_len),
+                "draft_len": int(draft_len),
+                "output_token_ids": (
+                    tuple(int(token_id) for token_id in output_token_ids[row_idx])
+                    if output_token_ids is not None
+                    else ()
+                ),
+            }
+            for row_idx, (
+                event_index,
+                req_event_index,
+                req_id,
+                accepted_len,
+                baseline_predicted_len,
+                effective_predicted_len,
+                req_max_accept_len,
+                draft_len,
+            ) in enumerate(
+                zip(
+                    event_indices,
+                    req_event_indices,
+                    req_ids,
+                    accepted_lens,
+                    baseline_predicted_lens,
+                    effective_predicted_lens,
+                    req_max_accept_lens,
+                    draft_lens,
+                    strict=True,
+                )
+            )
+        ]
+
+
+def _safe_collective_rpc(
+    model_executor: Any,
+    method: str | Callable[..., Any],
+    *,
+    timeout: float,
+    args: tuple[Any, ...] = (),
+    kwargs: dict[str, Any] | None = None,
+) -> Any | None:
+    collective_rpc = getattr(model_executor, "collective_rpc", None)
+    if collective_rpc is None:
+        return None
+    if getattr(model_executor, "rpc_broadcast_mq", None) is None:
+        return None
+    if getattr(model_executor, "is_failed", False):
+        return None
+    if getattr(model_executor, "shutting_down", False):
+        return None
+    try:
+        return collective_rpc(
+            method,
+            timeout=timeout,
+            args=args,
+            kwargs=kwargs,
+        )
+    except (AssertionError, RuntimeError, TimeoutError):
+        return None
+
+
+def load_oracle_trace_for_rank(
+    args: Any,
+    *,
+    dp_rank: int,
+) -> list[dict[str, int | str]]:
+    oracle_root = getattr(args, "hybrid_prediction_oracle_trace_root", None)
+    if oracle_root is None:
+        raise ValueError(
+            "Replay simulation requires --hybrid-prediction-oracle-trace-root."
+        )
+    trace_path = rank_prediction_trace_path(
+        Path(oracle_root),
+        batch_size=args.batch_size,
+        draft_length=args.draft_length,
+        dp_rank=dp_rank,
+    )
+    if not trace_path.exists():
+        raise FileNotFoundError(
+            "Missing oracle trace for replay simulation: "
+            f"{trace_path}"
+        )
+    return load_rank_hybrid_prediction_trace(trace_path)
 
 
 def prompt_cache_path(output_dir: Path) -> Path:
     return output_dir / "prompt_cache.json"
+
+
+def add_hybrid_prediction_trace_args(parser: Any) -> None:
+    parser.add_argument(
+        "--hybrid-prediction-trace-mode",
+        choices=HYBRID_PREDICTION_TRACE_MODE_CHOICES,
+        default="off",
+    )
+    parser.add_argument(
+        "--hybrid-prediction-oracle-trace-root",
+        type=Path,
+        default=None,
+    )
+    parser.add_argument(
+        "--hybrid-prediction-target-accuracy",
+        type=float,
+        default=1.0,
+    )
+    parser.add_argument(
+        "--hybrid-prediction-sim-mode",
+        choices=HYBRID_PREDICTION_SIM_MODE_CHOICES,
+        default="exact_upper_bound",
+    )
+    parser.add_argument(
+        "--hybrid-prediction-sim-seed",
+        type=int,
+        default=0,
+    )
 
 
 def save_run_metadata(output_dir: Path, args: Any) -> None:
@@ -1323,6 +1635,27 @@ def save_run_metadata(output_dir: Path, args: Any) -> None:
         "tpot_definition": TPOT_DEFINITION,
         "vllm_enable_v1_multiprocessing": os.environ.get(
             "VLLM_ENABLE_V1_MULTIPROCESSING"
+        ),
+        "hybrid_prediction_trace_mode": getattr(
+            args,
+            "hybrid_prediction_trace_mode",
+            "off",
+        ),
+        "hybrid_prediction_oracle_trace_root": (
+            None
+            if getattr(args, "hybrid_prediction_oracle_trace_root", None) is None
+            else str(args.hybrid_prediction_oracle_trace_root)
+        ),
+        "hybrid_prediction_target_accuracy": float(
+            getattr(args, "hybrid_prediction_target_accuracy", 1.0)
+        ),
+        "hybrid_prediction_sim_mode": getattr(
+            args,
+            "hybrid_prediction_sim_mode",
+            "exact_upper_bound",
+        ),
+        "hybrid_prediction_sim_seed": int(
+            getattr(args, "hybrid_prediction_sim_seed", 0)
         ),
     }
     with (output_dir / "run_metadata.json").open("w", encoding="utf-8") as fp:
@@ -1483,6 +1816,9 @@ def save_collect_manifest(
                 "hybrid_replay_segment_start_save_ms": (
                     summary.hybrid_replay_segment_start_save_ms
                 ),
+                "hybrid_replay_segment_start_wait_ms": (
+                    summary.hybrid_replay_segment_start_wait_ms
+                ),
                 "num_forward_steps_total": summary.num_forward_steps_total,
                 "num_captured_steps": summary.num_captured_steps,
                 "num_global_candidate_steps": summary.num_global_candidate_steps,
@@ -1632,6 +1968,9 @@ def load_condition_summary(raw_path: Path) -> CollectedConditionSummary:
         hybrid_replay_segment_start_save_ms = read_optional_float(
             "hybrid_replay_segment_start_save_ms"
         )
+        hybrid_replay_segment_start_wait_ms = read_optional_float(
+            "hybrid_replay_segment_start_wait_ms"
+        )
         num_forward_steps_total = int(data["num_forward_steps_total"][0])
         num_captured_steps = int(data["num_captured_steps"][0])
         num_global_candidate_steps = int(data["num_global_candidate_steps"][0])
@@ -1706,6 +2045,9 @@ def load_condition_summary(raw_path: Path) -> CollectedConditionSummary:
         ),
         hybrid_replay_segment_start_save_ms=(
             hybrid_replay_segment_start_save_ms
+        ),
+        hybrid_replay_segment_start_wait_ms=(
+            hybrid_replay_segment_start_wait_ms
         ),
         num_forward_steps_total=num_forward_steps_total,
         num_captured_steps=num_captured_steps,
@@ -2729,6 +3071,93 @@ def collect_hybrid_prediction_stats_worker(worker: Any) -> dict[str, int]:
     }
 
 
+def configure_hybrid_prediction_trace_worker(
+    worker: Any,
+    trace_mode: str,
+    oracle_trace: list[dict[str, int | str]] | None = None,
+    target_accuracy: float = 1.0,
+    sim_mode: str = "exact_upper_bound",
+    sim_seed: int = 0,
+) -> dict[str, int | float | str]:
+    model_runner = getattr(worker, "model_runner", None)
+    if model_runner is None:
+        return {
+            "trace_mode": trace_mode,
+            "trace_events": 0,
+            "exact_match_events": 0,
+        }
+    reset_trace = getattr(model_runner, "reset_hybrid_spec_prediction_trace", None)
+    if reset_trace is not None:
+        reset_trace()
+    disable_override = getattr(
+        model_runner,
+        "disable_hybrid_spec_prediction_override",
+        None,
+    )
+    if disable_override is not None:
+        disable_override()
+    if trace_mode == "off":
+        return {
+            "trace_mode": trace_mode,
+            "trace_events": 0,
+            "exact_match_events": 0,
+        }
+    enable_trace = getattr(model_runner, "enable_hybrid_spec_prediction_trace", None)
+    if enable_trace is not None:
+        enable_trace()
+    if trace_mode != "replay":
+        return {
+            "trace_mode": trace_mode,
+            "trace_events": 0,
+            "exact_match_events": 0,
+        }
+    if sim_mode != "exact_upper_bound":
+        raise ValueError(f"Unsupported hybrid prediction sim_mode={sim_mode!r}.")
+    oracle_trace = [] if oracle_trace is None else list(oracle_trace)
+    total_events = len(oracle_trace)
+    exact_match_events = int(round(float(target_accuracy) * total_events))
+    exact_match_events = max(0, min(total_events, exact_match_events))
+    if exact_match_events == total_events:
+        exact_match_event_indices = set(range(total_events))
+    elif exact_match_events == 0:
+        exact_match_event_indices = set()
+    else:
+        rng = np.random.default_rng(int(sim_seed))
+        exact_match_event_indices = {
+            int(event_index)
+            for event_index in rng.permutation(total_events)[:exact_match_events]
+        }
+    configure_override = getattr(
+        model_runner,
+        "configure_hybrid_spec_prediction_override",
+        None,
+    )
+    if configure_override is None:
+        raise RuntimeError(
+            "GPUModelRunner does not expose hybrid prediction override hooks."
+        )
+    configure_override(
+        mode=sim_mode,
+        oracle_trace=oracle_trace,
+        exact_match_event_indices=exact_match_event_indices,
+    )
+    return {
+        "trace_mode": trace_mode,
+        "trace_events": total_events,
+        "exact_match_events": exact_match_events,
+    }
+
+
+def collect_hybrid_prediction_trace_worker(
+    worker: Any,
+) -> list[dict[str, int | str]]:
+    model_runner = getattr(worker, "model_runner", None)
+    snapshot = getattr(model_runner, "snapshot_hybrid_spec_prediction_trace", None)
+    if snapshot is None:
+        return []
+    return list(snapshot())
+
+
 def reset_hybrid_reload_timing_stats_worker(worker: Any) -> bool:
     model_runner = getattr(worker, "model_runner", None)
     reset = getattr(model_runner, "reset_hybrid_spec_reload_timing_stats", None)
@@ -2765,6 +3194,7 @@ def collect_hybrid_reload_timing_stats_worker(
             "post_replay_state_gather_ms": 0.0,
             "capture_materialize_ms": 0.0,
             "segment_start_save_ms": 0.0,
+            "segment_start_wait_ms": 0.0,
             "tape_save_ms": 0.0,
         }
 
@@ -2794,6 +3224,9 @@ def collect_hybrid_reload_timing_stats_worker(
     segment_start_save_ms = float(
         getattr(stats, "segment_start_save_ms", 0.0)
     )
+    segment_start_wait_ms = float(
+        getattr(stats, "segment_start_wait_ms", 0.0)
+    )
     tape_save_ms = float(getattr(stats, "tape_save_ms", 0.0))
     return {
         "preload_total_ms": checkpoint_save_ms + tape_save_ms,
@@ -2813,6 +3246,7 @@ def collect_hybrid_reload_timing_stats_worker(
         "post_replay_state_gather_ms": post_replay_state_gather_ms,
         "capture_materialize_ms": capture_materialize_ms,
         "segment_start_save_ms": segment_start_save_ms,
+        "segment_start_wait_ms": segment_start_wait_ms,
         "tape_save_ms": tape_save_ms,
         "verify_attention_ms": verify_attention_ms,
         "spill_copy_ms": tape_save_ms,
@@ -3670,6 +4104,20 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         reset_hybrid_reload_timing_stats_worker,
         timeout=30,
     )
+    oracle_trace = None
+    if args.hybrid_prediction_trace_mode == "replay":
+        oracle_trace = load_oracle_trace_for_rank(args, dp_rank=dp_rank)
+    model_executor.collective_rpc(
+        configure_hybrid_prediction_trace_worker,
+        kwargs={
+            "trace_mode": args.hybrid_prediction_trace_mode,
+            "oracle_trace": oracle_trace,
+            "target_accuracy": args.hybrid_prediction_target_accuracy,
+            "sim_mode": args.hybrid_prediction_sim_mode,
+            "sim_seed": args.hybrid_prediction_sim_seed,
+        },
+        timeout=30,
+    )
     rank_expert_maps = model_executor.collective_rpc(
         collect_expert_to_ep_rank_worker,
         timeout=30,
@@ -3749,6 +4197,7 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
     finished_stats = FinishedRequestStatTotals(0.0, 0, 0)
     hybrid_prediction_stats = _empty_hybrid_prediction_stats()
     hybrid_reload_timing_stats = _empty_hybrid_reload_timing_stats()
+    hybrid_prediction_trace_events: list[dict[str, int | str]] = []
 
     try:
         for round_idx in range(total_rounds):
@@ -4039,20 +4488,36 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
                     trace_samples.extend(recorder.trace_samples[:remaining])
     finally:
         finished_stats = finished_stats_logger.snapshot()
-        worker_prediction_stats = model_executor.collective_rpc(
+        worker_prediction_stats = _safe_collective_rpc(
+            model_executor,
             collect_hybrid_prediction_stats_worker,
             timeout=30,
         )
-        for worker_stats in worker_prediction_stats:
+        for worker_stats in worker_prediction_stats or []:
             for key in hybrid_prediction_stats:
                 hybrid_prediction_stats[key] += int(worker_stats.get(key, 0))
-        worker_reload_timing_stats = model_executor.collective_rpc(
+        worker_reload_timing_stats = _safe_collective_rpc(
+            model_executor,
             collect_hybrid_reload_timing_stats_worker,
             timeout=30,
         )
-        for worker_stats in worker_reload_timing_stats:
+        for worker_stats in worker_reload_timing_stats or []:
             _accumulate_hybrid_reload_timing_stats(
                 hybrid_reload_timing_stats, worker_stats
+            )
+        if should_collect_hybrid_prediction_trace(args):
+            worker_prediction_traces = _safe_collective_rpc(
+                model_executor,
+                collect_hybrid_prediction_trace_worker,
+                timeout=30,
+            )
+            hybrid_prediction_trace_events = sorted(
+                (
+                    event
+                    for worker_trace in (worker_prediction_traces or [])
+                    for event in worker_trace
+                ),
+                key=lambda event: int(event["event_index"]),
             )
         with suppress(Exception):
             llm.llm_engine.engine_core.shutdown()
@@ -4415,6 +4880,9 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
             hybrid_replay_segment_start_save_ms=float(
                 hybrid_reload_timing_stats["segment_start_save_ms"]
             ),
+            hybrid_replay_segment_start_wait_ms=float(
+                hybrid_reload_timing_stats["segment_start_wait_ms"]
+            ),
             num_forward_steps_total=num_forward_steps_total,
             num_captured_steps=num_captured_steps,
             num_dropped_steps=num_dropped_steps,
@@ -4437,6 +4905,7 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
                 scheduler_capacity_config.speculative_max_num_new_slots_for_drafting
             ),
             trace_samples=trace_samples,
+            hybrid_prediction_trace_events=hybrid_prediction_trace_events,
         )
 
     return RankConditionData(
@@ -4591,6 +5060,9 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
         hybrid_replay_segment_start_save_ms=float(
             hybrid_reload_timing_stats["segment_start_save_ms"]
         ),
+        hybrid_replay_segment_start_wait_ms=float(
+            hybrid_reload_timing_stats["segment_start_wait_ms"]
+        ),
         num_forward_steps_total=num_forward_steps_total,
         num_captured_steps=num_captured_steps,
         num_dropped_steps=num_dropped_steps,
@@ -4611,6 +5083,7 @@ def collect_condition_for_rank(args: Namespace) -> RankConditionData:
             scheduler_capacity_config.speculative_max_num_new_slots_for_drafting
         ),
         trace_samples=trace_samples,
+        hybrid_prediction_trace_events=hybrid_prediction_trace_events,
     )
 
 
@@ -4887,6 +5360,9 @@ def load_rank_condition_data(path: Path) -> RankConditionData:
             hybrid_replay_segment_start_save_ms=read_optional_float(
                 "hybrid_replay_segment_start_save_ms"
             ),
+            hybrid_replay_segment_start_wait_ms=read_optional_float(
+                "hybrid_replay_segment_start_wait_ms"
+            ),
             num_forward_steps_total=int(data["num_forward_steps_total"][0]),
             num_captured_steps=int(data["num_captured_steps"][0]),
             num_dropped_steps=int(data["num_dropped_steps"][0]),
@@ -4915,6 +5391,17 @@ def collect_one_rank(args: Namespace) -> None:
     save_rank_condition_data(args.rank_output_path, data)
     if args.trace_steps_per_rank > 0 and data.trace_samples:
         save_rank_trace_samples(rank_trace_path(args.rank_output_path), args, data)
+    if should_collect_hybrid_prediction_trace(args):
+        save_rank_hybrid_prediction_trace(
+            rank_prediction_trace_path(
+                args.output_dir,
+                batch_size=args.batch_size,
+                draft_length=args.draft_length,
+                dp_rank=args.dp_rank,
+            ),
+            args,
+            data,
+        )
 
 
 def _aggregate_rank_condition_data(
@@ -5201,6 +5688,9 @@ def _aggregate_rank_condition_data(
     hybrid_replay_segment_start_save_ms = sum(
         partial.hybrid_replay_segment_start_save_ms for partial in partials
     )
+    hybrid_replay_segment_start_wait_ms = sum(
+        partial.hybrid_replay_segment_start_wait_ms for partial in partials
+    )
     spec_acceptance_rate = (
         spec_num_accepted_tokens / spec_num_draft_tokens
         if spec_num_draft_tokens > 0
@@ -5285,6 +5775,9 @@ def _aggregate_rank_condition_data(
         ),
         hybrid_replay_segment_start_save_ms=(
             hybrid_replay_segment_start_save_ms
+        ),
+        hybrid_replay_segment_start_wait_ms=(
+            hybrid_replay_segment_start_wait_ms
         ),
         step_histograms=global_steps.global_step_histograms,
         step_total_tokens=global_steps.global_step_total_tokens,
@@ -5462,6 +5955,14 @@ def collect_one_condition(
         processes: list[subprocess.Popen[str]] = []
         for partial_path in partial_paths:
             partial_path.unlink(missing_ok=True)
+        if should_collect_hybrid_prediction_trace(args):
+            for dp_rank in range(args.data_parallel_size):
+                rank_prediction_trace_path(
+                    dirs["root"],
+                    batch_size=args.batch_size,
+                    draft_length=args.draft_length,
+                    dp_rank=dp_rank,
+                ).unlink(missing_ok=True)
         for dp_rank, partial_path in enumerate(partial_paths):
             command = _build_collect_one_rank_command(
                 args,
@@ -5581,10 +6082,27 @@ def _build_collect_one_command(
         "--local-gpu-ids",
         getattr(args, "local_gpu_ids", None),
     )
+    _append_optional_arg(
+        command,
+        "--hybrid-prediction-oracle-trace-root",
+        getattr(args, "hybrid_prediction_oracle_trace_root", None),
+    )
     command.extend(["--layers", *(str(layer) for layer in args.layers)])
     command.append("--enforce-eager" if args.enforce_eager else "--no-enforce-eager")
     if getattr(args, "enable_nvtx_ranges", False):
         command.append("--enable-nvtx-ranges")
+    command.extend(
+        [
+            "--hybrid-prediction-trace-mode",
+            getattr(args, "hybrid_prediction_trace_mode", "off"),
+            "--hybrid-prediction-target-accuracy",
+            str(getattr(args, "hybrid_prediction_target_accuracy", 1.0)),
+            "--hybrid-prediction-sim-mode",
+            getattr(args, "hybrid_prediction_sim_mode", "exact_upper_bound"),
+            "--hybrid-prediction-sim-seed",
+            str(getattr(args, "hybrid_prediction_sim_seed", 0)),
+        ]
+    )
     return command
 
 
@@ -5636,7 +6154,16 @@ def collect_experiment(args: Namespace, output_dir: Path, entrypoint: Path) -> N
     for batch_size in args.batch_sizes:
         for draft_length in args.draft_lengths:
             raw_path = dirs["raw"] / f"{condition_name(batch_size, draft_length)}.npz"
-            if raw_path.exists():
+            trace_ready = (
+                not should_collect_hybrid_prediction_trace(args)
+                or hybrid_prediction_trace_exists(
+                    dirs["root"],
+                    batch_size=batch_size,
+                    draft_length=draft_length,
+                    data_parallel_size=args.data_parallel_size,
+                )
+            )
+            if raw_path.exists() and trace_ready:
                 print(
                     f"[collect-parent] skipping existing batch_size={batch_size} "
                     f"draft_length={draft_length}: {raw_path}",

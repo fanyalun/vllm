@@ -442,6 +442,330 @@ def test_hybrid_spec_request_state_clips_prediction_to_actual_draft_len():
     assert stats.accepted_len_sum == 2
 
 
+def test_hybrid_spec_request_state_records_prediction_trace_event():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner.hybrid_spec_state_offload_enabled = True
+    runner.num_spec_tokens = 4
+    runner.hybrid_spec_state_ewma_alpha = 0.5
+    runner._reset_hybrid_spec_prediction_stats()
+    runner.reset_hybrid_spec_prediction_trace()
+    runner.enable_hybrid_spec_prediction_trace()
+
+    req = _make_cached_request_state("req-a")
+    req.predicted_accept_len = 5
+    req.accepted_len_ewma = 5.0
+    runner.requests = {"req-a": req}
+
+    runner._update_hybrid_spec_offload_request_states(
+        req_ids=["req-a"],
+        accepted_lens=[3],
+        scheduled_spec_decode_tokens={"req-a": [11, 12, 13, 14]},
+    )
+
+    assert runner.snapshot_hybrid_spec_prediction_trace() == [
+        {
+            "event_index": 0,
+            "req_event_index": 0,
+            "req_id": "req-a",
+            "accepted_len": 3,
+            "baseline_predicted_len": 5,
+            "effective_predicted_len": 5,
+            "req_max_accept_len": 5,
+            "draft_len": 4,
+            "output_token_ids": (),
+        }
+    ]
+
+
+def test_hybrid_spec_request_state_override_uses_oracle_trace():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner.hybrid_spec_state_offload_enabled = True
+    runner.num_spec_tokens = 4
+    runner.hybrid_spec_state_ewma_alpha = 0.5
+    runner._reset_hybrid_spec_prediction_stats()
+    runner.reset_hybrid_spec_prediction_trace()
+    runner.enable_hybrid_spec_prediction_trace()
+
+    req_a = _make_cached_request_state("req-a")
+    req_a.predicted_accept_len = 5
+    req_a.accepted_len_ewma = 5.0
+    req_b = _make_cached_request_state("req-b")
+    req_b.predicted_accept_len = 4
+    req_b.accepted_len_ewma = 4.0
+    runner.requests = {"req-a": req_a, "req-b": req_b}
+    runner.configure_hybrid_spec_prediction_override(
+        mode="exact_upper_bound",
+        oracle_trace=[
+            {
+                "event_index": 0,
+                "req_event_index": 0,
+                "req_id": "req-a",
+                "accepted_len": 3,
+                "baseline_predicted_len": 5,
+                "effective_predicted_len": 5,
+                "req_max_accept_len": 5,
+                "draft_len": 4,
+            },
+            {
+                "event_index": 1,
+                "req_event_index": 0,
+                "req_id": "req-b",
+                "accepted_len": 1,
+                "baseline_predicted_len": 3,
+                "effective_predicted_len": 3,
+                "req_max_accept_len": 3,
+                "draft_len": 2,
+            },
+        ],
+        exact_match_event_indices={0},
+    )
+
+    runner._update_hybrid_spec_offload_request_states(
+        req_ids=["req-a", "req-b"],
+        accepted_lens=[3, 1],
+        scheduled_spec_decode_tokens={
+            "req-a": [11, 12, 13, 14],
+            "req-b": [21, 22],
+        },
+    )
+
+    assert req_a.repair_required is False
+    assert req_a.repair_mode == int(HybridSpecRepairMode.NONE)
+    assert req_b.repair_required is True
+    assert req_b.repair_mode == int(HybridSpecRepairMode.FROM_START)
+    assert req_b.resident_slot == 1
+
+    stats = runner.snapshot_hybrid_spec_prediction_stats()
+    assert stats.total_predictions == 2
+    assert stats.exact_match_count == 1
+    assert stats.predicted_accept_len_sum == 5
+    assert stats.accepted_len_sum == 4
+    assert runner.snapshot_hybrid_spec_prediction_trace() == [
+        {
+            "event_index": 0,
+            "req_event_index": 0,
+            "req_id": "req-a",
+            "accepted_len": 3,
+            "baseline_predicted_len": 5,
+            "effective_predicted_len": 3,
+            "req_max_accept_len": 5,
+            "draft_len": 4,
+            "output_token_ids": (),
+        },
+        {
+            "event_index": 1,
+            "req_event_index": 0,
+            "req_id": "req-b",
+            "accepted_len": 1,
+            "baseline_predicted_len": 3,
+            "effective_predicted_len": 2,
+            "req_max_accept_len": 3,
+            "draft_len": 2,
+            "output_token_ids": (),
+        },
+    ]
+
+
+def test_hybrid_spec_request_state_override_matches_req_local_event_order():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner.hybrid_spec_state_offload_enabled = True
+    runner.num_spec_tokens = 4
+    runner.hybrid_spec_state_ewma_alpha = 0.5
+    runner._reset_hybrid_spec_prediction_stats()
+    runner.reset_hybrid_spec_prediction_trace()
+    runner.enable_hybrid_spec_prediction_trace()
+
+    req_a = _make_cached_request_state("req-a")
+    req_a.predicted_accept_len = 5
+    req_a.accepted_len_ewma = 5.0
+    req_b = _make_cached_request_state("req-b")
+    req_b.predicted_accept_len = 4
+    req_b.accepted_len_ewma = 4.0
+    runner.requests = {"req-a": req_a, "req-b": req_b}
+    runner.configure_hybrid_spec_prediction_override(
+        mode="exact_upper_bound",
+        oracle_trace=[
+            {
+                "event_index": 0,
+                "req_event_index": 0,
+                "req_id": "req-a",
+                "accepted_len": 3,
+                "baseline_predicted_len": 5,
+                "effective_predicted_len": 5,
+                "req_max_accept_len": 5,
+                "draft_len": 4,
+            },
+            {
+                "event_index": 1,
+                "req_event_index": 0,
+                "req_id": "req-b",
+                "accepted_len": 1,
+                "baseline_predicted_len": 4,
+                "effective_predicted_len": 4,
+                "req_max_accept_len": 3,
+                "draft_len": 2,
+            },
+            {
+                "event_index": 2,
+                "req_event_index": 1,
+                "req_id": "req-a",
+                "accepted_len": 2,
+                "baseline_predicted_len": 4,
+                "effective_predicted_len": 4,
+                "req_max_accept_len": 4,
+                "draft_len": 3,
+            },
+        ],
+        exact_match_event_indices={0, 1, 2},
+    )
+
+    runner._update_hybrid_spec_offload_request_states(
+        req_ids=["req-b", "req-a"],
+        accepted_lens=[1, 3],
+        scheduled_spec_decode_tokens={
+            "req-b": [21, 22],
+            "req-a": [11, 12, 13, 14],
+        },
+    )
+    runner._update_hybrid_spec_offload_request_states(
+        req_ids=["req-a"],
+        accepted_lens=[2],
+        scheduled_spec_decode_tokens={"req-a": [31, 32, 33]},
+    )
+
+    assert runner.snapshot_hybrid_spec_prediction_trace() == [
+        {
+            "event_index": 0,
+            "req_event_index": 0,
+            "req_id": "req-b",
+            "accepted_len": 1,
+            "baseline_predicted_len": 3,
+            "effective_predicted_len": 1,
+            "req_max_accept_len": 3,
+            "draft_len": 2,
+            "output_token_ids": (),
+        },
+        {
+            "event_index": 1,
+            "req_event_index": 0,
+            "req_id": "req-a",
+            "accepted_len": 3,
+            "baseline_predicted_len": 5,
+            "effective_predicted_len": 3,
+            "req_max_accept_len": 5,
+            "draft_len": 4,
+            "output_token_ids": (),
+        },
+        {
+            "event_index": 2,
+            "req_event_index": 1,
+            "req_id": "req-a",
+            "accepted_len": 2,
+            "baseline_predicted_len": 4,
+            "effective_predicted_len": 2,
+            "req_max_accept_len": 4,
+            "draft_len": 3,
+            "output_token_ids": (),
+        },
+    ]
+
+
+def test_hybrid_spec_request_state_override_uses_stable_req_prefix():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner.hybrid_spec_state_offload_enabled = True
+    runner.num_spec_tokens = 4
+    runner.hybrid_spec_state_ewma_alpha = 0.5
+    runner._reset_hybrid_spec_prediction_stats()
+    runner.reset_hybrid_spec_prediction_trace()
+
+    req = _make_cached_request_state("4-liveabcd")
+    req.predicted_accept_len = 5
+    req.accepted_len_ewma = 5.0
+    runner.requests = {"4-liveabcd": req}
+    runner.configure_hybrid_spec_prediction_override(
+        mode="exact_upper_bound",
+        oracle_trace=[
+            {
+                "event_index": 0,
+                "req_event_index": 0,
+                "req_id": "4-oracle1234",
+                "accepted_len": 3,
+                "baseline_predicted_len": 5,
+                "effective_predicted_len": 5,
+                "req_max_accept_len": 5,
+                "draft_len": 4,
+            },
+        ],
+        exact_match_event_indices={0},
+    )
+
+    runner._update_hybrid_spec_offload_request_states(
+        req_ids=["4-liveabcd"],
+        accepted_lens=[3],
+        scheduled_spec_decode_tokens={"4-liveabcd": [11, 12, 13, 14]},
+    )
+
+    assert req.repair_required is False
+    assert req.repair_mode == int(HybridSpecRepairMode.NONE)
+
+
+def test_hybrid_spec_prediction_override_replaces_output_token_rows():
+    runner = GPUModelRunner.__new__(GPUModelRunner)
+    runner.input_batch = SimpleNamespace(
+        req_ids=["4-liveabcd", "5-liveefgh"],
+        num_reqs=2,
+    )
+    runner.configure_hybrid_spec_prediction_override(
+        mode="exact_upper_bound",
+        oracle_trace=[
+            {
+                "event_index": 0,
+                "req_event_index": 0,
+                "req_id": "4-oracle1234",
+                "accepted_len": 3,
+                "baseline_predicted_len": 5,
+                "effective_predicted_len": 5,
+                "req_max_accept_len": 5,
+                "draft_len": 4,
+                "output_token_ids": (101, 102, 103, -1, -1),
+            },
+            {
+                "event_index": 1,
+                "req_event_index": 0,
+                "req_id": "5-oracle5678",
+                "accepted_len": 2,
+                "baseline_predicted_len": 4,
+                "effective_predicted_len": 4,
+                "req_max_accept_len": 4,
+                "draft_len": 3,
+                "output_token_ids": (201, 202, -1, -1, -1),
+            },
+        ],
+        exact_match_event_indices={0, 1},
+    )
+
+    output_token_ids = torch.tensor(
+        [
+            [1, 2, 3, 4, 5],
+            [6, 7, 8, 9, 10],
+        ],
+        dtype=torch.int64,
+    )
+
+    runner._apply_hybrid_spec_prediction_override_to_output_token_ids(
+        output_token_ids,
+        {
+            "4-liveabcd": [11, 12, 13, 14],
+            "5-liveefgh": [21, 22, 23],
+        },
+    )
+
+    assert output_token_ids.tolist() == [
+        [101, 102, 103, -1, -1],
+        [201, 202, -1, -1, -1],
+    ]
+
+
 def test_build_hybrid_gdn_attn_metadata_args_uses_request_state_source():
     runner = GPUModelRunner.__new__(GPUModelRunner)
     runner.device = torch.device("cpu")

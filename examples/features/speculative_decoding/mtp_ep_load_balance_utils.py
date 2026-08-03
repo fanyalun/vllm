@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -13,7 +14,25 @@ SCHEMA_VERSION = 10
 TIMING_BACKEND = "cuda_event_deferred"
 TIMING_SCOPE = "wall_critical_rank_cuda_event"
 
-DEFAULT_MODEL = "Qwen/Qwen3.6-35B-A3B"
+DEFAULT_HF_MODEL = "Qwen/Qwen3.6-35B-A3B"
+DEFAULT_LOCAL_MODEL = (
+    Path.home()
+    / ".cache"
+    / "modelscope"
+    / "hub"
+    / "models"
+    / "Qwen"
+    / "Qwen3.6-35B-A3B"
+)
+
+
+def resolve_default_model() -> str:
+    if DEFAULT_LOCAL_MODEL.exists():
+        return str(DEFAULT_LOCAL_MODEL)
+    return DEFAULT_HF_MODEL
+
+
+DEFAULT_MODEL = resolve_default_model()
 DEFAULT_DATASET = "likaixin/InstructCoder"
 DEFAULT_DATASET_CONFIG = None
 DEFAULT_DATASET_SPLIT = "train"

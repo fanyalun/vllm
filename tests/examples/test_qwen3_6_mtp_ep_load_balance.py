@@ -47,6 +47,10 @@ experiment = _load_module(
     "qwen3_6_mtp_ep_load_balance_experiment",
     "qwen3_6_mtp_ep_load_balance_experiment.py",
 )
+accuracy_limit = _load_module(
+    "qwen3_6_predict_last_accuracy_limit",
+    "qwen3_6_predict_last_accuracy_limit.py",
+)
 
 
 def _scheduler_output(num_scheduled_tokens, scheduled_spec_decode_tokens):
@@ -331,6 +335,7 @@ def test_collect_hybrid_reload_timing_stats_worker_maps_replay_breakdown():
                 post_replay_state_gather_ms=0.25,
                 capture_materialize_ms=0.5,
                 segment_start_save_ms=0.75,
+                segment_start_wait_ms=0.125,
                 tape_save_ms=2.25,
             )
 
@@ -349,6 +354,7 @@ def test_collect_hybrid_reload_timing_stats_worker_maps_replay_breakdown():
     assert stats["post_replay_state_gather_ms"] == 0.25
     assert stats["capture_materialize_ms"] == 0.5
     assert stats["segment_start_save_ms"] == 0.75
+    assert stats["segment_start_wait_ms"] == 0.125
 
 
 def test_accumulate_hybrid_reload_timing_stats_keeps_replay_breakdown():
@@ -374,6 +380,7 @@ def test_accumulate_hybrid_reload_timing_stats_keeps_replay_breakdown():
         "post_replay_state_gather_ms": 0.0,
         "capture_materialize_ms": 0.0,
         "segment_start_save_ms": 0.0,
+        "segment_start_wait_ms": 0.0,
         "tape_save_ms": 2.25,
     }
 
@@ -1690,6 +1697,11 @@ def test_collect_one_command_includes_prompt_cache_and_warmup(tmp_path):
         enforce_eager=True,
         warmup_rounds=1,
         max_num_batched_tokens=49152,
+        hybrid_prediction_trace_mode="replay",
+        hybrid_prediction_oracle_trace_root=tmp_path / "oracle",
+        hybrid_prediction_target_accuracy=0.8,
+        hybrid_prediction_sim_mode="exact_upper_bound",
+        hybrid_prediction_sim_seed=7,
     )
     command = runtime._build_collect_one_command(
         args,
@@ -1706,6 +1718,19 @@ def test_collect_one_command_includes_prompt_cache_and_warmup(tmp_path):
     assert command[command.index("--data-parallel-size") + 1] == "4"
     assert command[command.index("--num-samples") + 1] == "1024"
     assert command[command.index("--max-num-batched-tokens") + 1] == "49152"
+    assert command[command.index("--hybrid-prediction-trace-mode") + 1] == "replay"
+    assert (
+        command[command.index("--hybrid-prediction-oracle-trace-root") + 1]
+        == str(tmp_path / "oracle")
+    )
+    assert (
+        command[command.index("--hybrid-prediction-target-accuracy") + 1] == "0.8"
+    )
+    assert (
+        command[command.index("--hybrid-prediction-sim-mode") + 1]
+        == "exact_upper_bound"
+    )
+    assert command[command.index("--hybrid-prediction-sim-seed") + 1] == "7"
     assert command[2:5] == ["collect", "--internal-stage", "condition"]
 
 
@@ -1717,6 +1742,231 @@ def test_unified_cli_defaults_to_four_gpu_full_output_matrix():
     assert args.data_parallel_size == 4
     assert args.max_model_len == 768
     assert args.max_num_batched_tokens == 8192
+    assert args.hybrid_prediction_trace_mode == "off"
+
+
+def test_resolve_default_model_prefers_local_snapshot(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        helper,
+        "DEFAULT_LOCAL_MODEL",
+        tmp_path / "Qwen3.6-35B-A3B",
+    )
+    monkeypatch.setattr(helper, "DEFAULT_HF_MODEL", "hf/model")
+
+    helper.DEFAULT_LOCAL_MODEL.mkdir()
+    assert helper.resolve_default_model() == str(helper.DEFAULT_LOCAL_MODEL)
+
+    helper.DEFAULT_LOCAL_MODEL.rmdir()
+    assert helper.resolve_default_model() == "hf/model"
+
+
+def test_configure_hybrid_prediction_trace_worker_sets_exact_match_budget():
+    class DummyRunner:
+        def __init__(self) -> None:
+            self.enabled = False
+            self.override = None
+
+        def reset_hybrid_spec_prediction_trace(self) -> None:
+            self.enabled = False
+
+        def disable_hybrid_spec_prediction_override(self) -> None:
+            self.override = None
+
+        def enable_hybrid_spec_prediction_trace(self) -> None:
+            self.enabled = True
+
+        def configure_hybrid_spec_prediction_override(
+            self,
+            *,
+            mode,
+            oracle_trace,
+            exact_match_event_indices,
+        ) -> None:
+            self.override = {
+                "mode": mode,
+                "oracle_trace": oracle_trace,
+                "exact_match_event_indices": exact_match_event_indices,
+            }
+
+    worker = SimpleNamespace(model_runner=DummyRunner())
+    trace = [
+        {"event_index": idx, "accepted_len": 2, "req_max_accept_len": 3, "draft_len": 2}
+        for idx in range(5)
+    ]
+
+    result = runtime.configure_hybrid_prediction_trace_worker(
+        worker,
+        trace_mode="replay",
+        oracle_trace=trace,
+        target_accuracy=0.6,
+        sim_mode="exact_upper_bound",
+        sim_seed=0,
+    )
+
+    assert worker.model_runner.enabled is True
+    assert result["trace_events"] == 5
+    assert result["exact_match_events"] == 3
+    assert worker.model_runner.override["mode"] == "exact_upper_bound"
+    assert len(worker.model_runner.override["exact_match_event_indices"]) == 3
+
+
+def test_load_rank_hybrid_prediction_trace_derives_req_local_indices(tmp_path):
+    trace_path = tmp_path / "rank_00.npz"
+    np.savez_compressed(
+        trace_path,
+        schema_version=np.asarray([runtime.HYBRID_PREDICTION_TRACE_SCHEMA_VERSION]),
+        event_index=np.asarray([0, 1, 2], dtype=np.int64),
+        req_id=np.asarray(["req-a", "req-b", "req-a"]),
+        accepted_len=np.asarray([3, 1, 2], dtype=np.int64),
+        baseline_predicted_len=np.asarray([5, 3, 4], dtype=np.int64),
+        effective_predicted_len=np.asarray([5, 3, 4], dtype=np.int64),
+        req_max_accept_len=np.asarray([5, 3, 4], dtype=np.int64),
+        draft_len=np.asarray([4, 2, 3], dtype=np.int64),
+    )
+
+    trace = runtime.load_rank_hybrid_prediction_trace(trace_path)
+
+    assert trace == [
+        {
+            "event_index": 0,
+            "req_event_index": 0,
+            "req_id": "req-a",
+            "accepted_len": 3,
+            "baseline_predicted_len": 5,
+            "effective_predicted_len": 5,
+            "req_max_accept_len": 5,
+            "draft_len": 4,
+            "output_token_ids": (),
+        },
+        {
+            "event_index": 1,
+            "req_event_index": 0,
+            "req_id": "req-b",
+            "accepted_len": 1,
+            "baseline_predicted_len": 3,
+            "effective_predicted_len": 3,
+            "req_max_accept_len": 3,
+            "draft_len": 2,
+            "output_token_ids": (),
+        },
+        {
+            "event_index": 2,
+            "req_event_index": 1,
+            "req_id": "req-a",
+            "accepted_len": 2,
+            "baseline_predicted_len": 4,
+            "effective_predicted_len": 4,
+            "req_max_accept_len": 4,
+            "draft_len": 3,
+            "output_token_ids": (),
+        },
+    ]
+
+
+def test_save_and_load_rank_hybrid_prediction_trace_roundtrip_output_token_ids(
+    tmp_path,
+):
+    trace_path = tmp_path / "rank_00.npz"
+    args = SimpleNamespace(
+        batch_size=128,
+        draft_length=4,
+        data_parallel_size=2,
+        dp_rank=1,
+    )
+    data = SimpleNamespace(
+        hybrid_prediction_trace_events=[
+            {
+                "event_index": 0,
+                "req_event_index": 0,
+                "req_id": "4-abcd1234",
+                "accepted_len": 3,
+                "baseline_predicted_len": 5,
+                "effective_predicted_len": 5,
+                "req_max_accept_len": 5,
+                "draft_len": 4,
+                "output_token_ids": (11, 12, 13, -1, -1),
+            },
+            {
+                "event_index": 1,
+                "req_event_index": 0,
+                "req_id": "5-efgh5678",
+                "accepted_len": 1,
+                "baseline_predicted_len": 3,
+                "effective_predicted_len": 3,
+                "req_max_accept_len": 5,
+                "draft_len": 4,
+                "output_token_ids": (21, -1, -1, -1, -1),
+            },
+        ],
+    )
+
+    runtime.save_rank_hybrid_prediction_trace(trace_path, args, data)
+    trace = runtime.load_rank_hybrid_prediction_trace(trace_path)
+
+    assert trace == [
+        {
+            "event_index": 0,
+            "req_event_index": 0,
+            "req_id": "4-abcd1234",
+            "accepted_len": 3,
+            "baseline_predicted_len": 5,
+            "effective_predicted_len": 5,
+            "req_max_accept_len": 5,
+            "draft_len": 4,
+            "output_token_ids": (11, 12, 13, -1, -1),
+        },
+        {
+            "event_index": 1,
+            "req_event_index": 0,
+            "req_id": "5-efgh5678",
+            "accepted_len": 1,
+            "baseline_predicted_len": 3,
+            "effective_predicted_len": 3,
+            "req_max_accept_len": 5,
+            "draft_len": 4,
+            "output_token_ids": (21, -1, -1, -1, -1),
+        },
+    ]
+
+
+def test_safe_collective_rpc_skips_shutdown_executor():
+    executor = SimpleNamespace(
+        collective_rpc=lambda *args, **kwargs: ["unexpected"],
+        rpc_broadcast_mq=None,
+        is_failed=False,
+        shutting_down=False,
+    )
+
+    assert runtime._safe_collective_rpc(executor, "noop", timeout=1) is None
+
+
+def test_accuracy_limit_helpers_compute_oracle_verdict():
+    compare_rows = [
+        {
+            "batch_size": 128,
+            "draft_length": 4,
+            "target_accuracy": 1.0,
+            "vs_disabled_tpot_delta_ms": 1.0,
+            "vs_disabled_throughput_delta_tok_s": -10.0,
+        },
+        {
+            "batch_size": 128,
+            "draft_length": 6,
+            "target_accuracy": 1.0,
+            "vs_disabled_tpot_delta_ms": -0.5,
+            "vs_disabled_throughput_delta_tok_s": -5.0,
+        },
+    ]
+
+    assert accuracy_limit._normalize_draft_lengths([4, 6]) == [0, 4, 6]
+    assert accuracy_limit._accuracy_tag(0.8) == "080"
+    assert (
+        accuracy_limit._resolve_data_parallel_size(
+            SimpleNamespace(data_parallel_size=None, local_gpu_ids="0,1")
+        )
+        == 2
+    )
+    assert accuracy_limit._oracle_beats_disabled(compare_rows) is True
 
 
 def test_scheduler_capacity_helpers_use_local_batch_budget():

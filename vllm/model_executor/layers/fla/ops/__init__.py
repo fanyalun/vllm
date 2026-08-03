@@ -14,9 +14,11 @@ from .fused_recurrent import (
 )
 from .fused_sigmoid_gating import (
     fused_sigmoid_gating_delta_rule_replay_from_shadow,
+    fused_sigmoid_gating_delta_rule_replay_from_shadow_resident,
     fused_sigmoid_gating_delta_rule_replay_from_tape,
     fused_sigmoid_gating_delta_rule_update,
     fused_sigmoid_gating_delta_rule_update_capture_shadow,
+    fused_sigmoid_gating_delta_rule_update_capture_shadow_resident,
     fused_sigmoid_gating_delta_rule_update_capture_tape,
 )
 from .layernorm_guard import RMSNormGated
@@ -28,8 +30,10 @@ __all__ = [
     "fused_recurrent_gated_delta_rule_packed_decode",
     "fused_post_conv_prep",
     "fused_sigmoid_gating_delta_rule_replay_from_shadow",
+    "fused_sigmoid_gating_delta_rule_replay_from_shadow_resident",
     "fused_sigmoid_gating_delta_rule_replay_from_tape",
     "fused_sigmoid_gating_delta_rule_update",
     "fused_sigmoid_gating_delta_rule_update_capture_shadow",
+    "fused_sigmoid_gating_delta_rule_update_capture_shadow_resident",
     "fused_sigmoid_gating_delta_rule_update_capture_tape",
 ]

@@ -83,6 +83,12 @@ uv pip install -r requirements/test/cuda.txt
 .venv/bin/python -m pytest tests/path/to/test_file.py -v
 ```
 
+- If a command may spawn helper executables at runtime, make sure `.venv/bin`
+  is on `PATH` first. Calling `.venv/bin/python` alone does **not** expose
+  tools like `ninja` to subprocesses such as FlashInfer JIT.
+- In one-shot shells, prefer `source .venv/bin/activate && ...` or prefix
+  `PATH=.venv/bin:$PATH` before running GPU validation scripts.
+
 ### Running linters
 
 > Requires [Environment setup](#environment-setup).

@@ -2,13 +2,22 @@
 set -euo pipefail
 
 TS="${1:?usage: $0 <timestamp>}"
-ROOT="/home/fanya/vllm/results/qwen3_6_predict_last_${TS}_group_preload_fix"
-SESSION="hybrid_predict_last_${TS}_group_fix"
+ROOT="/home/fanya/vllm/results/qwen3_6_predict_last_${TS}_predict_last_only_full_perf"
+SESSION="hybrid_predict_last_${TS}_full_perf_predict_last"
 
 mkdir -p "$ROOT/logs" "$ROOT/predict_last"
+STATUS_LOG="$ROOT/logs/status.log"
+
+cat > "$STATUS_LOG" <<EOF
+[launcher] state=RUNNING
+[launcher] session=$SESSION
+[launcher] root=$ROOT
+EOF
 
 tmux new-session -d -s "$SESSION" "
 cd /home/fanya/vllm
+source .venv/bin/activate
+export PATH=/home/fanya/vllm/.venv/bin:\$PATH
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export HF_HUB_DISABLE_TELEMETRY=1
@@ -44,6 +53,11 @@ else
   analyze_status=1
 fi
 echo \"[launcher] finished mode=predict_last collect_exit=\$status analyze_exit=\${analyze_status:-1}\" >> '$ROOT/logs/predict_last_launcher.log'
+if [ \$status -eq 0 ] && [ \${analyze_status:-1} -eq 0 ]; then
+  echo '[launcher] state=SUCCESS' >> '$ROOT/logs/status.log'
+else
+  echo '[launcher] state=FAILED' >> '$ROOT/logs/status.log'
+fi
 "
 
 echo "$SESSION"

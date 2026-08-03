@@ -445,6 +445,18 @@ class HybridSpecPredictionStats(NamedTuple):
     accepted_len_sum: int
 
 
+class HybridSpecPredictionTraceEvent(NamedTuple):
+    event_index: int
+    req_event_index: int
+    req_id: str
+    accepted_len: int
+    baseline_predicted_len: int
+    effective_predicted_len: int
+    req_max_accept_len: int
+    draft_len: int
+    output_token_ids: tuple[int, ...]
+
+
 class HybridSpecRepairTimingStats(NamedTuple):
     repair_copy_ms: float
     repair_compute_ms: float
@@ -458,6 +470,7 @@ class HybridSpecRepairTimingStats(NamedTuple):
     post_replay_state_gather_ms: float
     capture_materialize_ms: float
     segment_start_save_ms: float
+    segment_start_wait_ms: float
     tape_save_ms: float
 
 
@@ -490,6 +503,8 @@ class GPUModelRunner(
             else 0.5
         )
         self._reset_hybrid_spec_prediction_stats()
+        self.reset_hybrid_spec_prediction_trace()
+        self.disable_hybrid_spec_prediction_override()
 
         model_config = self.model_config
         cache_config = self.cache_config
@@ -1212,6 +1227,251 @@ class GPUModelRunner(
             accepted_len_sum=self.hybrid_spec_prediction_accepted_sum,
         )
 
+    def reset_hybrid_spec_prediction_trace(self) -> None:
+        self.hybrid_spec_prediction_event_index = 0
+        self.hybrid_spec_prediction_req_event_indices: dict[str, int] = {}
+        self.hybrid_spec_prediction_trace_enabled = False
+        self.hybrid_spec_prediction_trace_events: list[
+            HybridSpecPredictionTraceEvent
+        ] = []
+
+    def enable_hybrid_spec_prediction_trace(self) -> None:
+        self.hybrid_spec_prediction_trace_enabled = True
+
+    def snapshot_hybrid_spec_prediction_trace(
+        self,
+    ) -> list[dict[str, int | str]]:
+        events = getattr(self, "hybrid_spec_prediction_trace_events", [])
+        return [event._asdict() for event in events]
+
+    @staticmethod
+    def _hybrid_spec_prediction_trace_req_key(req_id: str) -> str:
+        req_prefix, separator, _ = req_id.partition("-")
+        if separator and req_prefix.isdigit():
+            return req_prefix
+        return req_id
+
+    def disable_hybrid_spec_prediction_override(self) -> None:
+        self.hybrid_spec_prediction_override_mode = None
+        self.hybrid_spec_prediction_override_trace = []
+        self.hybrid_spec_prediction_override_trace_by_req: dict[
+            str, list[dict[str, int | str]]
+        ] = {}
+        self.hybrid_spec_prediction_override_hit_event_indices = set()
+
+    def configure_hybrid_spec_prediction_override(
+        self,
+        *,
+        mode: str,
+        oracle_trace: list[dict[str, int | str]],
+        exact_match_event_indices: set[int],
+    ) -> None:
+        trace_by_req: dict[str, list[dict[str, int | str]]] = {}
+        req_event_indices: dict[str, int] = {}
+        normalized_trace: list[dict[str, int | str]] = []
+        for raw_event in oracle_trace:
+            req_id = str(raw_event["req_id"])
+            req_key = self._hybrid_spec_prediction_trace_req_key(req_id)
+            req_event_index = int(
+                raw_event.get(
+                    "req_event_index",
+                    req_event_indices.get(req_key, 0),
+                )
+            )
+            req_event_indices[req_key] = req_event_index + 1
+            normalized_event = dict(raw_event)
+            normalized_event["req_id"] = req_id
+            normalized_event["req_event_index"] = req_event_index
+            trace_by_req.setdefault(req_key, []).append(normalized_event)
+            normalized_trace.append(normalized_event)
+        self.hybrid_spec_prediction_override_mode = mode
+        self.hybrid_spec_prediction_override_trace = normalized_trace
+        self.hybrid_spec_prediction_override_trace_by_req = trace_by_req
+        self.hybrid_spec_prediction_override_hit_event_indices = set(
+            exact_match_event_indices
+        )
+
+    def _resolve_hybrid_spec_prediction_override(
+        self,
+        *,
+        event_index: int,
+        req_event_index: int,
+        req_id: str,
+        accepted_len: int,
+        baseline_predicted_len: int,
+        req_max_accept_len: int,
+        draft_len: int,
+    ) -> int:
+        mode = getattr(self, "hybrid_spec_prediction_override_mode", None)
+        if mode is None:
+            return baseline_predicted_len
+        req_key = self._hybrid_spec_prediction_trace_req_key(req_id)
+        trace_by_req = getattr(
+            self,
+            "hybrid_spec_prediction_override_trace_by_req",
+            {},
+        )
+        req_trace = trace_by_req.get(req_key, [])
+        if req_event_index >= len(req_trace):
+            raise RuntimeError(
+                "Hybrid prediction oracle trace exhausted at "
+                f"event_index={event_index} req_event_index={req_event_index} "
+                f"req_id={req_id} req_key={req_key}."
+            )
+        trace_event = req_trace[req_event_index]
+        trace_req_key = self._hybrid_spec_prediction_trace_req_key(
+            str(trace_event["req_id"])
+        )
+        if trace_req_key != req_key:
+            raise RuntimeError(
+                "Hybrid prediction oracle trace req_key mismatch at "
+                f"event_index={event_index} req_event_index={req_event_index}: "
+                f"trace={trace_req_key} live={req_key}."
+            )
+        trace_accepted_len = int(trace_event["accepted_len"])
+        trace_req_max_accept_len = int(trace_event["req_max_accept_len"])
+        trace_draft_len = int(trace_event["draft_len"])
+        if trace_accepted_len != accepted_len:
+            raise RuntimeError(
+                "Hybrid prediction oracle trace accepted_len mismatch at "
+                f"event_index={event_index} req_id={req_id}: "
+                f"trace={trace_accepted_len} live={accepted_len}."
+            )
+        if trace_req_max_accept_len != req_max_accept_len:
+            raise RuntimeError(
+                "Hybrid prediction oracle trace req_max_accept_len mismatch "
+                f"at event_index={event_index} req_id={req_id}: "
+                f"trace={trace_req_max_accept_len} live={req_max_accept_len}."
+            )
+        if trace_draft_len != draft_len:
+            raise RuntimeError(
+                "Hybrid prediction oracle trace draft_len mismatch at "
+                f"event_index={event_index} req_id={req_id}: "
+                f"trace={trace_draft_len} live={draft_len}."
+            )
+        exact_match_event_indices = getattr(
+            self,
+            "hybrid_spec_prediction_override_hit_event_indices",
+            set(),
+        )
+        if event_index in exact_match_event_indices:
+            return accepted_len
+        if accepted_len > 1:
+            return accepted_len - 1
+        if accepted_len < req_max_accept_len:
+            return accepted_len + 1
+        raise RuntimeError(
+            "Hybrid prediction override could not choose a non-truth length at "
+            f"event_index={event_index} req_id={req_id} accepted_len="
+            f"{accepted_len} req_max_accept_len={req_max_accept_len}."
+        )
+
+    def _lookup_hybrid_spec_prediction_override_event(
+        self,
+        *,
+        req_id: str,
+        req_event_index: int,
+    ) -> dict[str, int | str] | None:
+        if getattr(self, "hybrid_spec_prediction_override_mode", None) is None:
+            return None
+        req_key = self._hybrid_spec_prediction_trace_req_key(req_id)
+        trace_by_req = getattr(
+            self,
+            "hybrid_spec_prediction_override_trace_by_req",
+            {},
+        )
+        req_trace = trace_by_req.get(req_key, [])
+        if req_event_index >= len(req_trace):
+            raise RuntimeError(
+                "Hybrid prediction oracle trace exhausted at "
+                f"req_event_index={req_event_index} req_id={req_id} "
+                f"req_key={req_key}."
+            )
+        return req_trace[req_event_index]
+
+    def _apply_hybrid_spec_prediction_override_to_output_token_ids(
+        self,
+        output_token_ids: torch.Tensor,
+        scheduled_spec_decode_tokens: dict[str, list[int] | tuple[int, ...]],
+    ) -> None:
+        if getattr(self, "hybrid_spec_prediction_override_mode", None) is None:
+            return
+        req_event_indices = getattr(
+            self,
+            "hybrid_spec_prediction_req_event_indices",
+            None,
+        )
+        if req_event_indices is None:
+            req_event_indices = {}
+            self.hybrid_spec_prediction_req_event_indices = req_event_indices
+        num_reqs = min(output_token_ids.size(0), self.input_batch.num_reqs)
+        for batch_idx, req_id in enumerate(self.input_batch.req_ids[:num_reqs]):
+            if req_id not in scheduled_spec_decode_tokens:
+                continue
+            req_key = self._hybrid_spec_prediction_trace_req_key(req_id)
+            req_event_index = int(req_event_indices.get(req_key, 0))
+            trace_event = self._lookup_hybrid_spec_prediction_override_event(
+                req_id=req_id,
+                req_event_index=req_event_index,
+            )
+            assert trace_event is not None
+            raw_output_token_ids = trace_event.get("output_token_ids", ())
+            oracle_output_token_ids = tuple(
+                int(token_id) for token_id in raw_output_token_ids
+            )
+            if not oracle_output_token_ids:
+                raise RuntimeError(
+                    "Hybrid prediction oracle trace is missing output_token_ids "
+                    f"for req_id={req_id} req_event_index={req_event_index}."
+                )
+            row = output_token_ids[batch_idx]
+            if len(oracle_output_token_ids) > row.numel():
+                raise RuntimeError(
+                    "Hybrid prediction oracle output_token_ids exceed live row "
+                    f"width for req_id={req_id}: trace={len(oracle_output_token_ids)} "
+                    f"live={row.numel()}."
+                )
+            row.fill_(-1)
+            oracle_row = torch.tensor(
+                oracle_output_token_ids,
+                dtype=row.dtype,
+                device=row.device,
+            )
+            row[: oracle_row.numel()].copy_(oracle_row)
+
+    def _record_hybrid_spec_prediction_trace_event(
+        self,
+        *,
+        event_index: int,
+        req_event_index: int,
+        req_id: str,
+        accepted_len: int,
+        baseline_predicted_len: int,
+        effective_predicted_len: int,
+        req_max_accept_len: int,
+        draft_len: int,
+        output_token_ids: tuple[int, ...],
+    ) -> None:
+        if not getattr(self, "hybrid_spec_prediction_trace_enabled", False):
+            return
+        events = getattr(self, "hybrid_spec_prediction_trace_events", None)
+        if events is None:
+            events = []
+            self.hybrid_spec_prediction_trace_events = events
+        events.append(
+            HybridSpecPredictionTraceEvent(
+                event_index=event_index,
+                req_event_index=req_event_index,
+                req_id=req_id,
+                accepted_len=accepted_len,
+                baseline_predicted_len=baseline_predicted_len,
+                effective_predicted_len=effective_predicted_len,
+                req_max_accept_len=req_max_accept_len,
+                draft_len=draft_len,
+                output_token_ids=output_token_ids,
+            )
+        )
+
     def reset_hybrid_spec_reload_timing_stats(self) -> None:
         for _, _, layers in self._get_hybrid_gdn_layers_by_group():
             for layer in layers:
@@ -1232,6 +1492,7 @@ class GPUModelRunner(
         post_replay_state_gather_ms = 0.0
         capture_materialize_ms = 0.0
         segment_start_save_ms = 0.0
+        segment_start_wait_ms = 0.0
         tape_save_ms = 0.0
         for _, _, layers in self._get_hybrid_gdn_layers_by_group():
             for layer in layers:
@@ -1258,6 +1519,9 @@ class GPUModelRunner(
                 segment_start_save_ms += float(
                     stats["segment_start_save_ms"]
                 )
+                segment_start_wait_ms += float(
+                    stats.get("segment_start_wait_ms", 0.0)
+                )
                 tape_save_ms += float(stats["tape_save_ms"])
         return HybridSpecRepairTimingStats(
             repair_copy_ms=repair_copy_ms,
@@ -1272,6 +1536,7 @@ class GPUModelRunner(
             post_replay_state_gather_ms=post_replay_state_gather_ms,
             capture_materialize_ms=capture_materialize_ms,
             segment_start_save_ms=segment_start_save_ms,
+            segment_start_wait_ms=segment_start_wait_ms,
             tape_save_ms=tape_save_ms,
         )
 
@@ -1332,6 +1597,7 @@ class GPUModelRunner(
         req_ids: list[str],
         accepted_lens: list[int],
         scheduled_spec_decode_tokens: dict[str, list[int] | tuple[int, ...]],
+        output_token_ids: torch.Tensor | None = None,
     ) -> None:
         if not self.hybrid_spec_state_offload_enabled:
             return
@@ -1357,10 +1623,55 @@ class GPUModelRunner(
             req_draft_len = len(scheduled_spec_decode_tokens[req_id])
             req_max_accept_len = 1 + req_draft_len
             accepted_len = min(accepted_len, req_max_accept_len)
-            predicted_len = max(
+            baseline_predicted_len = max(
                 1,
                 min(req_max_accept_len, req_state.predicted_accept_len),
             )
+            event_index = int(
+                getattr(self, "hybrid_spec_prediction_event_index", 0)
+            )
+            req_event_indices = getattr(
+                self,
+                "hybrid_spec_prediction_req_event_indices",
+                None,
+            )
+            if req_event_indices is None:
+                req_event_indices = {}
+                self.hybrid_spec_prediction_req_event_indices = req_event_indices
+            req_key = self._hybrid_spec_prediction_trace_req_key(req_id)
+            req_event_index = int(req_event_indices.get(req_key, 0))
+            predicted_len = self._resolve_hybrid_spec_prediction_override(
+                event_index=event_index,
+                req_event_index=req_event_index,
+                req_id=req_id,
+                accepted_len=accepted_len,
+                baseline_predicted_len=baseline_predicted_len,
+                req_max_accept_len=req_max_accept_len,
+                draft_len=req_draft_len,
+            )
+            predicted_len = max(1, min(req_max_accept_len, int(predicted_len)))
+            self._record_hybrid_spec_prediction_trace_event(
+                event_index=event_index,
+                req_event_index=req_event_index,
+                req_id=req_id,
+                accepted_len=accepted_len,
+                baseline_predicted_len=baseline_predicted_len,
+                effective_predicted_len=predicted_len,
+                req_max_accept_len=req_max_accept_len,
+                draft_len=req_draft_len,
+                output_token_ids=(
+                    tuple(
+                        int(token_id)
+                        for token_id in output_token_ids[batch_idx]
+                        .to(device="cpu", non_blocking=False)
+                        .tolist()
+                    )
+                    if output_token_ids is not None
+                    else ()
+                ),
+            )
+            self.hybrid_spec_prediction_event_index = event_index + 1
+            req_event_indices[req_key] = req_event_index + 1
             error = predicted_len - accepted_len
             self.hybrid_spec_prediction_total += 1
             self.hybrid_spec_prediction_exact_match += int(error == 0)
@@ -1524,6 +1835,20 @@ class GPUModelRunner(
         resident_slots: list[int],
         repair_modes: list[HybridSpecRepairMode],
     ) -> HybridTemporalRuntimeMetadataBundle:
+        def _make_tensor(
+            values: list[int],
+            *,
+            dtype: torch.dtype,
+        ) -> tuple[torch.Tensor, torch.Tensor | None]:
+            cpu_tensor = torch.tensor(values, dtype=dtype).contiguous()
+            gpu_tensor = None
+            if self.device.type == "cuda":
+                gpu_tensor = cpu_tensor.to(
+                    device=self.device,
+                    non_blocking=False,
+                ).contiguous()
+            return cpu_tensor, gpu_tensor
+
         resident_token_indices = [
             max(
                 0,
@@ -1574,55 +1899,83 @@ class GPUModelRunner(
             )
             packed_replay_output_row_ids.append(int(row_idx) + 1)
 
+        shadow_req_slots_cpu, shadow_req_slots_gpu = _make_tensor(
+            wave_plan.spec_req_slots,
+            dtype=torch.long,
+        )
+        resident_token_indices_cpu, resident_token_indices_gpu = _make_tensor(
+            resident_token_indices,
+            dtype=torch.int32,
+        )
+        source_block_ids_cpu, source_block_ids_gpu = _make_tensor(
+            source_block_ids,
+            dtype=torch.long,
+        )
+        repair_req_slots_cpu, repair_req_slots_gpu = _make_tensor(
+            packed_repair_req_slots,
+            dtype=torch.long,
+        )
+        repair_src_begin_cpu, repair_src_begin_gpu = _make_tensor(
+            packed_repair_src_begin,
+            dtype=torch.long,
+        )
+        repair_lengths_cpu, repair_lengths_gpu = _make_tensor(
+            packed_repair_lengths,
+            dtype=torch.int32,
+        )
+        replay_cu_seqlens_cpu, replay_cu_seqlens_gpu = _make_tensor(
+            packed_replay_cu_seqlens,
+            dtype=torch.int32,
+        )
+        replay_output_row_ids_cpu, replay_output_row_ids_gpu = _make_tensor(
+            packed_replay_output_row_ids,
+            dtype=torch.int32,
+        )
+        from_start_rows_cpu, from_start_rows_gpu = _make_tensor(
+            from_start_rows,
+            dtype=torch.long,
+        )
+        from_start_req_slots_cpu, from_start_req_slots_gpu = _make_tensor(
+            from_start_req_slots,
+            dtype=torch.long,
+        )
+        from_resident_rows_cpu, from_resident_rows_gpu = _make_tensor(
+            from_resident_rows,
+            dtype=torch.long,
+        )
+        (
+            from_resident_source_blocks_cpu,
+            from_resident_source_blocks_gpu,
+        ) = _make_tensor(
+            from_resident_source_blocks,
+            dtype=torch.long,
+        )
+
         return HybridTemporalRuntimeMetadataBundle(
-            shadow_req_slots_cpu=torch.tensor(
-                wave_plan.spec_req_slots,
-                dtype=torch.long,
-            ).contiguous(),
-            resident_token_indices_cpu=torch.tensor(
-                resident_token_indices,
-                dtype=torch.int32,
-            ).contiguous(),
-            source_block_ids_cpu=torch.tensor(
-                source_block_ids,
-                dtype=torch.long,
-            ).contiguous(),
-            repair_req_slots_cpu=torch.tensor(
-                packed_repair_req_slots,
-                dtype=torch.long,
-            ).contiguous(),
-            repair_src_begin_cpu=torch.tensor(
-                packed_repair_src_begin,
-                dtype=torch.long,
-            ).contiguous(),
-            repair_lengths_cpu=torch.tensor(
-                packed_repair_lengths,
-                dtype=torch.int32,
-            ).contiguous(),
-            replay_cu_seqlens_cpu=torch.tensor(
-                packed_replay_cu_seqlens,
-                dtype=torch.int32,
-            ).contiguous(),
-            replay_output_row_ids_cpu=torch.tensor(
-                packed_replay_output_row_ids,
-                dtype=torch.int32,
-            ).contiguous(),
-            from_start_rows_cpu=torch.tensor(
-                from_start_rows,
-                dtype=torch.long,
-            ).contiguous(),
-            from_start_req_slots_cpu=torch.tensor(
-                from_start_req_slots,
-                dtype=torch.long,
-            ).contiguous(),
-            from_resident_rows_cpu=torch.tensor(
-                from_resident_rows,
-                dtype=torch.long,
-            ).contiguous(),
-            from_resident_source_blocks_cpu=torch.tensor(
-                from_resident_source_blocks,
-                dtype=torch.long,
-            ).contiguous(),
+            shadow_req_slots_cpu=shadow_req_slots_cpu,
+            resident_token_indices_cpu=resident_token_indices_cpu,
+            source_block_ids_cpu=source_block_ids_cpu,
+            repair_req_slots_cpu=repair_req_slots_cpu,
+            repair_src_begin_cpu=repair_src_begin_cpu,
+            repair_lengths_cpu=repair_lengths_cpu,
+            replay_cu_seqlens_cpu=replay_cu_seqlens_cpu,
+            replay_output_row_ids_cpu=replay_output_row_ids_cpu,
+            from_start_rows_cpu=from_start_rows_cpu,
+            from_start_req_slots_cpu=from_start_req_slots_cpu,
+            from_resident_rows_cpu=from_resident_rows_cpu,
+            from_resident_source_blocks_cpu=from_resident_source_blocks_cpu,
+            shadow_req_slots_gpu=shadow_req_slots_gpu,
+            resident_token_indices_gpu=resident_token_indices_gpu,
+            source_block_ids_gpu=source_block_ids_gpu,
+            repair_req_slots_gpu=repair_req_slots_gpu,
+            repair_src_begin_gpu=repair_src_begin_gpu,
+            repair_lengths_gpu=repair_lengths_gpu,
+            replay_cu_seqlens_gpu=replay_cu_seqlens_gpu,
+            replay_output_row_ids_gpu=replay_output_row_ids_gpu,
+            from_start_rows_gpu=from_start_rows_gpu,
+            from_start_req_slots_gpu=from_start_req_slots_gpu,
+            from_resident_rows_gpu=from_resident_rows_gpu,
+            from_resident_source_blocks_gpu=from_resident_source_blocks_gpu,
         )
 
     def _build_hybrid_temporal_group_plans(
@@ -2131,6 +2484,10 @@ class GPUModelRunner(
         # Valid tokens are contiguous from position 0, so counting non-(-1)
         # tokens gives us the first -1 position (i.e., number of accepted).
         num_reqs = output_token_ids.size(0)
+        self._apply_hybrid_spec_prediction_override_to_output_token_ids(
+            output_token_ids,
+            scheduler_output.scheduled_spec_decode_tokens,
+        )
         self.num_accepted_tokens.gpu[:num_reqs] = (output_token_ids != -1).sum(dim=1)
         if self.hybrid_spec_state_offload_enabled:
             accepted_lens = (
@@ -2142,6 +2499,7 @@ class GPUModelRunner(
                 self.input_batch.req_ids[:num_reqs],
                 accepted_lens,
                 scheduler_output.scheduled_spec_decode_tokens,
+                output_token_ids=output_token_ids,
             )
 
         if self.cache_config.mamba_cache_mode == "align":

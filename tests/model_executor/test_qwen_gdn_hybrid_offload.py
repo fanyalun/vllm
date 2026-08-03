@@ -12,6 +12,7 @@ import vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn as qwen_gdn_mod
 from vllm.model_executor.layers.mamba.gdn.hybrid_temporal_replay import (
     HybridTemporalReplayHelper,
     HybridTemporalReplayWorkspace,
+    ReplayBatch,
 )
 from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
     QwenGatedDeltaNetAttention,
@@ -110,6 +111,12 @@ def _make_replay_buffers(
     )
 
 
+def _state_row_id(indices: torch.Tensor, row: int) -> int:
+    if indices.ndim == 1:
+        return int(indices[row].item())
+    return int(indices[row, 0].item())
+
+
 def _install_fake_replay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -140,7 +147,7 @@ def _install_fake_replay(
         for row, (start, end) in enumerate(
             zip(cu_seqlens.tolist(), cu_seqlens.tolist()[1:])
         ):
-            state_idx = int(ssm_state_indices[row, 0].item())
+            state_idx = _state_row_id(ssm_state_indices, row)
             state = initial_state[state_idx].clone()
             for token_idx in range(start, end):
                 delta = (
@@ -171,9 +178,9 @@ def _install_fake_replay(
         shadow_src_begin: torch.Tensor,
         shadow_max_seq_len: int,
         initial_state: torch.Tensor,
-        final_state_out: torch.Tensor | None,
         ssm_state_indices: torch.Tensor,
         cu_seqlens: torch.Tensor,
+        final_state_out: torch.Tensor | None = None,
         resident_final_state_out: torch.Tensor | None = None,
         resident_state_indices: torch.Tensor | None = None,
         resident_token_indices: torch.Tensor | None = None,
@@ -190,7 +197,7 @@ def _install_fake_replay(
         for row, (start, end) in enumerate(
             zip(cu_seqlens.tolist(), cu_seqlens.tolist()[1:])
         ):
-            state_idx = int(ssm_state_indices[row, 0].item())
+            state_idx = _state_row_id(ssm_state_indices, row)
             state = initial_state[state_idx].clone()
             req_slot = int(shadow_req_slots[row].item())
             src_begin = int(shadow_src_begin[row].item())
@@ -221,7 +228,7 @@ def _install_fake_replay(
     )
     monkeypatch.setattr(
         replay_module,
-        "fused_sigmoid_gating_delta_rule_replay_from_shadow",
+        "fused_sigmoid_gating_delta_rule_replay_from_shadow_resident",
         fake_replay_from_shadow,
     )
 
@@ -238,6 +245,7 @@ def test_hybrid_spec_workspace_is_replay_only() -> None:
     assert hasattr(workspace, "value_tape_gpu_shadow")
     assert hasattr(workspace, "spill_stream")
     assert hasattr(workspace, "last_spill_done")
+    assert hasattr(workspace, "last_segment_start_ready")
     assert hasattr(workspace, "initial_state_padded")
     assert hasattr(workspace, "resident_state_indices")
 
@@ -482,7 +490,7 @@ def test_prepare_temporal_state_from_start_replays_prefix(
     assert stats["repair_from_resident_count"] == 0
 
 
-def test_prepare_temporal_state_waits_for_shadow_ready(
+def test_prepare_temporal_state_waits_for_segment_start_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = _make_workspace()
@@ -492,23 +500,19 @@ def test_prepare_temporal_state_waits_for_shadow_ready(
         ssm_state_getter=lambda: torch.zeros(3, 1, 1, 1),
         replay_buffer_getter=_make_replay_buffers,
     )
-    helper.set_group_plan(
-        _make_group_plan(
-            repair_row_indices=[],
-            repair_req_slots=[],
-            repair_target_slots=[],
-            resident_slots=[],
-            repair_modes=[],
-            repair_generations=[],
-        )
-    )
+    helper.set_group_plan(_make_group_plan())
     waited: list[torch.Tensor] = []
-    workspace.last_spill_done = object()  # type: ignore[assignment]
+    workspace.last_segment_start_ready = object()  # type: ignore[assignment]
 
     monkeypatch.setattr(
         helper,
-        "_wait_for_shadow_ready",
+        "_wait_for_segment_start_ready",
         lambda ssm_state: waited.append(ssm_state),
+    )
+    monkeypatch.setattr(
+        helper,
+        "_build_replay_batch",
+        lambda plan, metadata: ReplayBatch([], [], [], [], [0], (0, 0)),
     )
 
     helper.prepare_temporal_state_for_verify(
@@ -723,6 +727,7 @@ def test_direct_shadow_replay_matches_tape_replay(
         ssm_state_getter=lambda: torch.zeros(4, 1, 1, 1),
         replay_buffer_getter=_make_replay_buffers,
     )
+    workspace.saved_generation_per_req = [5, -1]
     plan = _make_group_plan(
         running_block_ids=[3],
         source_block_ids=[1],
@@ -740,14 +745,16 @@ def test_direct_shadow_replay_matches_tape_replay(
     tape_ssm_state = torch.zeros(4, 1, 1, 1)
     workspace.initial_state_padded.zero_()
     workspace.initial_state_padded[1].fill_(10.0)
-    helper._stage_replay_batch_direct(
+    staged_tensors = helper._stage_replay_batch_direct(
         metadata=runtime_metadata,
         replay_batch=replay_batch,
     )
     initial_state = workspace.initial_state_padded[:2].clone()
-    initial_indices = workspace.initial_state_indices[
-        : replay_batch.num_rows, :1
-    ].clone()
+    replay_output_row_ids = staged_tensors.replay_output_row_ids.clone()
+    resident_token_indices = staged_tensors.resident_token_indices.clone()
+    replay_req_slots = staged_tensors.replay_req_slots.clone()
+    replay_src_begin = staged_tensors.replay_src_begin.clone()
+    replay_cu_seqlens = staged_tensors.replay_cu_seqlens.clone()
     (
         initial_state_buf,
         key_buf,
@@ -778,12 +785,72 @@ def test_direct_shadow_replay_matches_tape_replay(
     expected = final_state_buf[replay_batch.cu_seqlens[-1] - 1].clone()
 
     workspace.initial_state_padded[:2].copy_(initial_state)
-    workspace.initial_state_indices[: replay_batch.num_rows, :1].copy_(
-        initial_indices
+    helper._run_replay_from_shadow(
+        replay_batch,
+        replay_module.StagedReplayBatchTensors(
+            replay_req_slots=replay_req_slots,
+            replay_src_begin=replay_src_begin,
+            replay_lengths=staged_tensors.replay_lengths.clone(),
+            replay_cu_seqlens=replay_cu_seqlens,
+            replay_output_row_ids=replay_output_row_ids,
+            initial_state_row_ids=replay_output_row_ids,
+            resident_token_indices=resident_token_indices,
+        ),
     )
-    helper._run_replay_from_shadow(replay_batch)
 
     torch.testing.assert_close(workspace.initial_state_padded[1], expected)
+
+
+def test_stage_replay_batch_direct_reuses_runtime_metadata_tensors() -> None:
+    workspace = _make_workspace()
+    helper = HybridTemporalReplayHelper(
+        layer_name="layer.0",
+        workspace=workspace,
+        ssm_state_getter=lambda: torch.zeros(4, 1, 1, 1),
+        replay_buffer_getter=_make_replay_buffers,
+    )
+    workspace.saved_generation_per_req = [5, -1]
+    plan = _make_group_plan(
+        running_block_ids=[3],
+        source_block_ids=[1],
+        repair_target_slots=[2],
+        repair_generations=[5],
+        wave_plan=_make_wave_plan(
+            spec_query_start_locs=[0, 3],
+            predicted_accept_lens=[1],
+            next_replay_generations=[6],
+        ),
+    )
+    runtime_metadata = helper._get_runtime_metadata(plan)
+    replay_batch = helper._build_replay_batch(plan, runtime_metadata)
+
+    staged_tensors = helper._stage_replay_batch_direct(
+        metadata=runtime_metadata,
+        replay_batch=replay_batch,
+    )
+
+    assert (
+        staged_tensors.replay_req_slots.data_ptr()
+        == runtime_metadata.repair_req_slots_cpu.data_ptr()
+    )
+    assert (
+        staged_tensors.replay_src_begin.data_ptr()
+        == runtime_metadata.repair_src_begin_cpu.data_ptr()
+    )
+    assert (
+        staged_tensors.replay_lengths.data_ptr()
+        == runtime_metadata.repair_lengths_cpu.data_ptr()
+    )
+    assert (
+        staged_tensors.replay_cu_seqlens.data_ptr()
+        == runtime_metadata.replay_cu_seqlens_cpu.data_ptr()
+    )
+    assert (
+        staged_tensors.replay_output_row_ids.data_ptr()
+        == runtime_metadata.replay_output_row_ids_cpu.data_ptr()
+    )
+    assert staged_tensors.initial_state_row_ids.tolist() == [1]
+    assert staged_tensors.resident_token_indices.tolist() == [2]
 
 
 def test_forward_core_spec_replay_stores_replay_artifacts(
@@ -801,7 +868,6 @@ def test_forward_core_spec_replay_stores_replay_artifacts(
     b = torch.randn(2, 1)
     ssm_state = torch.randn(3, 1, 1, 1)
     running_state_indices = torch.tensor([1], dtype=torch.int32)
-    scratch = torch.empty(2, 1, 1, 1)
     captured: dict[str, object] = {}
 
     def fake_prepare(**kwargs):
@@ -814,18 +880,17 @@ def test_forward_core_spec_replay_stores_replay_artifacts(
         store_replay_artifacts=lambda **kwargs: captured.setdefault("store", kwargs),
     )
     attn._get_hybrid_temporal_replay_helper = lambda: fake_helper
-    attn.acquire_hybrid_temporal_verify_scratch = lambda num_tokens: scratch
 
     def fake_capture_shadow(**kwargs):
         captured.update(kwargs)
         return (
             torch.empty_like(query_spec),
-            scratch,
+            None,
         )
 
     monkeypatch.setattr(
         qwen_gdn_module,
-        "fused_sigmoid_gating_delta_rule_update_capture_shadow",
+        "fused_sigmoid_gating_delta_rule_update_capture_shadow_resident",
         fake_capture_shadow,
     )
 
@@ -852,10 +917,9 @@ def test_forward_core_spec_replay_stores_replay_artifacts(
     initial_state_indices = captured["ssm_state_indices"]
     assert isinstance(initial_state, torch.Tensor)
     assert isinstance(initial_state_indices, torch.Tensor)
-    assert tuple(initial_state.shape) == (2, 1, 1, 1)
-    assert initial_state[0].item() == pytest.approx(0.0)
-    assert initial_state[1].item() == pytest.approx(23.0)
-    assert initial_state_indices.tolist() == [[1, 1]]
+    assert tuple(initial_state.shape) == (1, 1, 1, 1)
+    assert initial_state[0].item() == pytest.approx(23.0)
+    assert initial_state_indices.tolist() == [0]
     resident_state_out = captured["resident_final_state_out"]
     resident_state_indices = captured["resident_state_indices"]
     assert resident_state_out is ssm_state
@@ -864,5 +928,6 @@ def test_forward_core_spec_replay_stores_replay_artifacts(
     resident_token_indices = captured["resident_token_indices"]
     assert isinstance(resident_token_indices, torch.Tensor)
     assert resident_token_indices.tolist() == [0]
+    assert "final_state_out" not in captured
     assert "prepare" in captured
     assert "store" in captured

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from mtp_ep_experiment_analysis import analyze_experiment
 from mtp_ep_experiment_runtime import (
+    add_hybrid_prediction_trace_args,
     collect_experiment,
     collect_one_condition,
     collect_one_rank,
@@ -84,6 +85,7 @@ def add_collect_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--trace-steps-per-rank", type=int, default=0)
     parser.add_argument("--enable-nvtx-ranges", action="store_true")
     parser.add_argument("--output-dir", type=Path, default=None)
+    add_hybrid_prediction_trace_args(parser)
 
     # Collection subprocesses use the same public `collect` mode.
     parser.add_argument(

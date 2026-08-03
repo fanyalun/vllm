@@ -51,6 +51,18 @@ class HybridTemporalRuntimeMetadataBundle:
     from_start_req_slots_cpu: torch.Tensor
     from_resident_rows_cpu: torch.Tensor
     from_resident_source_blocks_cpu: torch.Tensor
+    shadow_req_slots_gpu: torch.Tensor | None = None
+    resident_token_indices_gpu: torch.Tensor | None = None
+    source_block_ids_gpu: torch.Tensor | None = None
+    repair_req_slots_gpu: torch.Tensor | None = None
+    repair_src_begin_gpu: torch.Tensor | None = None
+    repair_lengths_gpu: torch.Tensor | None = None
+    replay_cu_seqlens_gpu: torch.Tensor | None = None
+    replay_output_row_ids_gpu: torch.Tensor | None = None
+    from_start_rows_gpu: torch.Tensor | None = None
+    from_start_req_slots_gpu: torch.Tensor | None = None
+    from_resident_rows_gpu: torch.Tensor | None = None
+    from_resident_source_blocks_gpu: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
