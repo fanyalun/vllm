@@ -288,6 +288,32 @@ def test_moe_align_block_size_with_expert_map(
     )
 
 
+def test_moe_align_block_size_with_dropped_experts():
+    """Dropped top-k branches remain invalid after EP expert mapping."""
+    topk_ids = torch.tensor(
+        [[0, -1], [2, 3]], device="cuda", dtype=torch.int32
+    )
+    expert_map = torch.tensor([0, 1, -1, -1], device="cuda", dtype=torch.int32)
+
+    sorted_ids, expert_ids, num_tokens = moe_align_block_size(
+        topk_ids=topk_ids,
+        block_size=2,
+        num_experts=4,
+        expert_map=expert_map,
+        allow_negative_experts=True,
+    )
+
+    num_blocks = int(num_tokens.item()) // 2
+    active_expert_ids = expert_ids[:num_blocks]
+    assert (active_expert_ids == 0).any()
+    assert (active_expert_ids == -1).any()
+    assert ((active_expert_ids == 0) | (active_expert_ids == -1)).all()
+    sorted_blocks = sorted_ids[: num_blocks * 2].view(num_blocks, 2)
+    dropped_block = (sorted_blocks == 1).any(dim=1)
+    assert dropped_block.any()
+    assert (active_expert_ids[dropped_block] == -1).all()
+
+
 def test_moe_align_block_size_deterministic():
     m, topk, num_experts, block_size = 128, 2, 32, 64
 

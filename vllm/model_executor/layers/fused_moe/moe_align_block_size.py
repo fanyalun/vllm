@@ -15,6 +15,7 @@ def moe_align_block_size(
     expert_map: torch.Tensor | None = None,
     pad_sorted_ids: bool = False,
     ignore_invalid_experts: bool = False,
+    allow_negative_experts: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Aligns the token distribution across experts to be compatible with block
@@ -43,6 +44,8 @@ def moe_align_block_size(
         as -1. When True, all invalid expert_ids in topk_ids will be ignored
         and will not participate in counting or ranking, and there will be no
         -1 in expert_ids.
+    - allow_negative_experts: Map negative top-k IDs to a virtual expert that
+        is skipped after expert mapping.
 
     Returns:
     - sorted_token_ids: A tensor containing the sorted token indices according
@@ -71,10 +74,21 @@ def moe_align_block_size(
     - The padding ensures that the total number of tokens is now divisible
         by block_size for proper block matrix operations.
     """
-    max_num_tokens_padded = topk_ids.numel() + num_experts * (block_size - 1)
+    align_num_experts = num_experts + int(allow_negative_experts)
+    align_topk_ids = topk_ids
+    align_expert_map = expert_map
+    if allow_negative_experts:
+        align_topk_ids = torch.where(topk_ids < 0, num_experts, topk_ids)
+        if expert_map is not None:
+            invalid_mapping = expert_map.new_full((1,), -1)
+            align_expert_map = torch.cat((expert_map, invalid_mapping))
+
+    max_num_tokens_padded = (
+        topk_ids.numel() + align_num_experts * (block_size - 1)
+    )
     if pad_sorted_ids:
         max_num_tokens_padded = round_up(max_num_tokens_padded, block_size)
-    if topk_ids.numel() < num_experts:
+    if topk_ids.numel() < align_num_experts:
         max_num_tokens_padded = min(
             topk_ids.numel() * block_size, max_num_tokens_padded
         )
@@ -88,17 +102,19 @@ def moe_align_block_size(
     num_tokens_post_pad = torch.empty((1), dtype=torch.int32, device=topk_ids.device)
 
     ops.moe_align_block_size(
-        topk_ids,
-        num_experts,
+        align_topk_ids,
+        align_num_experts,
         block_size,
         sorted_ids,
         expert_ids,
         num_tokens_post_pad,
-        expert_map if ignore_invalid_experts else None,
+        align_expert_map if ignore_invalid_experts else None,
     )
 
-    if expert_map is not None and not ignore_invalid_experts:
-        expert_ids = expert_map[expert_ids]
+    if align_expert_map is not None and not ignore_invalid_experts:
+        valid_experts = expert_ids >= 0
+        mapped_expert_ids = align_expert_map[expert_ids.clamp_min(0)]
+        expert_ids = torch.where(valid_experts, mapped_expert_ids, -1)
 
     return sorted_ids, expert_ids, num_tokens_post_pad
 
