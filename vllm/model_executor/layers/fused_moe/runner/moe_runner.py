@@ -29,6 +29,11 @@ from vllm.model_executor.layers.fused_moe.router.fused_moe_router import (
 from vllm.model_executor.layers.fused_moe.router.zero_expert_router import (
     ZeroExpertRouter,
 )
+from vllm.model_executor.layers.fused_moe.shareguard_runtime import (
+    apply_shareguard_to_topk,
+    ensure_shareguard_ready,
+    maybe_apply_compensation,
+)
 from vllm.model_executor.layers.fused_moe.runner.moe_runner_interface import (
     MoERunnerInterface,
 )
@@ -513,7 +518,13 @@ class MoERunner(MoERunnerInterface):
             shared_experts_input, SharedExpertsOrder.NO_OVERLAP
         )
 
+        shareguard_state = ensure_shareguard_ready()
         if self._quant_method.is_monolithic:
+            if shareguard_state.enabled and shareguard_state.mode != "off":
+                raise RuntimeError(
+                    "ShareGuard requires a modular MoE backend; "
+                    "use moe_backend='triton'"
+                )
             fused_out = self._quant_method.apply_monolithic(
                 layer=layer,
                 x=hidden_states,
@@ -525,6 +536,9 @@ class MoERunner(MoERunnerInterface):
                 hidden_states=hidden_states,
                 router_logits=router_logits,
                 input_ids=input_ids,
+            )
+            topk_ids, topk_weights = apply_shareguard_to_topk(
+                layer, topk_ids, topk_weights
             )
 
             # Passing shared_experts_input in case SharedExpertsOrder is
@@ -543,10 +557,11 @@ class MoERunner(MoERunnerInterface):
             SharedExpertsOrder.MULTI_STREAM_OVERLAPPED,
         )
 
-        return (
-            self._shared_experts.output if self._shared_experts is not None else None,
-            fused_out,
+        shared_output = (
+            self._shared_experts.output if self._shared_experts is not None else None
         )
+        shared_output = maybe_apply_compensation(shared_output)
+        return shared_output, fused_out
 
     def _sequence_parallel_context(self):
         """Return a context manager for sequence-parallel token

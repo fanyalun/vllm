@@ -1545,6 +1545,7 @@ def _prepare_expert_assignment(
     use_int4_w4a16: bool = False,
     block_shape: list[int] | None = None,
     ignore_invalid_experts: bool = False,
+    allow_negative_experts: bool = False,
 ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor]:
     """Prepare expert assignments for the aligned and low-latency Triton paths."""
     # SPARSITY_FACTOR is a heuristic margin ensuring tokens_in_chunk * top_k
@@ -1579,6 +1580,7 @@ def _prepare_expert_assignment(
         global_num_experts,
         expert_map,
         ignore_invalid_experts=ignore_invalid_experts,
+        allow_negative_experts=allow_negative_experts,
     )
 
 
