@@ -43,6 +43,13 @@ def parse_args():
     )
     p.add_argument("--model-id", default="nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16")
     p.add_argument("--prompt", default=DEFAULT_PROMPT)
+    p.add_argument("--tensor-parallel-size", type=int, default=1)
+    p.add_argument(
+        "--enable-expert-parallel",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    p.add_argument("--all2all-backend", default="allgather_reducescatter")
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--num-steps", type=int, default=1000)
     p.add_argument("--warmup-steps", type=int, default=128)
@@ -103,7 +110,9 @@ def run_worker(args):
 
     llm_kwargs = dict(
         model=args.model_id,
-        tensor_parallel_size=1,
+        tensor_parallel_size=args.tensor_parallel_size,
+        enable_expert_parallel=args.enable_expert_parallel,
+        all2all_backend=args.all2all_backend,
         dtype=args.dtype,
         max_model_len=max_model_len,
         trust_remote_code=True,
@@ -180,6 +189,8 @@ def run_one_mode(args, mode) -> dict:
     cmd = [
         sys.executable, __file__, "--worker", mode,
         "--model-id", args.model_id, "--prompt", args.prompt,
+        "--tensor-parallel-size", str(args.tensor_parallel_size),
+        "--all2all-backend", args.all2all_backend,
         "--batch-size", str(args.batch_size), "--num-steps", str(args.num_steps),
         "--warmup-steps", str(args.warmup_steps), "--repeats", str(args.repeats),
         "--buffer-len", str(args.buffer_len), "--dtype", args.dtype,
@@ -191,6 +202,8 @@ def run_one_mode(args, mode) -> dict:
     ]
     cmd.append("--disable-flashinfer-autotune" if args.disable_flashinfer_autotune
                else "--no-disable-flashinfer-autotune")
+    if args.enable_expert_parallel:
+        cmd.append("--enable-expert-parallel")
     if args.max_model_len is not None:
         cmd += ["--max-model-len", str(args.max_model_len)]
 
@@ -216,7 +229,9 @@ def main():
         run_worker(args)
         return
 
-    print(f"model={args.model_id}  batch_size={args.batch_size}  "
+    print(f"model={args.model_id}  tp={args.tensor_parallel_size}  "
+          f"ep={args.enable_expert_parallel}  "
+          f"all2all={args.all2all_backend}  batch_size={args.batch_size}  "
           f"steps={args.num_steps}  buffer_len={args.buffer_len}  dtype={args.dtype}")
 
     std = run_one_mode(args, "standard")
@@ -232,6 +247,19 @@ def main():
               f"{r['tok_s']:>16,.0f}{r['elapsed_s']:>12.3f}")
     print("-" * len(header))
     print(f"speedup (standard / ReplaySSM, per step): {speedup:.3f}x")
+    summary = {
+        "model": args.model_id,
+        "tensor_parallel_size": args.tensor_parallel_size,
+        "enable_expert_parallel": args.enable_expert_parallel,
+        "all2all_backend": args.all2all_backend,
+        "batch_size": args.batch_size,
+        "num_steps": args.num_steps,
+        "buffer_len": args.buffer_len,
+        "standard": std,
+        "replayssm": fla,
+        "speedup": speedup,
+    }
+    print("SUMMARY_JSON " + json.dumps(summary), flush=True)
 
 
 if __name__ == "__main__":

@@ -41,6 +41,12 @@ def parse_args():
     p.add_argument("--model-id",
                    default="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4")
     p.add_argument("--tensor-parallel-size", type=int, default=1)
+    p.add_argument(
+        "--enable-expert-parallel",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    p.add_argument("--all2all-backend", default="allgather_reducescatter")
     p.add_argument("--batch-size", type=int, default=512)
     p.add_argument("--num-spec", type=int, default=3,
                    help="Draft tokens per step (spec window = num_spec + 1).")
@@ -51,6 +57,17 @@ def parse_args():
     p.add_argument("--max-model-len", type=int, default=2048)
     p.add_argument("--dtype", default="auto")
     p.add_argument("--kv-cache-dtype", default="auto")
+    p.add_argument("--mamba-ssm-cache-dtype", default="auto")
+    p.add_argument(
+        "--language-model-only",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    p.add_argument(
+        "--dataset-path",
+        default=None,
+        help="Optional local GSM8K JSONL file; defaults to openai/gsm8k.",
+    )
     p.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     p.add_argument("--warmup-s", type=float, default=30.0,
                    help="Sustained full-batch decode before timing, to ramp the "
@@ -74,11 +91,23 @@ def parse_args():
     return p.parse_args()
 
 
-def gsm8k_messages(batch_size):
-    from datasets import load_dataset
+def gsm8k_messages(batch_size, dataset_path=None):
+    if dataset_path:
+        with open(dataset_path, encoding="utf-8") as dataset_file:
+            questions = [
+                json.loads(line)["question"]
+                for line in dataset_file
+                if line.strip()
+            ]
+    else:
+        from datasets import load_dataset
 
-    questions = [r["question"]
-                 for r in load_dataset("openai/gsm8k", "main", split="test")]
+        questions = [
+            row["question"]
+            for row in load_dataset("openai/gsm8k", "main", split="test")
+        ]
+    if not questions:
+        raise ValueError("GSM8K dataset contains no questions")
     return [[{"role": "user", "content": questions[i % len(questions)]}]
             for i in range(batch_size)]
 
@@ -101,8 +130,12 @@ def run_worker(args):
     llm_kwargs = dict(
         model=args.model_id,
         tensor_parallel_size=args.tensor_parallel_size,
+        enable_expert_parallel=args.enable_expert_parallel,
+        all2all_backend=args.all2all_backend,
         dtype=args.dtype,
         kv_cache_dtype=args.kv_cache_dtype,
+        mamba_ssm_cache_dtype=args.mamba_ssm_cache_dtype,
+        language_model_only=args.language_model_only,
         max_model_len=args.max_model_len,
         max_num_seqs=args.batch_size,
         trust_remote_code=True,
@@ -144,7 +177,7 @@ def run_worker(args):
         llm_kwargs["replayssm_buffer_len"] = args.buffer_len
 
     llm = LLM(**llm_kwargs)
-    messages = gsm8k_messages(args.batch_size)
+    messages = gsm8k_messages(args.batch_size, args.dataset_path)
     chat_kwargs = {"enable_thinking": args.enable_thinking}
     sp = SamplingParams(n=1, temperature=0.0, max_tokens=args.max_tokens,
                         ignore_eos=True, seed=0)
@@ -189,14 +222,22 @@ def run_one_mode(args, mode):
         sys.executable, __file__, "--worker", mode,
         "--model-id", args.model_id,
         "--tensor-parallel-size", str(args.tensor_parallel_size),
+        "--all2all-backend", args.all2all_backend,
         "--batch-size", str(args.batch_size), "--num-spec", str(args.num_spec),
         "--spec-method", args.spec_method, "--buffer-len", str(args.buffer_len),
         "--max-tokens", str(args.max_tokens),
         "--max-model-len", str(args.max_model_len), "--dtype", args.dtype,
         "--kv-cache-dtype", args.kv_cache_dtype,
+        "--mamba-ssm-cache-dtype", args.mamba_ssm_cache_dtype,
         "--gpu-memory-utilization", str(args.gpu_memory_utilization),
         "--warmup-s", str(args.warmup_s),
     ]
+    if args.enable_expert_parallel:
+        cmd.append("--enable-expert-parallel")
+    if args.language_model_only:
+        cmd.append("--language-model-only")
+    if args.dataset_path:
+        cmd += ["--dataset-path", args.dataset_path]
     if args.enable_thinking:
         cmd.append("--enable-thinking")
     if args.moe_backend:
@@ -227,7 +268,9 @@ def main():
         return
 
     print(f"model={args.model_id}  tp={args.tensor_parallel_size}  "
-          f"batch_size={args.batch_size}  num_spec={args.num_spec}  "
+          f"ep={args.enable_expert_parallel}  "
+          f"all2all={args.all2all_backend}  batch_size={args.batch_size}  "
+          f"num_spec={args.num_spec}  "
           f"buffer_len={args.buffer_len}  max_tokens={args.max_tokens}")
 
     modes = [m for m in args.modes.split(",") if m]
@@ -248,6 +291,18 @@ def main():
     if "cache" in results and "ar" in results:
         print(f"ReplaySSM / AR       : "
               f"{results['cache']['tok_s'] / results['ar']['tok_s']:.2f}x")
+    summary = {
+        "model": args.model_id,
+        "tensor_parallel_size": args.tensor_parallel_size,
+        "enable_expert_parallel": args.enable_expert_parallel,
+        "all2all_backend": args.all2all_backend,
+        "batch_size": args.batch_size,
+        "num_spec": args.num_spec,
+        "buffer_len": args.buffer_len,
+        "max_tokens": args.max_tokens,
+        "results": results,
+    }
+    print("SUMMARY_JSON " + json.dumps(summary), flush=True)
 
 
 if __name__ == "__main__":
