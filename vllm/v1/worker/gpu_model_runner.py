@@ -7481,8 +7481,21 @@ class GPUModelRunner(
         from vllm.model_executor.layers.fused_moe.router.base_router import (
             BaseRouter,
         )
+        from vllm.v1.core.sched.routed_experts_trace import (
+            is_target_model_moe_module,
+        )
 
-        for module in self.compilation_config.static_forward_context.values():
+        bound_modules = 0
+        skipped_draft_modules = 0
+        for module_name, module in (
+            self.compilation_config.static_forward_context.items()
+        ):
+            # MTP runs before routed-expert D2H and can share layer IDs with
+            # the target model. Binding it would overwrite target routes.
+            if not is_target_model_moe_module(module_name):
+                if isinstance(module, MoERunner):
+                    skipped_draft_modules += 1
+                continue
             if isinstance(module, MoERunner) and isinstance(module.router, BaseRouter):
                 layer_id = module.layer_id
 
@@ -7490,6 +7503,13 @@ class GPUModelRunner(
                     _capturer.capture(_layer_id, topk_ids)
 
                 module.router.set_capture_fn(_capture_fn)
+                bound_modules += 1
+        logger.info(
+            "Bound routed-expert capturer to %d target MoE modules; "
+            "excluded %d draft MoE modules",
+            bound_modules,
+            skipped_draft_modules,
+        )
 
     def may_add_encoder_only_layers_to_kv_cache_config(self) -> None:
         """

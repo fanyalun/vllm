@@ -314,6 +314,29 @@ class Scheduler(SchedulerInterface):
             vllm_config.model_config.enable_return_routed_experts
         )
 
+        self.routed_experts_trace_writer = None
+        additional_config = vllm_config.additional_config
+        routed_experts_trace_config = (
+            additional_config.get("routed_experts_trace")
+            if isinstance(additional_config, dict)
+            else None
+        )
+        if routed_experts_trace_config is not None:
+            if not self.enable_return_routed_experts:
+                raise ValueError(
+                    "routed_experts_trace requires "
+                    "enable_return_routed_experts=True"
+                )
+            if not isinstance(routed_experts_trace_config, dict):
+                raise ValueError("routed_experts_trace must be a dictionary")
+            from vllm.v1.core.sched.routed_experts_trace import (
+                RoutedExpertsTraceWriter,
+            )
+
+            self.routed_experts_trace_writer = RoutedExpertsTraceWriter(
+                routed_experts_trace_config, vllm_config
+            )
+
         if self.enable_return_routed_experts:
             assert self.dcp_world_size == 1 and self.pcp_world_size == 1, (
                 "enable_return_routed_experts does not support context parallelism "
@@ -1555,6 +1578,13 @@ class Scheduler(SchedulerInterface):
             for rid in model_runner_output.req_ids:
                 routing_offsets[rid] = offset
                 offset += num_scheduled_tokens[rid]
+            if self.routed_experts_trace_writer is not None:
+                self._write_routed_experts_trace(
+                    scheduler_output,
+                    model_runner_output,
+                    routing_data,
+                    routing_offsets,
+                )
 
         # NOTE(woosuk): As len(num_scheduled_tokens) can be up to 1K or more,
         # the below loop can be a performance bottleneck. We should do our best
@@ -2321,6 +2351,8 @@ class Scheduler(SchedulerInterface):
 
     def shutdown(self) -> None:
         logger.debug_once("[shutdown] Scheduler: start")
+        if self.routed_experts_trace_writer is not None:
+            self.routed_experts_trace_writer.close()
         if self.kv_event_publisher:
             self.kv_event_publisher.shutdown()
         if self.connector is not None:
@@ -2330,6 +2362,72 @@ class Scheduler(SchedulerInterface):
             self.ec_connector.shutdown()
 
         logger.debug_once("[shutdown] Scheduler: complete")
+
+    def _write_routed_experts_trace(
+        self,
+        scheduler_output: SchedulerOutput,
+        model_runner_output: ModelRunnerOutput,
+        routing_data: Any,
+        routing_offsets: dict[str, int],
+    ) -> None:
+        writer = self.routed_experts_trace_writer
+        assert writer is not None
+        from vllm.v1.core.sched.routed_experts_trace import (
+            build_decode_trace_metadata,
+        )
+
+        sampled_token_ids = model_runner_output.sampled_token_ids
+        for req_id in model_runner_output.req_ids:
+            request = self.requests.get(req_id)
+            if request is None or request.is_finished():
+                continue
+            num_scheduled = scheduler_output.num_scheduled_tokens[req_id]
+            start_position = request.num_computed_tokens - num_scheduled
+            end_position = start_position + num_scheduled
+            spec_token_ids = scheduler_output.scheduled_spec_decode_tokens.get(
+                req_id, []
+            )
+            token_ids = list(
+                request.all_token_ids[
+                    start_position : min(end_position, request.num_tokens)
+                ]
+            )
+            token_ids.extend(spec_token_ids)
+            if len(token_ids) != num_scheduled:
+                raise AssertionError(
+                    f"cannot reconstruct routed token IDs for {req_id}: "
+                    f"expected {num_scheduled}, got {len(token_ids)}"
+                )
+
+            req_index = model_runner_output.req_id_to_index[req_id]
+            generated = sampled_token_ids[req_index] if sampled_token_ids else []
+            num_accepted_drafts = max(
+                len(generated) - self.num_sampled_tokens_per_step, 0
+            )
+            row_indices, route_kinds, accepted = build_decode_trace_metadata(
+                num_scheduled=num_scheduled,
+                start_position=start_position,
+                num_prompt_tokens=request.num_prompt_tokens,
+                num_spec_tokens=len(spec_token_ids),
+                num_accepted_drafts=num_accepted_drafts,
+            )
+            if not row_indices:
+                continue
+
+            req_offset = routing_offsets[req_id]
+            selected_routes = routing_data[
+                req_offset + row_indices[0] : req_offset + row_indices[-1] + 1
+            ]
+            writer.write_request(
+                selected_routes,
+                scheduler_step=self.current_step,
+                request_id=req_id,
+                absolute_positions=[start_position + i for i in row_indices],
+                token_ids=[token_ids[i] for i in row_indices],
+                row_in_request=row_indices,
+                route_kinds=route_kinds,
+                accepted=accepted,
+            )
 
     ########################################################################
     # KV Connector Related Methods
