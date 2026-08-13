@@ -25,11 +25,13 @@ STAGE_LABELS = {
     "target_plus_draft_1_2": "target + draft1 + draft2",
     "target_plus_draft_1_2_3": "target + draft1 + draft2 + draft3",
 }
-CASCADE_STAGE_LABELS = {
+DRAFT1_DROP_STAGES = (
+    ("target", ("spec_target",)),
+    ("target_plus_draft_1", ("spec_target", "spec_draft_1")),
+)
+DRAFT1_DROP_STAGE_LABELS = {
     "target": "target",
     "target_plus_draft_1": "target + surviving draft1",
-    "target_plus_draft_1_2": "target + surviving draft1 + draft2",
-    "target_plus_draft_1_2_3": "target + surviving draft1 + draft2 + draft3",
 }
 
 
@@ -38,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trace-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--steps", type=int, nargs=3)
-    parser.add_argument("--draft1-cascade-start-layer", type=int)
+    parser.add_argument("--draft1-drop-layer", type=int)
     parser.add_argument("--stats-output", type=Path)
     return parser.parse_args()
 
@@ -101,10 +103,10 @@ def _layer_counts(routes: np.ndarray, num_experts: int) -> np.ndarray:
     return np.bincount(routes.reshape(-1), minlength=num_experts)
 
 
-def draft1_cascade_step_loads(
+def draft1_drop_step_loads(
     trace_dir: Path,
     requested_steps: list[int] | None,
-    start_layer: int,
+    drop_layer: int,
 ) -> tuple[
     tuple[int, int, int],
     dict[int, dict[str, np.ndarray]],
@@ -115,8 +117,8 @@ def draft1_cascade_step_loads(
         raise ValueError(f"expected Spec BS128 D3 trace, got {trace.name}")
     num_layers = trace.routes.shape[1]
     num_experts = int(trace.manifest["num_experts"])
-    if not 0 <= start_layer < num_layers:
-        raise ValueError(f"start layer must be in [0, {num_layers - 1}]")
+    if not 0 <= drop_layer < num_layers:
+        raise ValueError(f"drop layer must be in [0, {num_layers - 1}]")
     complete_steps = complete_step_ids(trace)
     if not complete_steps.size:
         raise ValueError("trace has no complete speculative steps")
@@ -136,12 +138,7 @@ def draft1_cascade_step_loads(
             route_kind: np.asarray(
                 trace.routes[_rows_for_kind(trace, int(step), route_kind)]
             )
-            for route_kind in (
-                "spec_target",
-                "spec_draft_1",
-                "spec_draft_2",
-                "spec_draft_3",
-            )
+            for route_kind in ("spec_target", "spec_draft_1")
         }
         for route_kind, routes in routes_by_kind.items():
             if np.any(np.diff(np.sort(routes, axis=2), axis=2) == 0):
@@ -150,69 +147,64 @@ def draft1_cascade_step_loads(
                 )
         target = routes_by_kind["spec_target"]
         draft1 = routes_by_kind["spec_draft_1"]
-        draft2 = routes_by_kind["spec_draft_2"]
-        draft3 = routes_by_kind["spec_draft_3"]
         surviving_draft1 = np.ones(128, dtype=np.bool_)
-        survivor_masks = np.ones((num_layers, 128), dtype=np.bool_)
-        capacities = np.empty(num_layers, dtype=np.int64)
-
-        for layer in range(num_layers):
-            target_counts = _layer_counts(target[:, layer], num_experts)
-            capacity = int(target_counts.max())
-            capacities[layer] = capacity
-            entering = int(surviving_draft1.sum())
-            if layer >= start_layer:
-                layer_loads = target_counts.copy()
-                for row in np.flatnonzero(surviving_draft1):
-                    experts = draft1[row, layer]
-                    if np.any(layer_loads[experts] >= capacity):
-                        surviving_draft1[row] = False
-                    else:
-                        layer_loads[experts] += 1
-            survivor_masks[layer] = surviving_draft1
-            surviving = int(surviving_draft1.sum())
-            stats_rows.append(
-                {
-                    "scheduler_step": int(step),
-                    "layer": layer,
-                    "max_capacity": capacity,
-                    "entering_draft1_tokens": entering,
-                    "dropped_draft1_tokens": entering - surviving,
-                    "surviving_draft1_tokens": surviving,
-                }
-            )
+        target_at_drop = _layer_counts(target[:, drop_layer], num_experts)
+        capacity = int(target_at_drop.max())
+        layer_loads = target_at_drop.copy()
+        for row in range(128):
+            experts = draft1[row, drop_layer]
+            if np.any(layer_loads[experts] >= capacity):
+                surviving_draft1[row] = False
+            else:
+                layer_loads[experts] += 1
 
         stage_loads = {
             stage_name: np.empty((num_layers, num_experts), dtype=np.int64)
-            for stage_name, _ in SPEC_STAGES
+            for stage_name, _ in DRAFT1_DROP_STAGES
         }
         for layer in range(num_layers):
             target_counts = _layer_counts(target[:, layer], num_experts)
-            draft1_counts = _layer_counts(
-                draft1[survivor_masks[layer], layer], num_experts
+            layer_survivors = (
+                np.ones(128, dtype=np.bool_)
+                if layer < drop_layer
+                else surviving_draft1
             )
-            draft2_counts = _layer_counts(draft2[:, layer], num_experts)
-            draft3_counts = _layer_counts(draft3[:, layer], num_experts)
+            draft1_counts = _layer_counts(
+                draft1[layer_survivors, layer], num_experts
+            )
             stage_loads["target"][layer] = target_counts
             stage_loads["target_plus_draft_1"][layer] = (
                 target_counts + draft1_counts
             )
-            stage_loads["target_plus_draft_1_2"][layer] = (
-                target_counts + draft1_counts + draft2_counts
-            )
-            stage_loads["target_plus_draft_1_2_3"][layer] = (
-                target_counts + draft1_counts + draft2_counts + draft3_counts
-            )
-            if layer >= start_layer:
+            if layer == drop_layer:
                 draft1_peak = stage_loads["target_plus_draft_1"][layer].max()
-                if draft1_peak > capacities[layer]:
+                if draft1_peak > capacity:
                     raise AssertionError(
-                        f"step {step} layer {layer} exceeds draft1 capacity"
+                        f"step {step} layer {layer} exceeds drop-layer capacity"
                     )
-            expected_draft1_assignments = int(survivor_masks[layer].sum()) * 8
+            expected_draft1_assignments = int(layer_survivors.sum()) * 8
             observed_draft1_assignments = int(draft1_counts.sum())
             if observed_draft1_assignments != expected_draft1_assignments:
                 raise AssertionError("surviving draft1 assignment count mismatch")
+            stats_rows.append(
+                {
+                    "scheduler_step": int(step),
+                    "drop_layer": drop_layer,
+                    "max_capacity": capacity,
+                    "dropped_draft1_tokens": int(
+                        (~surviving_draft1).sum()
+                    ),
+                    "surviving_draft1_tokens": int(
+                        surviving_draft1.sum()
+                    ),
+                    "layer": layer,
+                    "target_peak": int(target_counts.max()),
+                    "target_plus_surviving_draft1_peak": int(
+                        stage_loads["target_plus_draft_1"][layer].max()
+                    ),
+                    "draft1_assignments": observed_draft1_assignments,
+                }
+            )
         loads_by_step[int(step)] = {
             stage_name: np.sort(counts, axis=1)[:, ::-1]
             for stage_name, counts in stage_loads.items()
@@ -233,6 +225,7 @@ def plot(
     loads_by_step: dict[int, dict[str, np.ndarray]],
     output: Path,
     stage_labels: dict[str, str] = STAGE_LABELS,
+    stages: tuple[tuple[str, tuple[str, ...]], ...] = SPEC_STAGES,
     title: str = "Cumulative speculative expert loads for individual complete steps",
 ) -> None:
     import matplotlib
@@ -252,7 +245,7 @@ def plot(
     for row, step in enumerate(steps):
         for column, layer in enumerate(PLOT_LAYERS):
             axis = axes[row, column]
-            for (stage_name, _), color in zip(SPEC_STAGES, colors):
+            for (stage_name, _), color in zip(stages, colors):
                 axis.plot(
                     expert_order,
                     loads_by_step[step][stage_name][layer],
@@ -273,7 +266,7 @@ def plot(
         handles,
         labels,
         loc="upper center",
-        ncol=4,
+        ncol=len(stages),
         bbox_to_anchor=(0.5, 0.995),
     )
     figure.suptitle(title, y=0.965)
@@ -285,23 +278,24 @@ def plot(
 
 def main() -> None:
     args = parse_args()
-    if args.draft1_cascade_start_layer is None:
+    if args.draft1_drop_layer is None:
         steps, loads_by_step = selected_step_loads(args.trace_dir, args.steps)
         plot(steps, loads_by_step, args.output)
     else:
-        steps, loads_by_step, stats_rows = draft1_cascade_step_loads(
+        steps, loads_by_step, stats_rows = draft1_drop_step_loads(
             args.trace_dir,
             args.steps,
-            args.draft1_cascade_start_layer,
+            args.draft1_drop_layer,
         )
         plot(
             steps,
             loads_by_step,
             args.output,
-            stage_labels=CASCADE_STAGE_LABELS,
+            stage_labels=DRAFT1_DROP_STAGE_LABELS,
+            stages=DRAFT1_DROP_STAGES,
             title=(
-                "Draft1 token-level cascade clipping from "
-                f"Layer {args.draft1_cascade_start_layer}"
+                "Draft1 token drop at "
+                f"Layer {args.draft1_drop_layer}, propagated downstream"
             ),
         )
         stats_output = args.stats_output or args.output.with_suffix(".csv")
