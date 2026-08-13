@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Collect and analyze ReplaySSM expert-routing traces on local GSM8K."""
+"""Collect and analyze ReplaySSM expert-routing traces on a JSONL dataset."""
 
 from __future__ import annotations
 
