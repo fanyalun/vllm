@@ -27,11 +27,19 @@ STAGE_LABELS = {
 }
 DRAFT1_DROP_STAGES = (
     ("target", ("spec_target",)),
-    ("target_plus_draft_1", ("spec_target", "spec_draft_1")),
+    (
+        "target_plus_unclipped_draft_1",
+        ("spec_target", "spec_draft_1"),
+    ),
+    (
+        "target_plus_surviving_draft_1",
+        ("spec_target", "spec_draft_1"),
+    ),
 )
 DRAFT1_DROP_STAGE_LABELS = {
     "target": "target",
-    "target_plus_draft_1": "target + surviving draft1",
+    "target_plus_unclipped_draft_1": "target + draft1 (unclipped)",
+    "target_plus_surviving_draft_1": "target + surviving draft1",
 }
 
 
@@ -174,6 +182,9 @@ def draft1_drop_step_loads(
         }
         for layer in range(num_layers):
             target_counts = _layer_counts(target[:, layer], num_experts)
+            unclipped_draft1_counts = _layer_counts(
+                draft1[:, layer], num_experts
+            )
             layer_survivors = (
                 np.ones(128, dtype=np.bool_)
                 if layer < drop_layer
@@ -183,11 +194,16 @@ def draft1_drop_step_loads(
                 draft1[layer_survivors, layer], num_experts
             )
             stage_loads["target"][layer] = target_counts
-            stage_loads["target_plus_draft_1"][layer] = (
+            stage_loads["target_plus_unclipped_draft_1"][layer] = (
+                target_counts + unclipped_draft1_counts
+            )
+            stage_loads["target_plus_surviving_draft_1"][layer] = (
                 target_counts + draft1_counts
             )
             if layer == drop_layer:
-                draft1_peak = stage_loads["target_plus_draft_1"][layer].max()
+                draft1_peak = stage_loads[
+                    "target_plus_surviving_draft_1"
+                ][layer].max()
                 if draft1_peak > capacity:
                     raise AssertionError(
                         f"step {step} layer {layer} exceeds drop-layer capacity"
@@ -209,8 +225,15 @@ def draft1_drop_step_loads(
                     ),
                     "layer": layer,
                     "target_peak": int(target_counts.max()),
+                    "target_plus_unclipped_draft1_peak": int(
+                        stage_loads["target_plus_unclipped_draft_1"][
+                            layer
+                        ].max()
+                    ),
                     "target_plus_surviving_draft1_peak": int(
-                        stage_loads["target_plus_draft_1"][layer].max()
+                        stage_loads["target_plus_surviving_draft_1"][
+                            layer
+                        ].max()
                     ),
                     "draft1_assignments": observed_draft1_assignments,
                 }
