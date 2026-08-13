@@ -53,6 +53,16 @@ def representative_steps(complete_steps: np.ndarray) -> tuple[int, int, int]:
     )
 
 
+def _rank_stage_loads_by_target(
+    stage_loads: dict[str, np.ndarray],
+) -> dict[str, np.ndarray]:
+    target_order = np.argsort(-stage_loads["target"], axis=1, kind="stable")
+    return {
+        stage_name: np.take_along_axis(counts, target_order, axis=1)
+        for stage_name, counts in stage_loads.items()
+    }
+
+
 def selected_step_loads(
     trace_dir: Path, requested_steps: list[int] | None
 ) -> tuple[tuple[int, int, int], dict[int, dict[str, np.ndarray]]]:
@@ -84,8 +94,8 @@ def selected_step_loads(
                     f"step {step} {stage_name} has {mask.sum()} rows, "
                     f"expected {expected_rows}"
                 )
-            stage_loads[stage_name] = np.sort(counts, axis=1)[:, ::-1]
-        loads_by_step[int(step)] = stage_loads
+            stage_loads[stage_name] = counts
+        loads_by_step[int(step)] = _rank_stage_loads_by_target(stage_loads)
     return tuple(int(step) for step in steps), loads_by_step
 
 
@@ -205,10 +215,7 @@ def draft1_drop_step_loads(
                     "draft1_assignments": observed_draft1_assignments,
                 }
             )
-        loads_by_step[int(step)] = {
-            stage_name: np.sort(counts, axis=1)[:, ::-1]
-            for stage_name, counts in stage_loads.items()
-        }
+        loads_by_step[int(step)] = _rank_stage_loads_by_target(stage_loads)
     return tuple(int(step) for step in steps), loads_by_step, stats_rows
 
 
@@ -260,7 +267,7 @@ def plot(
                     f"Step {step}\nrouted assignments"
                 )
             if row == len(steps) - 1:
-                axis.set_xlabel("expert position after within-step load sorting")
+                axis.set_xlabel("expert rank fixed by target load")
     handles, labels = axes[0, 0].get_legend_handles_labels()
     figure.legend(
         handles,
