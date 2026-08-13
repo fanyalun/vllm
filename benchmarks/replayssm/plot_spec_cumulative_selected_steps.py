@@ -48,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trace-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--steps", type=int, nargs=3)
+    parser.add_argument("--plot-layers", type=int, nargs="+")
     parser.add_argument("--draft1-drop-layer", type=int)
     parser.add_argument("--stats-output", type=Path)
     return parser.parse_args()
@@ -256,6 +257,7 @@ def plot(
     output: Path,
     stage_labels: dict[str, str] = STAGE_LABELS,
     stages: tuple[tuple[str, tuple[str, ...]], ...] = SPEC_STAGES,
+    plot_layers: tuple[int, ...] = PLOT_LAYERS,
     title: str = "Cumulative speculative expert loads for individual complete steps",
 ) -> None:
     import matplotlib
@@ -264,16 +266,26 @@ def plot(
     import matplotlib.pyplot as plt
 
     colors = ("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728")
+    num_layers = loads_by_step[steps[0]]["target"].shape[0]
+    if not plot_layers:
+        raise ValueError("at least one plot layer is required")
+    invalid_layers = [
+        layer for layer in plot_layers if not 0 <= layer < num_layers
+    ]
+    if invalid_layers:
+        raise ValueError(f"invalid plot layers: {invalid_layers}")
+    figure_width = 16 if len(plot_layers) == 3 else 5.2 * len(plot_layers)
     figure, axes = plt.subplots(
         3,
-        3,
-        figsize=(16, 13),
+        len(plot_layers),
+        figsize=(figure_width, 13),
         sharex=True,
         sharey="col",
+        squeeze=False,
     )
     expert_order = np.arange(1, 257)
     for row, step in enumerate(steps):
-        for column, layer in enumerate(PLOT_LAYERS):
+        for column, layer in enumerate(plot_layers):
             axis = axes[row, column]
             for (stage_name, _), color in zip(stages, colors):
                 axis.plot(
@@ -308,9 +320,14 @@ def plot(
 
 def main() -> None:
     args = parse_args()
+    plot_layers = (
+        tuple(args.plot_layers)
+        if args.plot_layers is not None
+        else PLOT_LAYERS
+    )
     if args.draft1_drop_layer is None:
         steps, loads_by_step = selected_step_loads(args.trace_dir, args.steps)
-        plot(steps, loads_by_step, args.output)
+        plot(steps, loads_by_step, args.output, plot_layers=plot_layers)
     else:
         steps, loads_by_step, stats_rows = draft1_drop_step_loads(
             args.trace_dir,
@@ -323,6 +340,7 @@ def main() -> None:
             args.output,
             stage_labels=DRAFT1_DROP_STAGE_LABELS,
             stages=DRAFT1_DROP_STAGES,
+            plot_layers=plot_layers,
             title=(
                 "Draft1 token drop at "
                 f"Layer {args.draft1_drop_layer}, propagated downstream"
