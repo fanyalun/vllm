@@ -41,6 +41,7 @@ FULL_STEP_ROWS = {
     "replayssm_spec_bs128_d3": 512,
     "replayssm_ar_bs512": 512,
 }
+PLOT_LAYERS = (4, 16, 32)
 INTERNAL_REQUEST_ID = re.compile(r"^(?P<external>.*)-[0-9a-f]{8}$")
 
 
@@ -63,14 +64,13 @@ class TraceData:
 
 
 @dataclass
-class StepGlobalLoads:
+class StepLayerLoads:
     steps: np.ndarray
     ranked_raw: np.ndarray
-    ranked_normalized: np.ndarray
 
     @property
-    def mean_ranked_normalized(self) -> np.ndarray:
-        return self.ranked_normalized.mean(axis=0)
+    def mean_ranked_raw(self) -> np.ndarray:
+        return self.ranked_raw.mean(axis=0)
 
 
 def load_trace(trace_dir: Path) -> TraceData:
@@ -214,7 +214,7 @@ def expert_counts(
 
 
 def gini(values: np.ndarray) -> float:
-    array = np.asarray(values, dtype=np.float64).reshape(-1)
+    array = np.array(values, dtype=np.float64, copy=True).reshape(-1)
     total = array.sum()
     if total == 0:
         return 0.0
@@ -537,27 +537,29 @@ def complete_step_ids(trace: TraceData) -> np.ndarray:
     return np.array(selected_steps, dtype=np.int32)
 
 
-def step_global_loads(
+def step_layer_loads(
     trace: TraceData, route_kinds: tuple[str, ...] | None = None
-) -> StepGlobalLoads:
+) -> StepLayerLoads:
     steps = complete_step_ids(trace)
     if not steps.size:
         raise ValueError(f"no complete scheduler steps in {trace.name}")
-    num_layer_experts = trace.routes.shape[1] * trace.manifest["num_experts"]
-    ranked_raw = np.empty((steps.size, num_layer_experts), dtype=np.float64)
+    ranked_raw = np.empty(
+        (
+            steps.size,
+            trace.routes.shape[1],
+            trace.manifest["num_experts"],
+        ),
+        dtype=np.float64,
+    )
     for index, step in enumerate(steps):
         mask = trace.scheduler_steps == step
         if route_kinds is not None:
             mask &= np.isin(trace.route_kinds, route_kinds)
-        counts = expert_counts(trace.routes, mask).reshape(-1)
-        ranked_raw[index] = np.sort(counts)[::-1]
-    means = ranked_raw.mean(axis=1, keepdims=True)
-    if np.any(means == 0):
-        raise ValueError(f"empty routed-assignment distribution in {trace.name}")
-    return StepGlobalLoads(
+        counts = expert_counts(trace.routes, mask)
+        ranked_raw[index] = np.sort(counts, axis=1)[:, ::-1]
+    return StepLayerLoads(
         steps=steps,
         ranked_raw=ranked_raw,
-        ranked_normalized=ranked_raw / means,
     )
 
 
@@ -693,7 +695,7 @@ def request_phi_bootstrap(
 
 
 def _plot_spec_stages(
-    stage_loads: list[tuple[str, StepGlobalLoads]], figures_dir: Path
+    stage_loads: list[tuple[str, StepLayerLoads]], figures_dir: Path
 ) -> None:
     import matplotlib
 
@@ -701,101 +703,51 @@ def _plot_spec_stages(
     import matplotlib.pyplot as plt
 
     colors = ("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728")
-    figure, axis = plt.subplots(figsize=(10, 6))
-    for (label, loads), color in zip(stage_loads, colors):
-        axis.plot(
-            np.arange(1, loads.ranked_normalized.shape[1] + 1),
-            loads.mean_ranked_normalized,
-            label=label,
-            color=color,
-        )
-    axis.set_xlabel("global layer-expert load order within each step")
-    axis.set_ylabel("mean load / per-step global mean")
-    axis.legend()
+    figure, axes = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+    expert_order = np.arange(1, stage_loads[0][1].ranked_raw.shape[2] + 1)
+    for layer, axis in zip(PLOT_LAYERS, axes):
+        for (label, loads), color in zip(stage_loads, colors):
+            axis.plot(
+                expert_order,
+                loads.mean_ranked_raw[layer],
+                label=label,
+                color=color,
+            )
+        axis.set_title(f"Layer {layer}")
+        axis.set_ylabel("mean routed assignments")
+        axis.grid(alpha=0.2)
+    axes[0].legend()
+    axes[-1].set_xlabel("expert position after within-step load sorting")
     figure.tight_layout()
     figure.savefig(figures_dir / "spec_cumulative_global.png", dpi=180)
     plt.close(figure)
 
 
 def _plot_run_comparison(
-    loads_by_run: dict[str, StepGlobalLoads], figures_dir: Path
+    loads_by_run: dict[str, StepLayerLoads], figures_dir: Path
 ) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    figure, axis = plt.subplots(figsize=(10, 6))
-    for name, loads in loads_by_run.items():
-        axis.plot(
-            np.arange(1, loads.ranked_normalized.shape[1] + 1),
-            loads.mean_ranked_normalized,
-            label=RUN_LABELS[name],
-        )
-    axis.set_xlabel("global layer-expert load order within each step")
-    axis.set_ylabel("mean load / per-step global mean")
-    axis.legend()
+    figure, axes = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+    first_loads = next(iter(loads_by_run.values()))
+    expert_order = np.arange(1, first_loads.ranked_raw.shape[2] + 1)
+    for layer, axis in zip(PLOT_LAYERS, axes):
+        for name, loads in loads_by_run.items():
+            axis.plot(
+                expert_order,
+                loads.mean_ranked_raw[layer],
+                label=RUN_LABELS[name],
+            )
+        axis.set_title(f"Layer {layer}")
+        axis.set_ylabel("mean routed assignments")
+        axis.grid(alpha=0.2)
+    axes[0].legend()
+    axes[-1].set_xlabel("expert position after within-step load sorting")
     figure.tight_layout()
     figure.savefig(figures_dir / "global_load_comparison.png", dpi=180)
-    plt.close(figure)
-
-    vmax = max(loads.ranked_normalized.max() for loads in loads_by_run.values())
-    figure, axes = plt.subplots(3, 1, figsize=(14, 11), sharex=True)
-    image = None
-    for axis, (name, loads) in zip(axes, loads_by_run.items()):
-        image = axis.imshow(
-            loads.ranked_normalized,
-            aspect="auto",
-            cmap="magma",
-            vmin=0,
-            vmax=vmax,
-        )
-        axis.set_ylabel("complete step")
-        axis.set_title(RUN_LABELS[name])
-    axes[-1].set_xlabel("global layer-expert load order within each step")
-    figure.subplots_adjust(
-        left=0.08, right=0.88, bottom=0.08, top=0.95, hspace=0.25
-    )
-    colorbar_axis = figure.add_axes((0.9, 0.15, 0.015, 0.7))
-    figure.colorbar(
-        image,
-        cax=colorbar_axis,
-        label="load / per-step global mean",
-    )
-    figure.savefig(figures_dir / "expert_load_heatmaps.png", dpi=180)
-    plt.close(figure)
-
-    first_loads = next(iter(loads_by_run.values()))
-    hot_count = math.ceil(first_loads.ranked_raw.shape[1] * 0.1)
-    hot_vmax = max(
-        loads.ranked_normalized[:, :hot_count].max()
-        for loads in loads_by_run.values()
-    )
-    figure, axes = plt.subplots(3, 1, figsize=(14, 11), sharex=True)
-    image = None
-    for axis, (name, loads) in zip(axes, loads_by_run.items()):
-        image = axis.imshow(
-            loads.ranked_normalized[:, :hot_count],
-            aspect="auto",
-            cmap="magma",
-            vmin=0,
-            vmax=hot_vmax,
-        )
-        axis.set_ylabel("complete step")
-        axis.set_title(RUN_LABELS[name])
-    axes[-1].set_xlabel(
-        "global hot-10% layer-expert load order within each step"
-    )
-    figure.subplots_adjust(
-        left=0.08, right=0.88, bottom=0.08, top=0.95, hspace=0.25
-    )
-    colorbar_axis = figure.add_axes((0.9, 0.15, 0.015, 0.7))
-    figure.colorbar(
-        image,
-        cax=colorbar_axis,
-        label="load / per-step global mean",
-    )
-    figure.savefig(figures_dir / "expert_load_heatmaps_zoom.png", dpi=180)
     plt.close(figure)
 
 
@@ -857,7 +809,7 @@ def analyze_experiment(root: Path, bootstrap_samples: int = 1000) -> None:
     )
     traces = {name: load_trace(trace_root / name) for name in run_names}
     step_loads_by_run = {
-        name: step_global_loads(trace) for name, trace in traces.items()
+        name: step_layer_loads(trace) for name, trace in traces.items()
     }
     step_hot_phi_by_run: dict[str, np.ndarray] = {}
     step_hot_phi_steps: dict[str, int] = {}
@@ -879,13 +831,13 @@ def analyze_experiment(root: Path, bootstrap_samples: int = 1000) -> None:
 
     spec_stage_counts: list[tuple[str, np.ndarray]] = []
     spec_trace = traces["replayssm_spec_bs128_d3"]
-    spec_stage_loads: list[tuple[str, StepGlobalLoads]] = []
+    spec_stage_loads: list[tuple[str, StepLayerLoads]] = []
     for stage_name, kinds in SPEC_STAGES:
         stage_mask = np.isin(spec_trace.route_kinds, kinds)
         spec_stage_counts.append(
             (stage_name, expert_counts(spec_trace.routes, stage_mask))
         )
-        spec_stage_loads.append((stage_name, step_global_loads(spec_trace, kinds)))
+        spec_stage_loads.append((stage_name, step_layer_loads(spec_trace, kinds)))
 
     for run_name, trace in traces.items():
         masks = _slice_masks(trace)
@@ -1177,40 +1129,53 @@ def analyze_experiment(root: Path, bootstrap_samples: int = 1000) -> None:
                 }
             )
 
-    def ranked_load_summary(loads: StepGlobalLoads) -> dict[str, Any]:
-        mean_distribution = loads.mean_ranked_normalized
+    def ranked_layer_summary(
+        loads: StepLayerLoads, layer: int
+    ) -> dict[str, Any]:
+        step_distributions = loads.ranked_raw[:, layer, :]
+        mean_distribution = loads.mean_ranked_raw[layer]
         hot_count = math.ceil(mean_distribution.size * 0.1)
         return {
             "complete_steps": int(loads.steps.size),
-            "layer_experts": int(mean_distribution.size),
-            "mean_assignments_per_step": float(loads.ranked_raw.sum(axis=1).mean()),
-            "mean_active_layer_experts": float(
-                np.count_nonzero(loads.ranked_raw, axis=1).mean()
+            "experts": int(mean_distribution.size),
+            "mean_assignments_per_step": float(
+                step_distributions.sum(axis=1).mean()
+            ),
+            "mean_active_experts": float(
+                np.count_nonzero(step_distributions, axis=1).mean()
             ),
             "mean_step_gini": float(
-                np.mean([gini(values) for values in loads.ranked_raw])
+                np.mean([gini(values) for values in step_distributions])
             ),
-            "mean_hottest_over_step_mean": float(mean_distribution[0]),
+            "mean_hottest_load": float(mean_distribution[0]),
             "mean_hot_10pct_assignment_share": float(
                 mean_distribution[:hot_count].sum() / mean_distribution.sum()
             ),
             "mean_zero_load_share": float(
-                np.mean(loads.ranked_raw == 0, axis=1).mean()
+                np.mean(step_distributions == 0, axis=1).mean()
             ),
         }
 
-    step_global_summary = {
+    step_layer_summary = {
         "definition": (
-            "Within every complete scheduler step, flatten all 40x256 "
-            "layer-expert assignment counts, sort descending, normalize by "
-            "that step's global mean, then average equal sorted positions."
+            "For each selected layer and complete scheduler step, sort the "
+            "raw loads of all 256 experts in descending order, retain zeros "
+            "for inactive experts, then average equal sorted positions "
+            "across steps without normalization."
         ),
         "methods": {
-            name: ranked_load_summary(loads)
+            name: {
+                str(layer): ranked_layer_summary(loads, layer)
+                for layer in PLOT_LAYERS
+            }
             for name, loads in step_loads_by_run.items()
         },
         "spec_cumulative_stages": {
-            name: ranked_load_summary(loads) for name, loads in spec_stage_loads
+            name: {
+                str(layer): ranked_layer_summary(loads, layer)
+                for layer in PLOT_LAYERS
+            }
+            for name, loads in spec_stage_loads
         },
         "step_mean_hot_phi": {
             name: {
@@ -1247,8 +1212,11 @@ def analyze_experiment(root: Path, bootstrap_samples: int = 1000) -> None:
     (metrics_dir / "bootstrap_summary.json").write_text(
         json.dumps(bootstrap_summary, indent=2, sort_keys=True) + "\n"
     )
-    (metrics_dir / "step_global_load_summary.json").write_text(
-        json.dumps(step_global_summary, indent=2, sort_keys=True) + "\n"
+    old_summary = metrics_dir / "step_global_load_summary.json"
+    if old_summary.exists():
+        old_summary.unlink()
+    (metrics_dir / "step_layer_load_summary.json").write_text(
+        json.dumps(step_layer_summary, indent=2, sort_keys=True) + "\n"
     )
     for run_name, matrix in step_hot_phi_by_run.items():
         write_matrix(metrics_dir / f"step_mean_hot_phi_{run_name}.csv", matrix)
@@ -1328,14 +1296,13 @@ def analyze_experiment(root: Path, bootstrap_samples: int = 1000) -> None:
         "## 指标语义",
         "",
         (
-            "- Step-global expert distribution 在每个完整 scheduler step 内"
-            "将 40 层 × 256 个专家视为 10,240 个独立 layer-expert 实例，"
-            "覆盖两个 EP ranks 上的全部专家。"
+            "- Step-layer expert distribution 分别统计 Layer 4、16、32；"
+            "每层均覆盖两个 EP ranks 上的全部 256 个逻辑专家。"
         ),
         (
-            "- 每个 step 内先按 assignment count 对 10,240 个实例降序排列，"
-            "再除以该 step 的全局均值；heatmap 保留 step 维度，曲线只在"
-            "相同降序位置上跨 step 取平均。"
+            "- 每个完整 step 内先按 raw assignment count 对 256 个专家"
+            "降序排列，未激活专家保留为 0，再对相同排序位置跨 step 取"
+            "平均；不做均值归一化。"
         ),
         (
             "- Spec 主结果包含 target model 实际执行的 target 和三个 "
@@ -1355,8 +1322,8 @@ def analyze_experiment(root: Path, bootstrap_samples: int = 1000) -> None:
         "## 可复核产物",
         "",
         (
-            "- `metrics/step_global_load_summary.json`：逐完整 step 的全局"
-            "排序负载摘要。"
+            "- `metrics/step_layer_load_summary.json`：Layer 4、16、32 的"
+            "逐完整 step 排序 raw-load 摘要。"
         ),
         "- `metrics/global_imbalance.json`：全局和分 slice 负载指标。",
         "- `metrics/layer_imbalance.csv`：逐层指标。",
@@ -1370,9 +1337,9 @@ def analyze_experiment(root: Path, bootstrap_samples: int = 1000) -> None:
         ),
         "- `metrics/output_consistency.json`：输出差异位置及匹配前缀。",
         (
-            "- `figures/` 只包含五张 PNG：三方法 step-global heatmap、"
-            "hot-10% 局部放大、平均全局负载曲线、三方法 step-mean hot-phi，"
-            "以及 target 到 draft_3 的 spec cumulative global 曲线。"
+            "- `figures/` 只包含三张 PNG：三方法 Layer 4/16/32 raw-load"
+            "曲线、target 到 draft_3 的 Layer 4/16/32 cumulative raw-load"
+            "曲线，以及三方法 step-mean hot-phi。"
         ),
     ]
     report = "\n".join(report_lines) + "\n"
