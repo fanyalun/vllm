@@ -106,6 +106,10 @@ class RoutedExpertsCapturer:
         )
         self.dp_rank = vllm_config.parallel_config.data_parallel_rank
         self.tp_size = vllm_config.parallel_config.tensor_parallel_size
+        additional_config = getattr(vllm_config, "additional_config", {}) or {}
+        self.expected_target_moe_layers = additional_config.get(
+            "routed_experts_trace", {}
+        ).get("expected_target_moe_layers")
 
     def capture(self, layer_id: int, topk_ids: torch.Tensor) -> None:
         """Capture expert routing decisions for a specific layer.
@@ -291,7 +295,7 @@ class RoutedExpertsManager:
             self.routed_experts_by_slot.nbytes / 1e9,
             max_num_slots,
             hf_config.num_hidden_layers,
-            hf_config.num_experts_per_tok,
+            num_experts_per_tok,
             self.routed_experts_by_slot.dtype.name,
         )
 

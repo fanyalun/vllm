@@ -7504,6 +7504,18 @@ class GPUModelRunner(
 
                 module.router.set_capture_fn(_capture_fn)
                 bound_modules += 1
+        expected_target_moe_layers = getattr(
+            capturer, "expected_target_moe_layers", None
+        )
+        if (
+            expected_target_moe_layers is not None
+            and bound_modules != expected_target_moe_layers
+        ):
+            raise RuntimeError(
+                "Routed-expert capture bound to "
+                f"{bound_modules} target MoE modules, expected "
+                f"{expected_target_moe_layers}"
+            )
         logger.info(
             "Bound routed-expert capturer to %d target MoE modules; "
             "excluded %d draft MoE modules",

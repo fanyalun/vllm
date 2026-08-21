@@ -114,11 +114,19 @@ class RoutedExpertsTraceWriter:
         self.num_events = 0
         self.closed = False
         self.manifest: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "state": "running",
             "started_at": _utc_now(),
             "completed_at": None,
             "run_name": config.get("run_name"),
+            "data_parallel_rank": getattr(
+                vllm_config.parallel_config, "data_parallel_rank", 0
+            ),
+            "model_family": config.get("model_family"),
+            "draft_method": config.get("draft_method"),
+            "expected_target_moe_layers": config.get(
+                "expected_target_moe_layers"
+            ),
             "decode_only": True,
             "route_scope": "target_model_decode_verify_only_excludes_drafter",
             "model": vllm_config.model_config.model,
