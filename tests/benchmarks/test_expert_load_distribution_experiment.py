@@ -42,10 +42,23 @@ def model_spec(num_layers: int = 3, num_experts: int = 8):
     )
 
 
-def synthetic_step(mode: str, *, step: int = 10):
+def synthetic_step(
+    mode: str,
+    *,
+    step: int = 10,
+    contract=None,
+):
+    if contract is None:
+        contract = experiment.DEFAULT_BATCH_CONTRACT
     rows = []
-    requests_per_rank = 8 if mode == "spec" else 32
-    stages = experiment.SPEC_STAGES if mode == "spec" else ("ar_decode",)
+    requests_per_rank = (
+        contract.spec_batch_size if mode == "spec" else contract.ar_batch_size
+    ) // experiment.DP_SIZE
+    stages = (
+        experiment.spec_stages(contract.draft_length)
+        if mode == "spec"
+        else ("ar_decode",)
+    )
     for rank in range(2):
         for request in range(requests_per_rank):
             sample_id = rank + 2 * request
@@ -109,6 +122,64 @@ def test_spec_step_metadata_acceptance_and_assignment_contract():
     assert summary["draft_acceptance"]["accepted_rows"] == 16
     ranked = experiment.ranked_loads(rows, layer=0, num_experts=8)
     assert sum(count for _, _, count in ranked) == 512
+
+
+@pytest.mark.parametrize(
+    ("spec_batch_size", "draft_length", "ar_batch_size", "sample_count"),
+    ((32, 3, 128, 128), (32, 1, 64, 64), (64, 3, 256, 256), (8, 3, 32, 32)),
+)
+def test_requested_batch_contracts_require_exact_target_capacity(
+    spec_batch_size,
+    draft_length,
+    ar_batch_size,
+    sample_count,
+):
+    contract = experiment.BatchContract(
+        spec_batch_size=spec_batch_size,
+        draft_length=draft_length,
+        ar_batch_size=ar_batch_size,
+        sample_count=sample_count,
+    )
+    expected_rows = spec_batch_size * (draft_length + 1)
+    assert contract.target_rows_per_step == expected_rows == ar_batch_size
+    assert contract.assignments_per_layer == expected_rows * 8
+    for mode in ("spec", "ar"):
+        rows = synthetic_step(mode, contract=contract)
+        summary = experiment.validate_step(
+            rows, mode=mode, model=model_spec(), contract=contract
+        )
+        assert summary["valid"]
+        assert summary["rows"] == expected_rows
+        assert summary["capacity_contract"] == {
+            "expected_target_rows": expected_rows,
+            "actual_target_rows": expected_rows,
+            "top_k": 8,
+            "expected_assignments_per_layer": expected_rows * 8,
+            "layers_validated": 3,
+        }
+
+
+def test_custom_batch_contract_rejects_truncated_step():
+    contract = experiment.BatchContract(32, 3, 128, 128)
+    rows = synthetic_step("spec", contract=contract)
+    summary = experiment.validate_step(
+        rows[:-1], mode="spec", model=model_spec(), contract=contract
+    )
+    assert not summary["valid"]
+    assert summary["rows"] == 127
+    assert summary["capacity_contract"]["expected_target_rows"] == 128
+    assert any("1024" in reason for reason in summary["reasons"])
+
+
+def test_batch_contract_parser_rejects_non_equal_target_rows():
+    args = SimpleNamespace(
+        spec_batch_size=32,
+        draft_length=3,
+        ar_batch_size=64,
+        sample_count=64,
+    )
+    with pytest.raises(ValueError, match="non-equal target-token contract"):
+        experiment.batch_contract(args)
 
 
 def test_step_validation_fails_closed_for_missing_rank_and_duplicate_stage():

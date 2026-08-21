@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Compare target-model expert loads for equal-token Spec16+d3 and AR64."""
+"""Compare target-model expert loads for equal-token speculative and AR steps."""
 
 from __future__ import annotations
 
@@ -60,6 +60,37 @@ class ModelSpec:
 
 
 @dataclass(frozen=True)
+class BatchContract:
+    spec_batch_size: int
+    draft_length: int
+    ar_batch_size: int
+    sample_count: int
+
+    @property
+    def target_rows_per_step(self) -> int:
+        return self.spec_batch_size * (self.draft_length + 1)
+
+    @property
+    def assignments_per_layer(self) -> int:
+        return self.target_rows_per_step * TOP_K
+
+    @property
+    def name(self) -> str:
+        return (
+            f"spec_bs{self.spec_batch_size}_d{self.draft_length}"
+            f"_vs_ar_bs{self.ar_batch_size}_n{self.sample_count}"
+        )
+
+
+DEFAULT_BATCH_CONTRACT = BatchContract(
+    spec_batch_size=16,
+    draft_length=3,
+    ar_batch_size=64,
+    sample_count=64,
+)
+
+
+@dataclass(frozen=True)
 class TraceRows:
     manifest: dict[str, Any]
     events: tuple[dict[str, Any], ...]
@@ -72,6 +103,48 @@ def utc_now() -> str:
 
 def timestamp_slug() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def batch_contract(args: argparse.Namespace) -> BatchContract:
+    contract = BatchContract(
+        spec_batch_size=args.spec_batch_size,
+        draft_length=args.draft_length,
+        ar_batch_size=args.ar_batch_size,
+        sample_count=args.sample_count,
+    )
+    values = (
+        contract.spec_batch_size,
+        contract.draft_length,
+        contract.ar_batch_size,
+        contract.sample_count,
+    )
+    if any(value <= 0 for value in values):
+        raise ValueError(f"batch contract values must be positive: {contract}")
+    distributed_counts = (
+        contract.spec_batch_size,
+        contract.ar_batch_size,
+        contract.sample_count,
+    )
+    if any(value % DP_SIZE for value in distributed_counts):
+        raise ValueError(f"batch and sample counts must be divisible by {DP_SIZE}")
+    if contract.target_rows_per_step != contract.ar_batch_size:
+        raise ValueError(
+            "non-equal target-token contract: "
+            f"Spec produces {contract.target_rows_per_step} rows but AR has "
+            f"batch size {contract.ar_batch_size}"
+        )
+    if contract.sample_count != contract.ar_batch_size:
+        raise ValueError(
+            "sample_count must equal ar_batch_size so every AR request is active "
+            "in each complete comparison step"
+        )
+    return contract
+
+
+def spec_stages(draft_length: int) -> tuple[str, ...]:
+    return ("spec_target",) + tuple(
+        f"spec_draft_{index}" for index in range(1, draft_length + 1)
+    )
 
 
 def write_json(path: Path, payload: Any) -> None:
@@ -155,15 +228,16 @@ def build_sample_manifest(
 
 def validate_sample_manifest(payload: dict[str, Any]) -> None:
     samples = payload.get("samples", [])
-    if len(samples) != SAMPLE_COUNT:
+    expected_count = int(payload.get("sampling", {}).get("count", -1))
+    if len(samples) != expected_count:
         raise AssertionError(
-            f"sample manifest has {len(samples)} samples, expected {SAMPLE_COUNT}"
+            f"sample manifest has {len(samples)} samples, expected {expected_count}"
         )
     ids = [int(sample["sample_id"]) for sample in samples]
     source_indices = [int(sample["source_index"]) for sample in samples]
-    if ids != list(range(SAMPLE_COUNT)):
-        raise AssertionError("sample IDs are not the stable order 0..63")
-    if len(set(source_indices)) != SAMPLE_COUNT:
+    if ids != list(range(expected_count)):
+        raise AssertionError("sample IDs are not in stable sequential order")
+    if len(set(source_indices)) != expected_count:
         raise AssertionError("sample manifest contains duplicate source rows")
     for sample in samples:
         sample_id = int(sample["sample_id"])
@@ -265,6 +339,7 @@ def validate_rank_artifacts(
     rank: int,
     model: ModelSpec,
     mode: str,
+    contract: BatchContract = DEFAULT_BATCH_CONTRACT,
 ) -> dict[str, Any]:
     required = (
         path / "worker_complete",
@@ -290,6 +365,13 @@ def validate_rank_artifacts(
         "tensor_parallel_size": 1,
         "data_parallel_size": DP_SIZE,
         "expert_parallel_size": DP_SIZE,
+        "num_speculative_tokens": (
+            contract.draft_length if mode == "spec" else 0
+        ),
+        "max_num_seqs": (
+            contract.spec_batch_size if mode == "spec" else contract.ar_batch_size
+        )
+        // DP_SIZE,
     }
     mismatches = {
         key: {"expected": value, "actual": manifest.get(key)}
@@ -301,11 +383,15 @@ def validate_rank_artifacts(
     if tuple(manifest["route_shape"][1:]) != (model.num_layers, TOP_K):
         raise AssertionError(f"rank {rank} has invalid route shape")
     outputs = load_outputs(path / "outputs.jsonl")
-    if len(outputs) != SAMPLE_COUNT // DP_SIZE:
-        raise AssertionError(f"rank {rank} has {len(outputs)} outputs, expected 32")
+    expected_output_count = contract.sample_count // DP_SIZE
+    if len(outputs) != expected_output_count:
+        raise AssertionError(
+            f"rank {rank} has {len(outputs)} outputs, "
+            f"expected {expected_output_count}"
+        )
     if any(len(output["token_ids"]) != MAX_TOKENS for output in outputs):
         raise AssertionError(f"rank {rank} does not have exactly 64 output tokens")
-    expected_samples = set(range(rank, SAMPLE_COUNT, DP_SIZE))
+    expected_samples = set(range(rank, contract.sample_count, DP_SIZE))
     actual_samples = {int(output["sample_id"]) for output in outputs}
     if actual_samples != expected_samples:
         raise AssertionError(f"rank {rank} output sample IDs are incomplete")
@@ -322,6 +408,7 @@ def validate_attempt(
     model: ModelSpec,
     mode: str,
     sample_manifest_path: Path,
+    contract: BatchContract = DEFAULT_BATCH_CONTRACT,
 ) -> dict[str, Any]:
     attempt_manifest = read_json(attempt_dir / "attempt_manifest.json")
     if Path(attempt_manifest["sample_manifest"]).resolve() != (
@@ -330,7 +417,11 @@ def validate_attempt(
         raise AssertionError("attempt references a different sample manifest")
     ranks = [
         validate_rank_artifacts(
-            rank_dir(attempt_dir, rank), rank=rank, model=model, mode=mode
+            rank_dir(attempt_dir, rank),
+            rank=rank,
+            model=model,
+            mode=mode,
+            contract=contract,
         )
         for rank in range(DP_SIZE)
     ]
@@ -342,11 +433,12 @@ def find_complete_attempt(
     model: ModelSpec,
     mode: str,
     sample_manifest_path: Path,
+    contract: BatchContract = DEFAULT_BATCH_CONTRACT,
 ) -> tuple[Path, dict[str, Any]] | None:
     for attempt_dir in reversed(attempts_for(cell_dir)):
         try:
             validation = validate_attempt(
-                attempt_dir, model, mode, sample_manifest_path
+                attempt_dir, model, mode, sample_manifest_path, contract
             )
         except (AssertionError, FileNotFoundError, KeyError, ValueError):
             continue
@@ -385,6 +477,14 @@ def command_for_attempt(
         args.gemma_drafter,
         "--gpu-memory-utilization",
         str(args.gpu_memory_utilization),
+        "--spec-batch-size",
+        str(args.spec_batch_size),
+        "--draft-length",
+        str(args.draft_length),
+        "--ar-batch-size",
+        str(args.ar_batch_size),
+        "--sample-count",
+        str(args.sample_count),
     ]
     return command
 
@@ -418,6 +518,7 @@ def run_command(command: list[str]) -> str:
 
 def preflight(args: argparse.Namespace, output_root: Path) -> dict[str, Any]:
     specs = model_specs(args)
+    contract = batch_contract(args)
     paths = {
         "qwen_model": Path(args.qwen_model),
         "gemma_model": Path(args.gemma_model),
@@ -466,13 +567,16 @@ def preflight(args: argparse.Namespace, output_root: Path) -> dict[str, Any]:
         "models": {key: asdict(value) for key, value in specs.items()},
         "engine_config_dry_validation": dry_validations,
         "contract": {
+            **asdict(contract),
+            "target_rows_per_step": contract.target_rows_per_step,
+            "assignments_per_layer": contract.assignments_per_layer,
             "tensor_parallel_size": 1,
             "data_parallel_size": 2,
             "expert_parallel_size": 2,
-            "spec_global_batch_size": 16,
-            "spec_max_num_seqs_per_rank": 8,
-            "ar_global_batch_size": 64,
-            "ar_max_num_seqs_per_rank": 32,
+            "spec_global_batch_size": contract.spec_batch_size,
+            "spec_max_num_seqs_per_rank": contract.spec_batch_size // DP_SIZE,
+            "ar_global_batch_size": contract.ar_batch_size,
+            "ar_max_num_seqs_per_rank": contract.ar_batch_size // DP_SIZE,
             "max_tokens": MAX_TOKENS,
             "min_tokens": MAX_TOKENS,
             "max_model_len": MAX_MODEL_LEN,
@@ -545,12 +649,13 @@ def dry_validate_configs(
 
 
 def run_all(args: argparse.Namespace) -> None:
+    contract = batch_contract(args)
     if args.output_root:
         output_root = Path(args.output_root).expanduser().resolve()
     else:
         output_root = (
             Path(DEFAULT_OUTPUT_PARENT)
-            / f"expert_load_distribution_{timestamp_slug()}"
+            / f"expert_load_distribution_{contract.name}_{timestamp_slug()}"
         )
     if output_root.exists() and not args.resume:
         raise FileExistsError(
@@ -574,10 +679,14 @@ def run_all(args: argparse.Namespace) -> None:
         if sample_manifest_path.exists():
             samples = read_json(sample_manifest_path)
             validate_sample_manifest(samples)
+            if int(samples["sampling"]["count"]) != contract.sample_count:
+                raise AssertionError("resume sample count differs from batch contract")
             if Path(samples["dataset"]).resolve() != Path(args.dataset).resolve():
                 raise AssertionError("resume dataset differs from sample manifest")
         else:
-            samples = build_sample_manifest(Path(args.dataset).resolve())
+            samples = build_sample_manifest(
+                Path(args.dataset).resolve(), count=contract.sample_count
+            )
             validate_sample_manifest(samples)
             write_json(sample_manifest_path, samples)
         manifest = {
@@ -604,7 +713,7 @@ def run_all(args: argparse.Namespace) -> None:
             cell_key = f"{family}/{mode}"
             cell_dir = output_root / "cells" / family / mode
             complete = find_complete_attempt(
-                cell_dir, model, mode, sample_manifest_path
+                cell_dir, model, mode, sample_manifest_path, contract
             )
             if complete is not None and args.resume:
                 complete_dir, validation = complete
@@ -625,6 +734,7 @@ def run_all(args: argparse.Namespace) -> None:
                 "model_family": family,
                 "mode": mode,
                 "model": asdict(model),
+                "batch_contract": asdict(contract),
                 "sample_manifest": str(sample_manifest_path),
             }
             write_json(attempt_dir / "attempt_manifest.json", attempt_manifest)
@@ -641,7 +751,7 @@ def run_all(args: argparse.Namespace) -> None:
             try:
                 run_subprocess_logged(command, attempt_dir / "torchrun.log")
                 validation = validate_attempt(
-                    attempt_dir, model, mode, sample_manifest_path
+                    attempt_dir, model, mode, sample_manifest_path, contract
                 )
                 (attempt_dir / "cell_complete").touch(exist_ok=False)
                 attempt_manifest.update(
@@ -679,7 +789,7 @@ def run_all(args: argparse.Namespace) -> None:
                 write_json(status_path, status)
                 raise
         write_json(output_root / "selected_attempts.json", selected_attempts)
-        analyze_experiment(output_root, specs, selected_attempts)
+        analyze_experiment(output_root, specs, selected_attempts, contract)
         status.update({"state": "complete", "completed_at": utc_now()})
         manifest.update({"state": "complete", "completed_at": utc_now()})
         write_json(status_path, status)
@@ -711,6 +821,7 @@ def worker_llm_kwargs(
     trace_dir: Path,
     rank: int,
 ) -> dict[str, Any]:
+    contract = batch_contract(args)
     trace_config = {
         "output_dir": str(trace_dir),
         "run_name": f"{model.key}_{args.mode}_rank{rank}",
@@ -734,7 +845,10 @@ def worker_llm_kwargs(
         "kv_cache_dtype": "auto",
         "language_model_only": True,
         "max_model_len": MAX_MODEL_LEN,
-        "max_num_seqs": 8 if args.mode == "spec" else 32,
+        "max_num_seqs": (
+            contract.spec_batch_size if args.mode == "spec" else contract.ar_batch_size
+        )
+        // DP_SIZE,
         "max_num_batched_tokens": MAX_NUM_BATCHED_TOKENS,
         "trust_remote_code": True,
         "enable_prefix_caching": False,
@@ -760,18 +874,19 @@ def worker_llm_kwargs(
             kwargs["use_replayssm_spec"] = True
             kwargs["speculative_config"] = {
                 "method": "mtp",
-                "num_speculative_tokens": 3,
+                "num_speculative_tokens": contract.draft_length,
             }
     elif args.mode == "spec":
         kwargs["speculative_config"] = {
             "method": "eagle3",
             "model": model.drafter_path,
-            "num_speculative_tokens": 3,
+            "num_speculative_tokens": contract.draft_length,
         }
     return kwargs
 
 
 def run_worker(args: argparse.Namespace) -> None:
+    contract = batch_contract(args)
     rank = int(os.environ.get("RANK", "-1"))
     local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
     world_size = int(os.environ.get("WORLD_SIZE", "-1"))
@@ -797,8 +912,12 @@ def run_worker(args: argparse.Namespace) -> None:
         if int(sample["data_parallel_rank"]) == rank
     ]
     samples.sort(key=lambda sample: int(sample["rank_order"]))
-    if len(samples) != SAMPLE_COUNT // DP_SIZE:
-        raise AssertionError(f"rank {rank} did not receive 32 samples")
+    expected_samples = contract.sample_count // DP_SIZE
+    if len(samples) != expected_samples:
+        raise AssertionError(
+            f"rank {rank} received {len(samples)} samples, "
+            f"expected {expected_samples}"
+        )
     os.environ.setdefault("VLLM_LOGGING_LEVEL", "INFO")
     os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
     os.environ.setdefault("VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS", "30")
@@ -817,6 +936,7 @@ def run_worker(args: argparse.Namespace) -> None:
                 "local_rank": local_rank,
                 "model_family": model.key,
                 "mode": args.mode,
+                "batch_contract": asdict(contract),
                 "sample_ids": [int(sample["sample_id"]) for sample in samples],
                 "llm_kwargs": llm_kwargs,
             },
@@ -849,7 +969,8 @@ def run_worker(args: argparse.Namespace) -> None:
         )
         if len(outputs) != len(samples):
             raise AssertionError(
-                f"rank {rank} produced {len(outputs)} outputs, expected 32"
+                f"rank {rank} produced {len(outputs)} outputs, "
+                f"expected {len(samples)}"
             )
         with (output_dir / "outputs.jsonl").open("x", encoding="utf-8") as file:
             for sample, output in zip(samples, outputs, strict=True):
@@ -982,6 +1103,7 @@ def validate_step(
     *,
     mode: str,
     model: ModelSpec,
+    contract: BatchContract = DEFAULT_BATCH_CONTRACT,
 ) -> dict[str, Any]:
     reasons: list[str] = []
     rank_counts = Counter(int(row["rank"]) for row in rows)
@@ -996,38 +1118,69 @@ def validate_step(
     if set(rank_counts) != {0, 1}:
         reasons.append("missing DP rank")
     if mode == "spec":
-        if rank_counts != Counter({0: 32, 1: 32}):
-            reasons.append(f"rank row counts are {dict(rank_counts)}, expected 32 each")
-        if kinds != Counter({stage: 16 for stage in SPEC_STAGES}):
-            reasons.append(f"stage counts are {dict(kinds)}, expected 16 each")
-        if len(requests) != 16:
-            reasons.append(f"active request count is {len(requests)}, expected 16")
+        stages = spec_stages(contract.draft_length)
+        expected_rank_rows = contract.target_rows_per_step // DP_SIZE
+        expected_rank_counts = Counter(
+            {0: expected_rank_rows, 1: expected_rank_rows}
+        )
+        if rank_counts != expected_rank_counts:
+            reasons.append(
+                f"rank row counts are {dict(rank_counts)}, expected "
+                f"{expected_rank_rows} each"
+            )
+        expected_kinds = Counter(
+            {stage: contract.spec_batch_size for stage in stages}
+        )
+        if kinds != expected_kinds:
+            reasons.append(
+                f"stage counts are {dict(kinds)}, expected "
+                f"{dict(expected_kinds)}"
+            )
+        if len(requests) != contract.spec_batch_size:
+            reasons.append(
+                f"active request count is {len(requests)}, expected "
+                f"{contract.spec_batch_size}"
+            )
         for request in requests:
             request_kinds = {
                 str(row["route_kind"])
                 for row in rows
                 if (int(row["rank"]), str(row["request_id"])) == request
             }
-            if request_kinds != set(SPEC_STAGES):
+            if request_kinds != set(stages):
                 reasons.append(f"request {request} does not contain all spec stages")
                 break
         position_rows = [
             row for row in rows if row["route_kind"] == "spec_target"
         ]
     else:
-        if rank_counts != Counter({0: 32, 1: 32}):
-            reasons.append(f"rank row counts are {dict(rank_counts)}, expected 32 each")
-        if kinds != Counter({"ar_decode": 64}):
-            reasons.append(f"route kinds are {dict(kinds)}, expected 64 AR rows")
-        if len(requests) != SAMPLE_COUNT:
-            reasons.append(f"active request count is {len(requests)}, expected 64")
+        expected_rank_rows = contract.ar_batch_size // DP_SIZE
+        expected_rank_counts = Counter(
+            {0: expected_rank_rows, 1: expected_rank_rows}
+        )
+        if rank_counts != expected_rank_counts:
+            reasons.append(
+                f"rank row counts are {dict(rank_counts)}, expected "
+                f"{expected_rank_rows} each"
+            )
+        if kinds != Counter({"ar_decode": contract.ar_batch_size}):
+            reasons.append(
+                f"route kinds are {dict(kinds)}, expected "
+                f"{contract.ar_batch_size} AR rows"
+            )
+        if len(requests) != contract.ar_batch_size:
+            reasons.append(
+                f"active request count is {len(requests)}, expected "
+                f"{contract.ar_batch_size}"
+            )
         position_rows = rows
     if rows:
-        for layer in model.selected_layers:
+        for layer in range(model.num_layers):
             assignments = sum(int(row["routes"][layer].size) for row in rows)
-            if assignments != SAMPLE_COUNT * TOP_K:
+            if assignments != contract.assignments_per_layer:
                 reasons.append(
-                    f"layer {layer} has {assignments} assignments, expected 512"
+                    f"layer {layer} has {assignments} assignments, expected "
+                    f"{contract.assignments_per_layer}"
                 )
             if any(
                 len(set(int(value) for value in row["routes"][layer])) != TOP_K
@@ -1048,6 +1201,13 @@ def validate_step(
         "stage_rows": dict(sorted(kinds.items())),
         "active_requests": len(requests),
         "sample_ids": sorted({int(row["sample_id"]) for row in rows}),
+        "capacity_contract": {
+            "expected_target_rows": contract.target_rows_per_step,
+            "actual_target_rows": len(rows),
+            "top_k": TOP_K,
+            "expected_assignments_per_layer": contract.assignments_per_layer,
+            "layers_validated": model.num_layers,
+        },
     }
     if position_rows:
         summary["position"] = _position_summary(position_rows)
@@ -1069,7 +1229,7 @@ def validate_step(
                         row["route_kind"] == stage for row in draft_rows
                     ),
                 }
-                for stage in SPEC_STAGES[1:]
+                for stage in spec_stages(contract.draft_length)[1:]
             },
         }
     return summary
@@ -1161,16 +1321,21 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def compare_outputs(
-    ar_outputs: list[dict[str, Any]], spec_outputs: list[dict[str, Any]]
+    ar_outputs: list[dict[str, Any]],
+    spec_outputs: list[dict[str, Any]],
+    sample_count: int = SAMPLE_COUNT,
 ) -> dict[str, Any]:
     ar_by_sample = {int(row["sample_id"]): row for row in ar_outputs}
     spec_by_sample = {int(row["sample_id"]): row for row in spec_outputs}
-    if set(ar_by_sample) != set(range(SAMPLE_COUNT)) or set(spec_by_sample) != set(
-        range(SAMPLE_COUNT)
+    if set(ar_by_sample) != set(range(sample_count)) or set(spec_by_sample) != set(
+        range(sample_count)
     ):
-        raise AssertionError("output consistency requires exactly sample IDs 0..63")
+        raise AssertionError(
+            "output consistency requires exactly sample IDs "
+            f"0..{sample_count - 1}"
+        )
     comparisons = []
-    for sample_id in range(SAMPLE_COUNT):
+    for sample_id in range(sample_count):
         ar_tokens = [int(value) for value in ar_by_sample[sample_id]["token_ids"]]
         spec_tokens = [
             int(value) for value in spec_by_sample[sample_id]["token_ids"]
@@ -1199,7 +1364,7 @@ def compare_outputs(
             }
         )
     return {
-        "samples": SAMPLE_COUNT,
+        "samples": sample_count,
         "exact_matches": sum(row["exact_match"] for row in comparisons),
         "mismatches": sum(not row["exact_match"] for row in comparisons),
         "comparisons": comparisons,
@@ -1214,12 +1379,16 @@ def plot_model(
     model: ModelSpec,
     selected_rows: dict[tuple[str, str], list[dict[str, Any]]],
     output_dir: Path,
+    contract: BatchContract = DEFAULT_BATCH_CONTRACT,
 ) -> None:
     import matplotlib.pyplot as plt
 
     figure, axes = plt.subplots(2, 3, figsize=(15, 8), sharey=True)
     colors = {"spec": "#d55e00", "ar": "#0072b2"}
-    labels = {"spec": "Spec16+d3", "ar": "AR64"}
+    labels = {
+        "spec": f"Spec{contract.spec_batch_size}+d{contract.draft_length}",
+        "ar": f"AR{contract.ar_batch_size}",
+    }
     for row_index, label in enumerate(("early", "late")):
         for column_index, layer in enumerate(model.selected_layers):
             axis = axes[row_index, column_index]
@@ -1244,7 +1413,8 @@ def plot_model(
             if row_index == 0 and column_index == 0:
                 axis.legend()
     figure.suptitle(
-        f"{model.key}: equal 64 target-router tokens per physical step\n"
+        f"{model.key}: equal {contract.target_rows_per_step} target-router "
+        "tokens per physical step\n"
         "Each curve is sorted independently; x does not identify the same expert",
         fontsize=13,
     )
@@ -1255,13 +1425,18 @@ def plot_model(
 
 
 def load_cell(
-    attempt_dir: Path, model: ModelSpec, mode: str
+    attempt_dir: Path,
+    model: ModelSpec,
+    mode: str,
+    contract: BatchContract = DEFAULT_BATCH_CONTRACT,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     all_rows = []
     all_outputs = []
     for rank in range(DP_SIZE):
         path = rank_dir(attempt_dir, rank)
-        validate_rank_artifacts(path, rank=rank, model=model, mode=mode)
+        validate_rank_artifacts(
+            path, rank=rank, model=model, mode=mode, contract=contract
+        )
         outputs = load_outputs(path / "outputs.jsonl")
         trace = load_trace(path / "trace")
         all_outputs.extend(outputs)
@@ -1273,6 +1448,7 @@ def analyze_model(
     output_root: Path,
     model: ModelSpec,
     selected_attempts: dict[str, str],
+    contract: BatchContract = DEFAULT_BATCH_CONTRACT,
 ) -> dict[str, Any]:
     analysis_dir = output_root / "analysis" / model.key
     analysis_dir.mkdir(parents=True, exist_ok=False)
@@ -1282,14 +1458,16 @@ def analyze_model(
     grouped_by_mode: dict[str, dict[int, list[dict[str, Any]]]] = {}
     for mode in ("ar", "spec"):
         attempt = Path(selected_attempts[f"{model.key}/{mode}"])
-        rows, outputs = load_cell(attempt, model, mode)
+        rows, outputs = load_cell(attempt, model, mode, contract)
         rows_by_mode[mode] = rows
         outputs_by_mode[mode] = outputs
         grouped = group_by_step(rows)
         grouped_by_mode[mode] = grouped
         candidates = []
         for step, step_rows in sorted(grouped.items()):
-            summary = validate_step(step_rows, mode=mode, model=model)
+            summary = validate_step(
+                step_rows, mode=mode, model=model, contract=contract
+            )
             summary["scheduler_step"] = step
             candidates.append(summary)
         candidates_by_mode[mode] = candidates
@@ -1314,6 +1492,11 @@ def analyze_model(
             selected_rows[(label, mode)] = grouped_by_mode[mode][step]
     selected_payload = {
         "model_family": model.key,
+        "batch_contract": {
+            **asdict(contract),
+            "target_rows_per_step": contract.target_rows_per_step,
+            "assignments_per_layer": contract.assignments_per_layer,
+        },
         "selection_rules": {
             "spec": "valid complete step nearest offsets 16 and 48; tie by step",
             "ar": "valid complete step nearest selected Spec medians; tie by step",
@@ -1334,8 +1517,11 @@ def analyze_model(
             step_rows = selected_rows[(label, mode)]
             for layer in model.selected_layers:
                 ranked = ranked_loads(step_rows, layer, model.num_experts)
-                if sum(row[2] for row in ranked) != SAMPLE_COUNT * TOP_K:
-                    raise AssertionError("selected panel assignment total is not 512")
+                if sum(row[2] for row in ranked) != contract.assignments_per_layer:
+                    raise AssertionError(
+                        "selected panel assignment total is not "
+                        f"{contract.assignments_per_layer}"
+                    )
                 counts = np.zeros(model.num_experts, dtype=np.int64)
                 for load_rank, expert, count in ranked:
                     counts[expert] = count
@@ -1382,11 +1568,16 @@ def analyze_model(
     write_csv(analysis_dir / "selected_step_loads.csv", load_rows)
     write_csv(analysis_dir / "imbalance_summary.csv", metric_rows)
     write_json(analysis_dir / "imbalance_summary.json", metric_json)
-    consistency = compare_outputs(outputs_by_mode["ar"], outputs_by_mode["spec"])
+    consistency = compare_outputs(
+        outputs_by_mode["ar"],
+        outputs_by_mode["spec"],
+        contract.sample_count,
+    )
     write_json(analysis_dir / "output_consistency.json", consistency)
-    plot_model(model, selected_rows, analysis_dir)
+    plot_model(model, selected_rows, analysis_dir, contract)
     return {
         "model_family": model.key,
+        "batch_contract": asdict(contract),
         "selected_steps": selected,
         "valid_candidate_steps": {
             mode: sum(candidate["valid"] for candidate in candidates)
@@ -1418,12 +1609,13 @@ def analyze_experiment(
     output_root: Path,
     specs: dict[str, ModelSpec],
     selected_attempts: dict[str, str],
+    contract: BatchContract = DEFAULT_BATCH_CONTRACT,
 ) -> None:
     analysis_root = output_root / "analysis"
     if analysis_root.exists():
         raise FileExistsError(f"analysis output already exists: {analysis_root}")
     summaries = [
-        analyze_model(output_root, specs[family], selected_attempts)
+        analyze_model(output_root, specs[family], selected_attempts, contract)
         for family in ("qwen36", "gemma4")
     ]
     write_json(
@@ -1431,6 +1623,11 @@ def analyze_experiment(
         {
             "state": "complete",
             "completed_at": utc_now(),
+            "batch_contract": {
+                **asdict(contract),
+                "target_rows_per_step": contract.target_rows_per_step,
+                "assignments_per_layer": contract.assignments_per_layer,
+            },
             "summaries": summaries,
         },
     )
@@ -1440,7 +1637,9 @@ def analyze_experiment(
 def analyze_command(args: argparse.Namespace) -> None:
     output_root = Path(args.output_root).expanduser().resolve()
     selected_attempts = read_json(output_root / "selected_attempts.json")
-    analyze_experiment(output_root, model_specs(args), selected_attempts)
+    analyze_experiment(
+        output_root, model_specs(args), selected_attempts, batch_contract(args)
+    )
 
 
 def add_shared_arguments(parser: argparse.ArgumentParser) -> None:
@@ -1448,6 +1647,22 @@ def add_shared_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--gemma-model", default=DEFAULT_GEMMA_MODEL)
     parser.add_argument("--gemma-drafter", default=DEFAULT_GEMMA_DRAFTER)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
+    parser.add_argument(
+        "--spec-batch-size",
+        type=int,
+        default=DEFAULT_BATCH_CONTRACT.spec_batch_size,
+    )
+    parser.add_argument(
+        "--draft-length",
+        type=int,
+        default=DEFAULT_BATCH_CONTRACT.draft_length,
+    )
+    parser.add_argument(
+        "--ar-batch-size", type=int, default=DEFAULT_BATCH_CONTRACT.ar_batch_size
+    )
+    parser.add_argument(
+        "--sample-count", type=int, default=DEFAULT_BATCH_CONTRACT.sample_count
+    )
 
 
 def parse_args() -> argparse.Namespace:
