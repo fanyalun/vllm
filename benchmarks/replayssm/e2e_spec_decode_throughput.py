@@ -23,13 +23,27 @@ Examples (B300):
     python e2e_spec_decode_throughput.py --batch-size 512 \
         --model-id nvidia/Qwen3.5-122B-A10B-NVFP4 --spec-method qwen3_next_mtp \
         --moe-backend triton
+
+Examples (Qwen3.6 / Gemma4 DSpark):
+    python e2e_spec_decode_throughput.py \
+        --model-id Qwen/Qwen3.6-35B-A3B \
+        --spec-model RedHatAI/Qwen3.6-35B-A3B-speculator.dspark \
+        --spec-method dspark --num-spec 8 --tensor-parallel-size 2 \
+        --language-model-only --batch-size 4
+    python e2e_spec_decode_throughput.py \
+        --model-id google/gemma-4-26B-A4B-it \
+        --spec-model makora-ai/gemma4-26b-a4b-dspark \
+        --spec-method dspark --num-spec 6 --modes ar,standard \
+        --language-model-only --batch-size 4
 """
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 MODE_LABEL = {"ar": "AR", "standard": "standard-spec", "cache": "ReplaySSM-spec"}
 
@@ -51,8 +65,14 @@ def parse_args():
     p.add_argument("--num-spec", type=int, default=3,
                    help="Draft tokens per step (spec window = num_spec + 1).")
     p.add_argument("--spec-method", default="mtp")
+    p.add_argument(
+        "--spec-model",
+        default=None,
+        help="Optional external draft checkpoint, required by DSpark heads that "
+             "are not embedded in the target checkpoint.",
+    )
     p.add_argument("--buffer-len", type=int, default=16,
-                   help="ReplaySSM buffer length (power of two, >= 1 + num_spec).")
+                   help="ReplaySSM history length (>= 1 + num_spec).")
     p.add_argument("--max-tokens", type=int, default=256)
     p.add_argument("--max-model-len", type=int, default=2048)
     p.add_argument("--dtype", default="auto")
@@ -168,6 +188,8 @@ def run_worker(args):
             "method": args.spec_method,
             "num_speculative_tokens": args.num_spec,
         }
+        if args.spec_model:
+            spec_cfg["model"] = args.spec_model
         # Override only the draft MoE backend (the trtllm hang is in the draft).
         if args.moe_backend:
             spec_cfg["moe_backend"] = args.moe_backend
@@ -232,6 +254,8 @@ def run_one_mode(args, mode):
         "--gpu-memory-utilization", str(args.gpu_memory_utilization),
         "--warmup-s", str(args.warmup_s),
     ]
+    if args.spec_model:
+        cmd += ["--spec-model", args.spec_model]
     if args.enable_expert_parallel:
         cmd.append("--enable-expert-parallel")
     if args.language_model_only:
@@ -246,8 +270,19 @@ def run_one_mode(args, mode):
                else "--no-disable-flashinfer-autotune")
 
     result = None
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1)
+    child_env = os.environ.copy()
+    python_bin = str(Path(sys.executable).resolve().parent)
+    child_env["PATH"] = os.pathsep.join(
+        path for path in (python_bin, child_env.get("PATH")) if path
+    )
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        env=child_env,
+    )
     for line in proc.stdout:
         sys.stdout.write(line)
         sys.stdout.flush()
@@ -267,7 +302,8 @@ def main():
         run_worker(args)
         return
 
-    print(f"model={args.model_id}  tp={args.tensor_parallel_size}  "
+    print(f"model={args.model_id}  draft={args.spec_model}  "
+          f"tp={args.tensor_parallel_size}  "
           f"ep={args.enable_expert_parallel}  "
           f"all2all={args.all2all_backend}  batch_size={args.batch_size}  "
           f"num_spec={args.num_spec}  "
