@@ -44,7 +44,24 @@ def test_gemma4_26b_speculators_dspark_uses_qwen_draft_backbone():
     assert draft["draft_vocab_size"] == 32000
     assert draft["eagle_aux_hidden_state_layer_ids"] == [3, 10, 18, 25, 28]
     assert draft["target_layer_ids"] == [2, 9, 17, 24, 27]
-    assert draft["dspark_bonus_anchor"] is True
+    assert draft["sample_from_anchor"] is False
+
+
+def test_qwen3_6_speculators_dspark_preserves_sample_from_anchor():
+    """Qwen3.6 uses the anchor as the first prediction slot."""
+    config = _gemma4_26b_dspark_config()
+    config["sample_from_anchor"] = True
+    config["aux_hidden_state_layer_ids"] = [2, 10, 20, 30, 37]
+    config["speculators_config"]["verifier"] = {
+        "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+        "name_or_path": "Qwen/Qwen3.6-35B-A3B",
+    }
+
+    draft = SpeculatorsConfig.extract_transformers_pre_trained_config(config)
+
+    assert draft["sample_from_anchor"] is True
+    assert draft["eagle_aux_hidden_state_layer_ids"] == [2, 10, 20, 30, 37]
+    assert draft["target_layer_ids"] == [1, 9, 19, 29, 36]
 
 
 def test_gemma4_26b_speculators_dspark_extracts_runtime_defaults():
