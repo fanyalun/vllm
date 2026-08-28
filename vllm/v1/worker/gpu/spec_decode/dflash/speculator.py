@@ -24,6 +24,7 @@ from vllm.v1.worker.gpu.spec_decode.dflash.utils import (
 )
 from vllm.v1.worker.gpu.spec_decode.speculator import DraftModelSpeculator
 from vllm.v1.worker.gpu.spec_decode.utils import get_parallel_drafting_token_id
+from vllm.v1.utils import record_function_or_nullcontext
 
 logger = init_logger(__name__)
 
@@ -330,31 +331,33 @@ class DFlashSpeculator(DraftModelSpeculator):
         # The query slot mapping is written into the shared BlockTables slot_mappings.
         # That buffer's address is what the captured CUDA graph reads from at replay.
         assert self.draft_kv_cache_group_id >= 0
+        scope_prefix = self._speculator_name.lower()
         # Support multiple draft KV cache groups by preparing inputs once for each
         for i, gid in enumerate(self.draft_kv_cache_group_ids):
-            prepare_dflash_inputs(
-                self.input_buffers,
-                self.block_tables.slot_mappings[gid],
-                self.context_positions,
-                self._context_slot_mappings[i],
-                self.sample_indices,
-                self.sample_pos,
-                self.sample_idx_mapping,
-                input_batch,
-                num_sampled,
-                num_rejected,
-                last_sampled,
-                next_prefill_tokens,
-                self.block_tables.input_block_tables[gid],
-                self.block_tables.block_sizes[gid],
-                self.parallel_drafting_token_id,
-                self.num_query_per_req,
-                self.num_speculative_steps,
-                self.max_num_reqs,
-                self.max_num_tokens,
-                self.max_model_len,
-                self.sample_from_anchor,
-            )
+            with record_function_or_nullcontext(f"{scope_prefix}: prepare_inputs"):
+                prepare_dflash_inputs(
+                    self.input_buffers,
+                    self.block_tables.slot_mappings[gid],
+                    self.context_positions,
+                    self._context_slot_mappings[i],
+                    self.sample_indices,
+                    self.sample_pos,
+                    self.sample_idx_mapping,
+                    input_batch,
+                    num_sampled,
+                    num_rejected,
+                    last_sampled,
+                    next_prefill_tokens,
+                    self.block_tables.input_block_tables[gid],
+                    self.block_tables.block_sizes[gid],
+                    self.parallel_drafting_token_id,
+                    self.num_query_per_req,
+                    self.num_speculative_steps,
+                    self.max_num_reqs,
+                    self.max_num_tokens,
+                    self.max_model_len,
+                    self.sample_from_anchor,
+                )
 
         # Pre-insert context K/V into the cache. Runs eagerly outside the captured graph
         # because the context shape varies per step. During dummy runs the block tables
@@ -369,11 +372,12 @@ class DFlashSpeculator(DraftModelSpeculator):
             ]
         else:
             context_slots = self._context_slot_mappings[0][:num_target_tokens]
-        self.model.precompute_and_store_context_kv(
-            self.hidden_states[:num_target_tokens],
-            self.context_positions[:num_target_tokens],
-            context_slots,
-        )
+        with record_function_or_nullcontext(f"{scope_prefix}: context_kv"):
+            self.model.precompute_and_store_context_kv(
+                self.hidden_states[:num_target_tokens],
+                self.context_positions[:num_target_tokens],
+                context_slots,
+            )
 
         # Every DFlash step has exactly num_query_per_req tokens, so we can use FULL CGs
         batch_desc, num_tokens_across_dp = dispatch_cg_and_sync_dp(
@@ -406,18 +410,21 @@ class DFlashSpeculator(DraftModelSpeculator):
         # so the real token count is num_query_tokens.
         self._prepare_eplb_forward(num_query_tokens)
 
-        if batch_desc.cg_mode == CUDAGraphMode.FULL:
-            assert self.query_cudagraph_manager is not None
-            self.query_cudagraph_manager.run_fullgraph(batch_desc)
-        else:
-            self._generate_draft(
-                num_reqs,
-                num_tokens_padded,
-                draft_attn_metadata,
-                draft_slot_mappings_by_layer,
-                num_tokens_across_dp=num_tokens_across_dp,
-                cudagraph_runtime_mode=batch_desc.cg_mode,
-            )
+        with record_function_or_nullcontext(
+            f"{scope_prefix}: backbone_and_markov"
+        ):
+            if batch_desc.cg_mode == CUDAGraphMode.FULL:
+                assert self.query_cudagraph_manager is not None
+                self.query_cudagraph_manager.run_fullgraph(batch_desc)
+            else:
+                self._generate_draft(
+                    num_reqs,
+                    num_tokens_padded,
+                    draft_attn_metadata,
+                    draft_slot_mappings_by_layer,
+                    num_tokens_across_dp=num_tokens_across_dp,
+                    cudagraph_runtime_mode=batch_desc.cg_mode,
+                )
 
         return self.draft_tokens[:num_reqs]
 
