@@ -963,13 +963,36 @@ class EngineCoreProc(EngineCore):
                 )
             self._init_data_parallel(vllm_config)
 
-            super().__init__(
-                vllm_config,
-                executor_class,
-                log_stats,
-                executor_fail_callback,
-                internal_dp_balancing,
-            )
+            try:
+                super().__init__(
+                    vllm_config,
+                    executor_class,
+                    log_stats,
+                    executor_fail_callback,
+                    internal_dp_balancing,
+                )
+            except BaseException:
+                speculative_config = vllm_config.speculative_config
+                model_executor = getattr(self, "model_executor", None)
+                if (
+                    model_executor is not None
+                    and speculative_config is not None
+                    and speculative_config.async_draft_device is not None
+                ):
+                    try:
+                        model_executor.collective_rpc("shutdown_async_draft")
+                    except BaseException:
+                        logger.exception(
+                            "Failed to stop async draft after EngineCore startup error."
+                        )
+                    try:
+                        cleanup_dist_env_and_memory()
+                    except BaseException:
+                        logger.exception(
+                            "Failed to clean distributed state after async "
+                            "draft startup error."
+                        )
+                raise
 
             # Background Threads and Queues for IO. These enable us to
             # overlap ZMQ socket IO with GPU since they release the GIL,
@@ -1361,6 +1384,12 @@ class EngineCoreProc(EngineCore):
 
         # Exit when no work remaining
         if not self.has_work():
+            speculative_config = self.vllm_config.speculative_config
+            if (
+                speculative_config is not None
+                and speculative_config.async_draft_device is not None
+            ):
+                self.model_executor.collective_rpc("shutdown_async_draft")
             logger.info(
                 "[shutdown] EngineCore: request processing complete; "
                 "starting resource teardown"

@@ -292,8 +292,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             if self.use_aux_hidden_state_outputs:
                 assert self.speculative_config is not None
                 set_eagle3_aux_hidden_state_layers(self.model, self.speculative_config)
-            if isinstance(self.speculator, DraftModelSpeculator):
+            if self.speculator is not None:
                 self.speculator.load_model(self.model)
+            if isinstance(self.speculator, DraftModelSpeculator):
                 eplb_models_added = self.eplb.maybe_register_speculator(
                     self.speculator, self.speculative_config, load_dummy_weights
                 )
@@ -308,7 +309,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         if not load_dummy_weights:
             prepare_communication_buffer_for_model(self.model)
-            if self.speculator is not None:
+            if self.speculator is not None and hasattr(self.speculator, "model"):
                 prepare_communication_buffer_for_model(self.speculator.model)
 
         # Initialize the components that require the model.
@@ -743,11 +744,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         return True
 
     def finish_requests(self, scheduler_output: SchedulerOutput) -> None:
-        finished_req_ids = scheduler_output.finished_req_ids
-        preempted_req_ids = scheduler_output.preempted_req_ids
-        if preempted_req_ids:
-            finished_req_ids = finished_req_ids.union(preempted_req_ids)
-        for req_id in finished_req_ids:
+        preempted_req_ids = scheduler_output.preempted_req_ids or set()
+        finished_req_ids = scheduler_output.finished_req_ids or set()
+        if self.speculator is not None:
+            self.speculator.on_requests_finished(finished_req_ids)
+            self.speculator.on_requests_preempted(preempted_req_ids)
+        for req_id in finished_req_ids.union(preempted_req_ids):
             self._remove_request(req_id)
 
     def free_states(self, scheduler_output: SchedulerOutput) -> None:
@@ -764,10 +766,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 self.postprocess_sampled(**outputs)
 
     def add_requests(self, scheduler_output: SchedulerOutput) -> None:
+        added_req_ids: list[str] = []
         for new_req_data in scheduler_output.scheduled_new_reqs:
             assert new_req_data.prompt_token_ids is not None
             assert new_req_data.prefill_token_ids is not None
             req_id = new_req_data.req_id
+            added_req_ids.append(req_id)
 
             # Streaming input update: request already exists from a prior
             # chunk. Remove old state so it can be cleanly re-added below
@@ -803,6 +807,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 self.prompt_logprobs_worker.add_request(
                     req_id, req_index, new_req_data.sampling_params
                 )
+
+        if self.speculator is not None and added_req_ids:
+            self.speculator.on_requests_added(added_req_ids)
 
         if scheduler_output.scheduled_new_reqs:
             self.req_states.apply_staged_writes()
@@ -1477,6 +1484,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             assert self.speculative_config is not None
             propose_scope = f"{self.speculative_config.method}: propose"
             with record_function_or_nullcontext(propose_scope):
+                previous_draft_tokens = self.req_states.draft_tokens[
+                    input_batch.idx_mapping
+                ]
                 draft_tokens = self.speculator.propose(
                     input_batch,
                     attn_metadata,
@@ -1491,7 +1501,16 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     self.sampler.sampling_states.seeds.gpu,
                     mm_inputs=mm_inputs,
                 )
+            self.speculator.record_proposal_trace(
+                input_batch,
+                previous_draft_tokens,
+                draft_tokens,
+                num_sampled,
+                num_rejected,
+                self.req_states.last_sampled_tokens[input_batch.idx_mapping, 0],
+            )
             self.req_states.draft_tokens[input_batch.idx_mapping] = draft_tokens
+            model_runner_output.async_draft_metrics = self.speculator.take_metrics()
 
         if self.num_speculative_steps > 0:
             # Spec-decode and diffusion LLMs both use draft tokens but the latter does
@@ -1573,6 +1592,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         if hasattr(self, "model_state"):
             del self.model_state
         if getattr(self, "speculator", None) is not None:
+            self.speculator.shutdown()
             self.speculator = None
         if hasattr(self, "model"):
             del self.model

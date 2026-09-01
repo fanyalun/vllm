@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import json
+import os
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from typing import Any
 
 import torch
@@ -29,6 +32,13 @@ logger = init_logger(__name__)
 
 
 class BaseSpeculator(ABC):
+    supports_mm_inputs = False
+    draft_logits: torch.Tensor | None = None
+
+    def load_model(self, target_model: nn.Module) -> None:
+        """Initialize model-backed resources after the target is loaded."""
+        return None
+
     @abstractmethod
     def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
         pass
@@ -69,6 +79,72 @@ class BaseSpeculator(ABC):
         is_profile: bool = False,
     ) -> torch.Tensor:
         pass
+
+    def on_requests_added(self, request_ids: Iterable[str]) -> None:
+        """Notify the speculator that request IDs became active."""
+        return None
+
+    def on_requests_finished(self, request_ids: Iterable[str]) -> None:
+        """Notify the speculator that request IDs completed or were aborted."""
+        return None
+
+    def on_requests_preempted(self, request_ids: Iterable[str]) -> None:
+        """Notify the speculator that request IDs will be recomputed."""
+        return None
+
+    def shutdown(self) -> None:
+        """Release speculator-owned resources."""
+        return None
+
+    def take_metrics(self) -> dict[str, float | int] | None:
+        """Return and reset speculator metrics accumulated for this step."""
+        return None
+
+    def proposal_trace_metadata(self, num_reqs: int) -> list[dict[str, Any]]:
+        """Return implementation-specific internal trace fields."""
+        return [{} for _ in range(num_reqs)]
+
+    def record_proposal_trace(
+        self,
+        input_batch: InputBatch,
+        previous_draft_tokens: torch.Tensor,
+        draft_tokens: torch.Tensor,
+        num_sampled: torch.Tensor,
+        num_rejected: torch.Tensor,
+        recovery_tokens: torch.Tensor,
+    ) -> None:
+        """Write an opt-in correctness trace without adding public labels."""
+        path = os.environ.get("REPLAYSSM_SPEC_DECODE_TRACE_PATH")
+        if not path:
+            return
+        num_reqs = input_batch.num_reqs
+        previous = previous_draft_tokens[:num_reqs].detach().cpu().tolist()
+        proposals = draft_tokens[:num_reqs].detach().cpu().tolist()
+        sampled = num_sampled[:num_reqs].detach().cpu().tolist()
+        rejected = num_rejected[:num_reqs].detach().cpu().tolist()
+        recoveries = recovery_tokens[:num_reqs].detach().cpu().tolist()
+        metadata = self.proposal_trace_metadata(num_reqs)
+        if len(metadata) != num_reqs:
+            raise ValueError(
+                "Speculator proposal trace metadata count does not match batch: "
+                f"metadata={len(metadata)}, requests={num_reqs}"
+            )
+        trace_step = getattr(self, "_proposal_trace_step", 0)
+        with open(path, "a", encoding="utf-8") as output:
+            for index, req_id in enumerate(input_batch.req_ids):
+                accepted = max(int(sampled[index]) - 1, 0)
+                record = {
+                    "trace_step": trace_step,
+                    "request_id": req_id,
+                    "accepted_draft_count": accepted,
+                    "num_rejected": int(rejected[index]),
+                    "recovery_token": int(recoveries[index]),
+                    "accepted_draft_tokens": previous[index][:accepted],
+                    "draft_tokens": proposals[index],
+                    **metadata[index],
+                }
+                output.write(json.dumps(record, separators=(",", ":")) + "\n")
+        self._proposal_trace_step = trace_step + 1
 
 
 class DraftModelSpeculator(BaseSpeculator):

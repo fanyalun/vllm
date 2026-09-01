@@ -864,6 +864,103 @@ class VllmConfig:
             "expandable_segments is automatically disabled)."
         )
 
+    def _validate_async_draft_config(self, current_platform: Any) -> None:
+        speculative_config = self.speculative_config
+        assert speculative_config is not None
+        async_draft_device = speculative_config.async_draft_device
+        assert async_draft_device is not None
+
+        unsupported: list[str] = []
+        if not current_platform.is_cuda():
+            unsupported.append(f"device={current_platform.device_name}")
+        if not self.use_v2_model_runner:
+            unsupported.append("model_runner=v1")
+
+        parallel_config = self.parallel_config
+        parallel_fields = {
+            "tensor_parallel_size": parallel_config.tensor_parallel_size,
+            "pipeline_parallel_size": parallel_config.pipeline_parallel_size,
+            "data_parallel_size": parallel_config.data_parallel_size,
+            "decode_context_parallel_size": (
+                parallel_config.decode_context_parallel_size
+            ),
+        }
+        unsupported.extend(
+            f"{name}={value}" for name, value in parallel_fields.items() if value != 1
+        )
+        if parallel_config.nnodes != 1:
+            unsupported.append(f"nnodes={parallel_config.nnodes}")
+        if parallel_config.distributed_executor_backend in (
+            "ray",
+            "external_launcher",
+        ):
+            unsupported.append(
+                "distributed_executor_backend="
+                f"{parallel_config.distributed_executor_backend}"
+            )
+        if parallel_config.enable_dbo:
+            unsupported.append("enable_dbo=True")
+
+        if speculative_config.draft_tensor_parallel_size != 1:
+            unsupported.append(
+                "draft_tensor_parallel_size="
+                f"{speculative_config.draft_tensor_parallel_size}"
+            )
+        if speculative_config.method != "eagle3":
+            unsupported.append(f"method={speculative_config.method!r}")
+        if speculative_config.draft_sample_method != "greedy":
+            unsupported.append(
+                f"draft_sample_method={speculative_config.draft_sample_method!r}"
+            )
+        if speculative_config.rejection_sample_method != "standard":
+            unsupported.append(
+                "rejection_sample_method="
+                f"{speculative_config.rejection_sample_method!r}"
+            )
+
+        model_config = self.model_config
+        if model_config is None or model_config.architecture != "LlamaForCausalLM":
+            architecture = None if model_config is None else model_config.architecture
+            unsupported.append(f"target_architecture={architecture!r}")
+        if model_config is not None and model_config.is_multimodal_model:
+            unsupported.append("multimodal_model=True")
+        if model_config is not None and model_config.enable_prompt_embeds:
+            unsupported.append("enable_prompt_embeds=True")
+        if self.lora_config is not None:
+            unsupported.append("lora_config")
+        if self.cache_config.enable_prefix_caching:
+            unsupported.append("enable_prefix_caching=True")
+
+        draft_config = speculative_config.draft_model_config
+        draft_architecture = None if draft_config is None else draft_config.architecture
+        if draft_architecture not in (
+            "LlamaForCausalLMEagle3",
+            "Eagle3LlamaForCausalLM",
+            "PEagleDraftModel",
+            "PeagleLlamaForCausalLM",
+        ):
+            unsupported.append(f"draft_architecture={draft_architecture!r}")
+
+        if not isinstance(async_draft_device, int) or async_draft_device < 0:
+            unsupported.append(f"async_draft_device={async_draft_device!r}")
+        else:
+            target_devices = parallel_config.assigned_physical_gpu_ids
+            if target_devices is None:
+                target_devices = [current_platform.device_id_to_physical_device_id(0)]
+            if async_draft_device in target_devices:
+                unsupported.append(
+                    f"async_draft_device overlaps target device {async_draft_device}"
+                )
+
+        if unsupported:
+            raise ValueError(
+                "async_draft_device currently supports only single-node CUDA "
+                "MRV2 LlamaForCausalLM + EAGLE3 with Target TP1/PP1/DP1/DCP1, "
+                "Draft TP1, greedy draft sampling, standard rejection sampling, "
+                "and prefix caching/LoRA/multimodal/prompt embeddings/DBO disabled. "
+                "Incompatible fields: " + ", ".join(unsupported)
+            )
+
     def __post_init__(self):
         """Verify configs are valid & consistent with each other."""
 
@@ -955,6 +1052,26 @@ class VllmConfig:
             and self.parallel_config.enable_dbo
             and self.parallel_config.all2all_backend == "deepep_high_throughput"
         )
+
+        async_draft_device = (
+            self.speculative_config.async_draft_device
+            if self.speculative_config is not None
+            else None
+        )
+        if async_draft_device is not None:
+            self._validate_async_draft_config(current_platform)
+            if self.scheduler_config.async_scheduling:
+                raise ValueError(
+                    "async_draft_device is incompatible with --async-scheduling; "
+                    "the scheduler feature and asynchronous draft execution are "
+                    "independent mechanisms"
+                )
+            if self.scheduler_config.async_scheduling is None:
+                logger.info_once(
+                    "Disabling scheduler async_scheduling because "
+                    "async_draft_device is enabled."
+                )
+                self.scheduler_config.async_scheduling = False
 
         if self.scheduler_config.async_scheduling:
             # Async scheduling explicitly enabled, hard fail any incompatibilities.
@@ -2221,21 +2338,14 @@ class VllmConfig:
                 )
             return self
         if self.cache_config.mamba_cache_mode != "none":
-            raise ValueError(
-                "--use-replayssm requires --mamba-cache-mode none"
-            )
+            raise ValueError("--use-replayssm requires --mamba-cache-mode none")
         if self.num_speculative_tokens > 0:
-            raise ValueError(
-                "--use-replayssm does not support speculative decoding"
-            )
+            raise ValueError("--use-replayssm does not support speculative decoding")
         if self.mamba_config.backend != MambaBackendEnum.TRITON:
-            raise ValueError(
-                "--use-replayssm requires --mamba-backend triton"
-            )
+            raise ValueError("--use-replayssm requires --mamba-backend triton")
         if self.mamba_config.enable_stochastic_rounding:
             raise ValueError(
-                "--use-replayssm does not support Mamba cache "
-                "stochastic rounding"
+                "--use-replayssm does not support Mamba cache stochastic rounding"
             )
         return self
 
@@ -2256,17 +2366,12 @@ class VllmConfig:
                 "(num_speculative_tokens > 0)"
             )
         if self.cache_config.mamba_cache_mode != "none":
-            raise ValueError(
-                "--use-replayssm-spec requires --mamba-cache-mode none"
-            )
+            raise ValueError("--use-replayssm-spec requires --mamba-cache-mode none")
         if self.mamba_config.backend != MambaBackendEnum.TRITON:
-            raise ValueError(
-                "--use-replayssm-spec requires --mamba-backend triton"
-            )
+            raise ValueError("--use-replayssm-spec requires --mamba-backend triton")
         if self.mamba_config.enable_stochastic_rounding:
             raise ValueError(
-                "--use-replayssm-spec does not support Mamba cache "
-                "stochastic rounding"
+                "--use-replayssm-spec does not support Mamba cache stochastic rounding"
             )
         max_spec_len = 1 + self.num_speculative_tokens
         # replayssm_buffer_len is the history block B; the flush threshold is

@@ -1194,9 +1194,7 @@ class EngineArgs:
         cache_group.add_argument(
             "--replayssm-buffer-len", **cache_kwargs["replayssm_buffer_len"]
         )
-        cache_group.add_argument(
-            "--use-replayssm", **cache_kwargs["use_replayssm"]
-        )
+        cache_group.add_argument("--use-replayssm", **cache_kwargs["use_replayssm"])
         cache_group.add_argument(
             "--replayssm-route",
             **cache_kwargs["replayssm_route"],
@@ -1750,6 +1748,16 @@ class EngineArgs:
         if self.speculative_config is None:
             return None
 
+        async_draft_device = self.speculative_config.get("async_draft_device")
+        if async_draft_device is not None:
+            self.speculative_config["async_draft_device"] = (
+                self._resolve_device_control_id(
+                    async_draft_device,
+                    option_name="async_draft_device",
+                    require_nonnegative=True,
+                )
+            )
+
         # Note(Shangming): These parameters are not obtained from the cli arg
         # '--speculative-config' and must be passed in when creating the engine
         # config.
@@ -1760,6 +1768,36 @@ class EngineArgs:
             }
         )
         return SpeculativeConfig(**self.speculative_config)
+
+    @staticmethod
+    def _resolve_device_control_id(
+        device_id: int | str,
+        *,
+        option_name: str,
+        require_nonnegative: bool = False,
+    ) -> int:
+        if isinstance(device_id, str):
+            return current_platform.device_control_id_to_physical_device_id(device_id)
+
+        cvd = getattr(
+            envs,
+            current_platform.device_control_env_var,
+            os.environ.get(current_platform.device_control_env_var),
+        )
+        if not cvd:
+            return device_id
+
+        cvd_ids = [
+            current_platform.device_control_id_to_physical_device_id(value)
+            for value in cvd.split(",")
+        ]
+        if (require_nonnegative and device_id < 0) or device_id >= len(cvd_ids):
+            raise ValueError(
+                f"{option_name} index {device_id} is out of range for "
+                f"{current_platform.device_control_env_var}={cvd} "
+                f"({len(cvd_ids)} devices visible)"
+            )
+        return cvd_ids[device_id]
 
     def _resolve_device_ids(self) -> list[int] | None:
         if not self.device_ids:
@@ -1782,25 +1820,10 @@ class EngineArgs:
         int_ids = cast(list[int], ids)
         # Compose with CUDA_VISIBLE_DEVICES: if CVD is set, treat
         # --device-ids values as indices into the CVD-visible set.
-        cvd = getattr(
-            envs,
-            current_platform.device_control_env_var,
-            os.environ.get(current_platform.device_control_env_var),
-        )
-        if cvd:
-            cvd_ids = [
-                current_platform.device_control_id_to_physical_device_id(x)
-                for x in cvd.split(",")
-            ]
-            for i in int_ids:
-                if i >= len(cvd_ids):
-                    raise ValueError(
-                        f"--device-ids index {i} is out of range for "
-                        f"{current_platform.device_control_env_var}"
-                        f"={cvd} ({len(cvd_ids)} devices visible)"
-                    )
-            return [cvd_ids[i] for i in int_ids]
-        return int_ids
+        return [
+            self._resolve_device_control_id(i, option_name="--device-ids")
+            for i in int_ids
+        ]
 
     def create_diffusion_config(self) -> DiffusionConfig | None:
         if self.diffusion_config is None:

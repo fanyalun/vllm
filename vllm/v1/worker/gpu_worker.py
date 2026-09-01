@@ -1246,6 +1246,13 @@ class Worker(WorkerBase):
             if CuMemAllocator.instance is not None:
                 CuMemAllocator.instance.release_pools()
 
+    def shutdown_async_draft(self) -> None:
+        """Stop a standalone draft child before EngineCore teardown."""
+        model_runner = getattr(self, "model_runner", None)
+        speculator = getattr(model_runner, "speculator", None)
+        if speculator is not None:
+            speculator.shutdown()
+
     def elastic_ep_execute(self, execute_method: str, *args, **kwargs):
         return self.elastic_ep_executor.execute(execute_method, *args, **kwargs)
 

@@ -449,6 +449,55 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
         self.perf_metrics_prom = self._perf_metrics_cls(
             vllm_config, labelnames, per_engine_labelvalues
         )
+        self.async_draft_counters: dict[str, dict[int, Counter]] = {}
+        speculative_config = vllm_config.speculative_config
+        if (
+            speculative_config is not None
+            and speculative_config.async_draft_device is not None
+        ):
+            async_draft_counter_specs = {
+                "cache_hits": (
+                    "vllm:async_draft_cache_hits",
+                    "Number of asynchronous draft outcome-cache hits.",
+                ),
+                "cache_misses": (
+                    "vllm:async_draft_cache_misses",
+                    "Number of asynchronous draft outcome-cache misses.",
+                ),
+                "jit_fallbacks": (
+                    "vllm:async_draft_jit_fallbacks",
+                    "Number of exact asynchronous draft JIT fallbacks.",
+                ),
+                "cache_evictions": (
+                    "vllm:async_draft_cache_evictions",
+                    "Number of asynchronous draft branch-cache evictions.",
+                ),
+                "ipc_bytes": (
+                    "vllm:async_draft_ipc_bytes",
+                    "Bytes transferred through asynchronous draft CUDA IPC.",
+                ),
+                "wait_seconds": (
+                    "vllm:async_draft_wait_seconds",
+                    "Seconds spent waiting for asynchronous draft responses.",
+                ),
+                "branch_build_seconds": (
+                    "vllm:async_draft_branch_build_seconds",
+                    "Seconds spent building asynchronous draft branches.",
+                ),
+                "overlap_seconds": (
+                    "vllm:async_draft_overlap_seconds",
+                    "Target execution seconds available to asynchronous Draft.",
+                ),
+            }
+            for key, (name, documentation) in async_draft_counter_specs.items():
+                counter = self._counter_cls(
+                    name=name,
+                    documentation=documentation,
+                    labelnames=labelnames,
+                )
+                self.async_draft_counters[key] = create_metric_per_engine(
+                    counter, per_engine_labelvalues
+                )
 
         #
         # Scheduler state
@@ -1104,6 +1153,12 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
                 self.spec_decoding_prom.observe(
                     scheduler_stats.spec_decoding_stats, engine_idx
                 )
+
+            if scheduler_stats.async_draft_metrics is not None:
+                for name, value in scheduler_stats.async_draft_metrics.items():
+                    counters = self.async_draft_counters.get(name)
+                    if counters is not None:
+                        counters[engine_idx].inc(value)
 
             if scheduler_stats.kv_connector_stats is not None:
                 self.kv_connector_prom.observe(

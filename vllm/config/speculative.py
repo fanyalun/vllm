@@ -97,6 +97,13 @@ class SpeculativeConfig:
     draft_tensor_parallel_size: int | None = Field(default=None, ge=1)
     """The degree of the tensor parallelism for the draft model. Can only be 1
     or the same as the target model's tensor parallel size."""
+    async_draft_device: int | str | None = None
+    """Physical CUDA device used by the standalone asynchronous draft worker.
+
+    ``None`` keeps the in-process synchronous draft path. Integer inputs are
+    resolved against ``CUDA_VISIBLE_DEVICES`` by ``EngineArgs`` before this
+    config is constructed; CUDA UUIDs are resolved to physical device indices.
+    """
     tensor_parallel_size: int | None = None
     """Users should pass "draft_tensor_parallel_size". This parameter's purpose is to
     warn users when they mistakenly provide the wrong argument."""

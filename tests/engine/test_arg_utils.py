@@ -663,6 +663,51 @@ def test_cloud_storage_tokenizer_skips_get_model_path(monkeypatch):
 
 
 class TestDeviceIds:
+    def test_async_draft_device_with_cvd_resolves_to_physical_id(self, monkeypatch):
+        from vllm.platforms import current_platform
+
+        key = current_platform.device_control_env_var
+        monkeypatch.setenv(key, "4,5")
+
+        assert (
+            EngineArgs._resolve_device_control_id(
+                1,
+                option_name="async_draft_device",
+                require_nonnegative=True,
+            )
+            == 5
+        )
+
+    def test_async_draft_device_uuid_resolves_to_physical_id(self, monkeypatch):
+        from vllm.platforms import current_platform
+
+        monkeypatch.setattr(
+            type(current_platform),
+            "device_control_id_to_physical_device_id",
+            classmethod(lambda cls, device_id: {"GPU-abcd1234": 4}[device_id]),
+        )
+
+        assert (
+            EngineArgs._resolve_device_control_id(
+                "GPU-abcd1234",
+                option_name="async_draft_device",
+                require_nonnegative=True,
+            )
+            == 4
+        )
+
+    def test_async_draft_device_rejects_negative_cvd_index(self, monkeypatch):
+        from vllm.platforms import current_platform
+
+        key = current_platform.device_control_env_var
+        monkeypatch.setenv(key, "4,5")
+        with pytest.raises(ValueError, match="async_draft_device index -1"):
+            EngineArgs._resolve_device_control_id(
+                -1,
+                option_name="async_draft_device",
+                require_nonnegative=True,
+            )
+
     def test_device_ids_with_cvd_out_of_range(self, monkeypatch):
         """--device-ids index beyond the CVD set raises ValueError."""
         from vllm.platforms import current_platform

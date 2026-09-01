@@ -654,8 +654,21 @@ class MPClient(EngineCoreClient):
             timeout_str = "default" if timeout is None else f"{timeout}s"
             logger.info("[shutdown] MPClient: start timeout=%s", timeout_str)
             if self.resources.engine_manager is not None:
+                manager_timeout = timeout
+                speculative_config = self.vllm_config.speculative_config
+                if (
+                    timeout == 0
+                    and speculative_config is not None
+                    and speculative_config.async_draft_device is not None
+                ):
+                    manager_timeout = max(envs.VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS, 30)
+                    logger.info(
+                        "[shutdown] MPClient: allowing %ss for async draft "
+                        "resource teardown after aborting requests",
+                        manager_timeout,
+                    )
                 logger.info_once("[shutdown] MPClient: stopping engine manager")
-                self.resources.engine_manager.shutdown(timeout=timeout)
+                self.resources.engine_manager.shutdown(timeout=manager_timeout)
                 logger.info_once("[shutdown] MPClient: engine manager stopped")
             logger.info_once("[shutdown] MPClient: cleaning up background resources")
             self.resources()

@@ -188,6 +188,7 @@ class SchedulerStats:
     kv_cache_eviction_events: list[KVCacheEvictionEvent] = field(default_factory=list)
 
     spec_decoding_stats: SpecDecodingStats | None = None
+    async_draft_metrics: dict[str, float | int] | None = None
     kv_connector_stats: dict[str, Any] | None = None
 
     waiting_lora_adapters: dict[str, int] = field(default_factory=dict)

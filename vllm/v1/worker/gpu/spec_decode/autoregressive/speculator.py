@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import os
 from typing import Any
 
 import torch
@@ -38,6 +39,17 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         self.last_token_indices = torch.zeros(
             self.max_num_reqs, dtype=torch.int64, device=device
         )
+        if (
+            os.environ.get("REPLAYSSM_SPEC_DECODE_TRACE_LOGITS") == "1"
+            and self.speculative_config.draft_sample_method == "greedy"
+        ):
+            self.recorded_greedy_logits = torch.empty(
+                self.max_num_reqs,
+                self.num_speculative_steps,
+                self.vocab_size,
+                dtype=self.dtype,
+                device=device,
+            )
 
         self.supports_mm_inputs = MULTIMODAL_REGISTRY.supports_multimodal_inputs(
             self.draft_model_config
@@ -122,6 +134,27 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
             self.kv_cache_config,
             progress_bar_desc="Capturing decode CUDA graphs",
         )
+
+    def proposal_trace_metadata(self, num_reqs: int) -> list[dict[str, Any]]:
+        logits = getattr(self, "recorded_greedy_logits", None)
+        if logits is None:
+            return super().proposal_trace_metadata(num_reqs)
+        top_values, top_ids = logits[:num_reqs].float().topk(2, dim=-1)
+        values = top_values.cpu().tolist()
+        ids = top_ids.cpu().tolist()
+        return [
+            {
+                "draft_top2": [
+                    {
+                        "token_ids": step_ids,
+                        "logits": step_values,
+                        "gap": step_values[0] - step_values[1],
+                    }
+                    for step_ids, step_values in zip(request_ids, request_values)
+                ]
+            }
+            for request_ids, request_values in zip(ids, values)
+        ]
 
     @torch.inference_mode()
     def propose(
@@ -352,16 +385,26 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
             mm_inputs=mm_inputs,
         )
         sample_hidden_states = last_hidden_states[last_token_indices]
-
-        self.draft_tokens[:num_reqs, 0] = self.sample_draft(
-            sample_hidden_states,
-            positions,
-            idx_mapping,
-            self.temperature,
-            self.seeds,
-            self.current_draft_step,
-            self.draft_logits,
-        )
+        recorded_logits = getattr(self, "recorded_greedy_logits", None)
+        if recorded_logits is None:
+            self.draft_tokens[:num_reqs, 0] = self.sample_draft(
+                sample_hidden_states,
+                positions,
+                idx_mapping,
+                self.temperature,
+                self.seeds,
+                self.current_draft_step,
+                self.draft_logits,
+            )
+        else:
+            logits = self.model.compute_logits(sample_hidden_states)
+            recorded_logits[:num_reqs, 0].copy_(logits)
+            self.draft_tokens[:num_reqs, 0] = logits.argmax(dim=-1)
+        recorded_hidden_states = getattr(self, "recorded_feedback_hidden_states", None)
+        if recorded_hidden_states is not None:
+            recorded_hidden_states[:num_reqs, 0].copy_(
+                hidden_states[last_token_indices]
+            )
         if last_hidden_states is hidden_states:
             self.hidden_states[:num_reqs] = sample_hidden_states
         else:
@@ -441,15 +484,32 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         last_hidden_states = last_hidden_states[:num_reqs]
 
         # Sample the draft tokens.
-        draft_tokens = self.sample_draft(
-            last_hidden_states,
-            positions,
-            idx_mapping,
-            self.temperature,
-            self.seeds,
-            self.current_draft_step,
-            self.draft_logits,
-        )
+        recorded_logits = getattr(self, "recorded_greedy_logits", None)
+        if recorded_logits is None:
+            draft_tokens = self.sample_draft(
+                last_hidden_states,
+                positions,
+                idx_mapping,
+                self.temperature,
+                self.seeds,
+                self.current_draft_step,
+                self.draft_logits,
+            )
+        else:
+            logits = self.model.compute_logits(last_hidden_states)
+            recorded_logits[:num_reqs].index_copy_(
+                1,
+                self.current_draft_step.view(1),
+                logits.unsqueeze(1),
+            )
+            draft_tokens = logits.argmax(dim=-1)
+        recorded_hidden_states = getattr(self, "recorded_feedback_hidden_states", None)
+        if recorded_hidden_states is not None:
+            recorded_hidden_states[:num_reqs].index_copy_(
+                1,
+                self.current_draft_step.view(1),
+                hidden_states[:num_reqs].unsqueeze(1),
+            )
 
         # Update the inputs for the next step.
         update_draft_inputs(
