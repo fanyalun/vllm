@@ -566,10 +566,13 @@ class Gemma4DecoderLayer(nn.Module):
         # Gemma4 uses different head dimensions for sliding vs full attention
         layer_type = config.layer_types[layer_idx]
         self.is_full_attention = layer_type == "full_attention"
-        if self.is_full_attention:
-            head_dim = getattr(config, "global_head_dim", config.head_dim)
-        else:
-            head_dim = config.head_dim
+        per_layer_config = getattr(config, "per_layer_config", None)
+        layer_config = (
+            per_layer_config[layer_idx] if per_layer_config is not None else config
+        )
+        head_dim = vars(layer_config).get("head_dim")
+        if not isinstance(head_dim, int):
+            raise ValueError(f"Gemma4 layer {layer_idx} does not declare head_dim")
 
         # Determine if this full-attention layer uses k_eq_v
         # (laptop variant: no v_proj, K reused as V on full attention layers)
@@ -577,14 +580,13 @@ class Gemma4DecoderLayer(nn.Module):
             config, "attention_k_eq_v", False
         )
 
-        # For k_eq_v full-attention layers, use num_global_key_value_heads
-        # as the KV head count when k_eq_v is enabled.
-        if use_k_eq_v:
-            num_kv_heads = getattr(
-                config, "num_global_key_value_heads", config.num_key_value_heads
+        # Transformers materializes the correct sliding/full KV-head count in
+        # each layer config, so do not read the ambiguous global attribute.
+        num_kv_heads = vars(layer_config).get("num_key_value_heads")
+        if not isinstance(num_kv_heads, int):
+            raise ValueError(
+                f"Gemma4 layer {layer_idx} does not declare num_key_value_heads"
             )
-        else:
-            num_kv_heads = config.num_key_value_heads
 
         self.self_attn = Gemma4Attention(
             config=config,

@@ -582,9 +582,59 @@ class Gemma4ModelArchConfigConvertor(ModelArchConfigConvertorBase):
         # Gemma4 uses dual head dimensions: head_dim (sliding attention)
         # and global_head_dim (full attention).  Return the largest so
         # that attention backends allocate buffers large enough for both.
-        head_dim = getattr(self.hf_text_config, "head_dim", 0)
-        global_head_dim = getattr(self.hf_text_config, "global_head_dim", 0)
+        head_dim, global_head_dim = self._get_gemma4_head_dims()
         return max(head_dim, global_head_dim) or super().get_head_size()
+
+    def get_total_num_kv_heads(self) -> int:
+        per_layer_config = getattr(self.hf_text_config, "per_layer_config", None)
+        if per_layer_config is not None:
+            counts = [
+                vars(per_layer_config[index]).get("num_key_value_heads", 0)
+                for index in range(self.get_num_hidden_layers())
+            ]
+            if any(counts):
+                return max(counts)
+        value = vars(self.hf_text_config).get("num_key_value_heads")
+        return value if isinstance(value, int) else super().get_total_num_kv_heads()
+
+    def _get_gemma4_head_dims(self) -> tuple[int, int]:
+        config_values = vars(self.hf_text_config)
+        head_dim = config_values.get("head_dim")
+        global_head_dim = config_values.get("global_head_dim")
+        if isinstance(head_dim, int) and isinstance(global_head_dim, int):
+            return head_dim, global_head_dim
+
+        # Transformers 5.15+ exposes this as a dynamic property backed by
+        # _heterogeneity_spec, so it is intentionally absent from vars().
+        per_layer_config = getattr(self.hf_text_config, "per_layer_config", None)
+        layer_dims: list[int] = []
+        if per_layer_config is not None:
+            layers = (
+                per_layer_config.values()
+                if isinstance(per_layer_config, dict)
+                else per_layer_config
+            )
+            for layer in layers:
+                values = layer if isinstance(layer, dict) else vars(layer)
+                value = values.get("head_dim")
+                if isinstance(value, int):
+                    layer_dims.append(value)
+        if layer_dims:
+            return min(layer_dims), max(layer_dims)
+
+        from vllm.transformers_utils.repo_utils import get_hf_file_to_dict
+
+        model_path = getattr(self.hf_config, "name_or_path", None)
+        raw = get_hf_file_to_dict("config.json", model_path) if model_path else None
+        if raw:
+            raw_text = raw.get("text_config", raw)
+            head_dim = raw_text.get("head_dim", head_dim)
+            global_head_dim = raw_text.get("global_head_dim", global_head_dim)
+        if not isinstance(head_dim, int) or not isinstance(global_head_dim, int):
+            raise ValueError(
+                "Gemma4 config must declare sliding and full attention head dims"
+            )
+        return head_dim, global_head_dim
 
 
 class MossAudioModelArchConfigConvertor(ModelArchConfigConvertorBase):

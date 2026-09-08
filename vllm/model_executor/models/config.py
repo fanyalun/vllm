@@ -210,8 +210,17 @@ class Gemma4Config(VerifyAndUpdateConfig):
         When FA4 is not available we fall back to Triton.
         """
         hf_text_config = vllm_config.model_config.hf_text_config
-        head_dim = getattr(hf_text_config, "head_dim", None)
-        global_head_dim = getattr(hf_text_config, "global_head_dim", None)
+        config_values = vars(hf_text_config)
+        head_dim = config_values.get("head_dim")
+        global_head_dim = config_values.get("global_head_dim")
+        if head_dim is None or global_head_dim is None:
+            from vllm.transformers_utils.model_arch_config_convertor import (
+                Gemma4ModelArchConfigConvertor,
+            )
+
+            head_dim, global_head_dim = Gemma4ModelArchConfigConvertor(
+                vllm_config.model_config.hf_config, hf_text_config
+            )._get_gemma4_head_dims()
 
         if head_dim is None or global_head_dim is None or head_dim == global_head_dim:
             return

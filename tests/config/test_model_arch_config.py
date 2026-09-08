@@ -4,12 +4,15 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from transformers import PretrainedConfig
+from transformers.models.gemma4.configuration_gemma4 import Gemma4TextConfig
 
 from vllm.config import ModelConfig, ParallelConfig, SpeculativeConfig
 from vllm.transformers_utils.model_arch_config_convertor import (
+    Gemma4ModelArchConfigConvertor,
     ModelArchConfigConvertorBase,
 )
 
@@ -55,6 +58,46 @@ SPECULATIVE_MODELS = [
     ("meta-llama/Meta-Llama-3-8B-Instruct", "yuhuili/EAGLE-LLaMA3-Instruct-8B", True),
     ("meta-llama/Llama-3.1-8B-Instruct", "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B", True),
 ]
+
+
+def test_gemma4_heterogeneous_attention_dimensions() -> None:
+    text_config = Gemma4TextConfig(
+        num_hidden_layers=6,
+        hidden_size=2816,
+        num_attention_heads=16,
+        num_key_value_heads=8,
+        head_dim=256,
+        global_head_dim=512,
+        num_global_key_value_heads=2,
+        attention_k_eq_v=True,
+        layer_types=["sliding_attention"] * 5 + ["full_attention"],
+    )
+
+    convertor = Gemma4ModelArchConfigConvertor(text_config, text_config)
+    layer_configs = text_config.per_layer_config
+
+    assert convertor.get_head_size() == 512
+    assert convertor.get_total_num_kv_heads() == 8
+    assert [layer.head_dim for layer in layer_configs] == [256] * 5 + [512]
+    assert [layer.num_key_value_heads for layer in layer_configs] == [8] * 5 + [2]
+
+
+def test_transformers_backend_nested_config_uses_identity() -> None:
+    class HeterogeneousConfig:
+        def __eq__(self, other: object) -> bool:
+            raise AssertionError("heterogeneous config equality must not be evaluated")
+
+    model_config = SimpleNamespace(
+        hf_config=HeterogeneousConfig(),
+        hf_text_config=HeterogeneousConfig(),
+        is_moe=False,
+        architectures=["UnknownForConditionalGeneration"],
+        runner="auto",
+    )
+
+    cls = ModelConfig._get_transformers_backend_cls(model_config)
+
+    assert cls == "TransformersMultiModalForCausalLM"
 
 
 def _load_groundtruth(filename: str) -> dict:
