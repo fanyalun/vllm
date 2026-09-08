@@ -224,6 +224,29 @@ class DSparkAsyncDraftAdapter(AsyncDraftMethodAdapter):
         return verify_width
 
 
+class Gemma4MTPAsyncDraftAdapter(AsyncDraftMethodAdapter):
+    method = "mtp"
+    uses_kv_branches = False
+
+    def target_state_layout(self) -> TargetStateLayout:
+        return TargetStateLayout(
+            "gemma4_target_hidden_and_kv",
+            (self.vllm_config.model_config.get_hidden_size(),),
+        )
+
+    def fan_out(self) -> int:
+        return _internal_fan_out("ASYNC_DRAFT_MTP_FAN_OUT", 3)
+
+    def materialize_shared_weights(self, draft_model):
+        from vllm.v1.worker.gpu.spec_decode.async_draft.weights import (
+            materialize_gemma4_embedding,
+        )
+
+        return materialize_gemma4_embedding(
+            draft_model, self.vllm_config.model_config.model
+        )
+
+
 def _materialize_shared_weights(
     vllm_config: VllmConfig, draft_model: torch.nn.Module
 ) -> list[dict[str, object]]:
@@ -247,10 +270,7 @@ def get_async_draft_adapter(vllm_config: VllmConfig) -> AsyncDraftMethodAdapter:
         return Eagle3AsyncDraftAdapter(vllm_config)
     if method == "mtp":
         if speculative_config.use_gemma4_mtp():
-            raise ValueError(
-                "Gemma4 MTP asynchronous drafting is blocked until a compatible "
-                "26B assistant checkpoint is supplied and validated"
-            )
+            return Gemma4MTPAsyncDraftAdapter(vllm_config)
         return QwenMTPAsyncDraftAdapter(vllm_config)
     if method == "dspark":
         return DSparkAsyncDraftAdapter(vllm_config)

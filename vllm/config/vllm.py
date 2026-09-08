@@ -924,6 +924,8 @@ class VllmConfig:
             "mtp": {
                 "Qwen3_5MoeForCausalLM",
                 "Qwen3_5MoeForConditionalGeneration",
+                "Gemma4ForCausalLM",
+                "Gemma4ForConditionalGeneration",
             },
             "dspark": {
                 "Qwen3_5MoeForCausalLM",
@@ -936,6 +938,19 @@ class VllmConfig:
             speculative_config.method, set()
         ):
             unsupported.append(f"target_architecture={architecture!r}")
+        if speculative_config.method == "mtp" and architecture in (
+            "Gemma4ForCausalLM",
+            "Gemma4ForConditionalGeneration",
+        ):
+            if self.scheduler_config.max_num_seqs != 1:
+                unsupported.append("Gemma4 MTP Async requires max_num_seqs=1")
+            if not model_config.enforce_eager:
+                unsupported.append("Gemma4 MTP Async requires enforce_eager=True")
+            if self.cache_config.cache_dtype != "auto":
+                unsupported.append("Gemma4 MTP Async requires unquantized KV")
+            text_config = model_config.hf_config.get_text_config()
+            if model_config.max_model_len > text_config.sliding_window:
+                unsupported.append("Gemma4 MTP Async context exceeds sliding window")
         if model_config is not None and model_config.is_multimodal_model:
             multimodal_config = getattr(model_config, "multimodal_config", None)
             if multimodal_config is None or not multimodal_config.language_model_only:
@@ -956,17 +971,20 @@ class VllmConfig:
                 "PEagleDraftModel",
                 "PeagleLlamaForCausalLM",
             },
-            "mtp": {"Qwen3_5MoeMTP"},
+            "mtp": {"Qwen3_5MoeMTP", "Gemma4MTPModel"},
             "dspark": {"Qwen3DSparkModel"},
         }
         if draft_architecture not in supported_draft_architectures.get(
             speculative_config.method, set()
         ):
             unsupported.append(f"draft_architecture={draft_architecture!r}")
-
-        use_gemma4_mtp = getattr(speculative_config, "use_gemma4_mtp", None)
-        if callable(use_gemma4_mtp) and use_gemma4_mtp():
-            unsupported.append("blocked_missing_26b_mtp_checkpoint")
+        if speculative_config.method == "mtp":
+            gemma_target = architecture in (
+                "Gemma4ForCausalLM",
+                "Gemma4ForConditionalGeneration",
+            )
+            if gemma_target != (draft_architecture == "Gemma4MTPModel"):
+                unsupported.append("MTP target and assistant model families differ")
 
         if not isinstance(async_draft_device, int) or async_draft_device < 0:
             unsupported.append(f"async_draft_device={async_draft_device!r}")
@@ -982,7 +1000,7 @@ class VllmConfig:
         if unsupported:
             raise ValueError(
                 "async_draft_device currently supports only single-node CUDA "
-                "MRV2 Llama+EAGLE3, Qwen3.6+MTP/DSpark, or Gemma4+DSpark "
+                "MRV2 Llama+EAGLE3, Qwen3.6+MTP/DSpark, or Gemma4+MTP/DSpark "
                 "with Target TP1/PP1/DP1/DCP1, "
                 "Draft TP1, greedy draft sampling, standard rejection sampling, "
                 "and prefix caching/LoRA/multimodal/prompt embeddings/DBO disabled. "

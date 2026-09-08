@@ -110,13 +110,15 @@ def test_async_draft_adapter_selects_conditioning_layout(
     assert adapter.target_state_layout().splits == expected_layout
 
 
-def test_gemma4_mtp_adapter_remains_fail_closed() -> None:
+def test_gemma4_mtp_adapter_uses_target_kv_snapshots() -> None:
     config = SimpleNamespace(
         speculative_config=SimpleNamespace(method="mtp", use_gemma4_mtp=lambda: True)
     )
 
-    with pytest.raises(ValueError, match="compatible 26B assistant checkpoint"):
-        get_async_draft_adapter(config)
+    adapter = get_async_draft_adapter(config)
+    assert type(adapter).__name__ == "Gemma4MTPAsyncDraftAdapter"
+    assert not adapter.uses_kv_branches
+    assert not adapter.provisional_state_is_canonical
 
 
 def test_dspark_adapter_accepts_normalized_speculators_aux_layout() -> None:
@@ -1180,6 +1182,28 @@ def test_async_draft_validation_reports_all_incompatible_fields() -> None:
     assert "tensor_parallel_size=2" in message
     assert "enable_prefix_caching=True" in message
     assert "overlaps target device 0" in message
+
+
+@pytest.mark.parametrize("invalid", [None, "batch", "graph", "kv", "length"])
+def test_gemma4_async_config_bounds(invalid) -> None:
+    config = _make_async_draft_validation_config()
+    config.speculative_config.method = "mtp"
+    config.speculative_config.draft_model_config.architecture = "Gemma4MTPModel"
+    config.model_config.architecture = "Gemma4ForConditionalGeneration"
+    config.model_config.enforce_eager = invalid != "graph"
+    config.model_config.max_model_len = 2048 if invalid == "length" else 512
+    config.model_config.hf_config = SimpleNamespace(
+        get_text_config=lambda: SimpleNamespace(sliding_window=1024)
+    )
+    config.scheduler_config = SimpleNamespace(
+        max_num_seqs=2 if invalid == "batch" else 1
+    )
+    config.cache_config.cache_dtype = "fp8" if invalid == "kv" else "auto"
+    if invalid is None:
+        VllmConfig._validate_async_draft_config(config, _FakeCudaPlatform())
+    else:
+        with pytest.raises(ValueError, match="Gemma4 MTP Async"):
+            VllmConfig._validate_async_draft_config(config, _FakeCudaPlatform())
 
 
 @pytest.mark.parametrize(

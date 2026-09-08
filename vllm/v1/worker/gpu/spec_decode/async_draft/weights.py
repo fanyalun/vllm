@@ -62,7 +62,7 @@ def _locate_safetensors_key(model_path: Path, key: str) -> Path:
 
     for path in _safetensors_files(model_path):
         with safe_open(path, framework="pt", device="cpu") as file:
-            if key in file:
+            if key in file.keys():  # noqa: SIM118
                 return path
 
     if (model_path / "pytorch_model.bin").exists() or list(
@@ -225,3 +225,21 @@ def materialize_standalone_draft_weights(
 
 
 materialize_standalone_eagle_weights = materialize_standalone_draft_weights
+
+
+def materialize_gemma4_embedding(
+    draft_model: nn.Module, target_model_path: str
+) -> list[dict[str, object]]:
+    from vllm.model_executor.layers.vocab_parallel_embedding import (
+        VocabParallelEmbedding,
+    )
+
+    # The assistant LM head must retain its original draft-dimensional weight.
+    head = draft_model.lm_head.weight
+    target_width = draft_model.model.backbone_hidden_size
+    draft_model.model.embed_tokens = VocabParallelEmbedding(
+        draft_model.model.vocab_size, target_width
+    ).to(device=head.device, dtype=head.dtype)
+    result = materialize_standalone_draft_weights(draft_model, target_model_path)
+    assert draft_model.lm_head.weight is head
+    return [item.to_dict() for item in result]

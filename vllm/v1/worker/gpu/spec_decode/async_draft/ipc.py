@@ -25,6 +25,7 @@ class AsyncDraftRingSlot:
     temperature: torch.Tensor
     seeds: torch.Tensor
     draft_tokens: torch.Tensor
+    target_kv: dict[str, torch.Tensor] | None = None
 
     @property
     def aux_hidden_states(self) -> torch.Tensor:

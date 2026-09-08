@@ -150,6 +150,15 @@ class AsyncDraftSpeculator(BaseSpeculator):
             run_async_draft_child,
         )
 
+        if self.vllm_config.speculative_config.use_gemma4_mtp():
+            from vllm.v1.worker.gpu.spec_decode.async_draft.gemma4 import (
+                run_gemma4_child,
+                target_kv_layers,
+            )
+
+            self._gemma4_target_layers = target_kv_layers(self.vllm_config)
+            run_async_draft_child = run_gemma4_child
+
         context = mp.get_context("spawn")
         parent_connection, child_connection = context.Pipe(duplex=True)
         process = context.Process(
@@ -452,7 +461,6 @@ class AsyncDraftSpeculator(BaseSpeculator):
         is_profile: bool = False,
     ) -> torch.Tensor:
         del (
-            attn_metadata,
             slot_mappings,
             num_tokens_across_dp,
             skip_attn_for_dummy_run,
@@ -486,6 +494,18 @@ class AsyncDraftSpeculator(BaseSpeculator):
             temperature,
             seeds,
         )
+        if ring_slot.target_kv is not None:
+            from vllm.v1.worker.gpu.spec_decode.async_draft.gemma4 import (
+                copy_target_kv,
+            )
+
+            ipc_bytes += copy_target_kv(
+                self._gemma4_target_layers,
+                attn_metadata,
+                ring_slot,
+                input_batch,
+                dummy_run or is_profile,
+            )
         ipc_latency_seconds = time.perf_counter() - ipc_start
 
         request_epochs = [
