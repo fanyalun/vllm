@@ -1,0 +1,26 @@
+{
+  "qwen36": {
+    "branch_token_audit": "passed",
+    "control_complete": true,
+    "exact_control_requests": 4,
+    "expected_control_requests": 4,
+    "per_request_exact_match": [
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "gemma4": {
+    "branch_token_audit": "passed",
+    "control_complete": true,
+    "exact_control_requests": 4,
+    "expected_control_requests": 4,
+    "per_request_exact_match": [
+      true,
+      true,
+      true,
+      true
+    ]
+  }
+}

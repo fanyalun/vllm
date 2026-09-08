@@ -1,0 +1,16 @@
+{
+  "head": "21a22110404d98dcab5f51cd90e9acb0acc15e47",
+  "source_sha256": {
+    "vllm/v1/worker/gpu/spec_decode/moe_skip/speculator.py": "cdc601babb279e1767bbd3df9a82dc8e40c9c9ec4fc4b62ba84418c07c73066f",
+    "vllm/v1/worker/gpu/model_runner.py": "18d0dc32585fdc95d349a16ef21bb0c89eac533265c72432c847bda3bcf5cd1f",
+    "vllm/v1/worker/gpu/model_states/mamba_hybrid.py": "2429ecda9b84a0bff253f049f7cccfd52c6cc99e59130c18656b673421400c85",
+    "vllm/config/speculative.py": "8309496a37c4517f71692e226431f9ebfa14fef33b874e91bd847992de9b6784",
+    "vllm/forward_context.py": "757379ca30e6b17a4d5ce44a8723ee48a5653b4413ace3ee43e34c9e87a0ec7a",
+    "benchmarks/moe_skip/branch_probe_worker.py": "b27af5879b0573930ba2e82dc62bf32db2723af696d216890acea350834c5cd3"
+  },
+  "runtime": "existing local uncommitted MoE-Skip implementation; benchmark publication does not include runtime changes",
+  "failed_attempts": {
+    "branch_probe_4x256_d16_20260908": "ninja was absent from PATH; fixed using existing .venv/bin",
+    "branch_probe_4x256_d16_20260908_run2": "assertion exposed tied-max topk order versus greedy argmax; fixed explicit tie handling"
+  }
+}

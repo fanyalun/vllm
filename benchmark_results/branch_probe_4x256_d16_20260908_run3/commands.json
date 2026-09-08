@@ -1,0 +1,80 @@
+[
+  {
+    "argv": [
+      ".venv/bin/python",
+      "benchmarks/moe_skip/run_branch_probe.py",
+      "--model",
+      "qwen36",
+      "--output",
+      "benchmark_results/branch_probe_4x256_d16_20260908_run3/qwen36"
+    ],
+    "cwd": "/home/fanya/vllm",
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "1",
+      "VLLM_USE_V2_MODEL_RUNNER": "1",
+      "HF_HUB_OFFLINE": "1",
+      "PYTHONPATH": "/home/fanya/vllm/benchmarks/moe_skip:/home/fanya/vllm",
+      "PATH_prefix": "/home/fanya/vllm/.venv/bin",
+      "VLLM_MOE_SKIP_TRACE_DIR": "/home/fanya/vllm/benchmark_results/branch_probe_4x256_d16_20260908_run3/qwen_trace"
+    }
+  },
+  {
+    "argv": [
+      ".venv/bin/python",
+      "benchmarks/moe_skip/run_branch_probe.py",
+      "--model",
+      "qwen36",
+      "--output",
+      "benchmark_results/branch_probe_4x256_d16_20260908_run3/qwen36_control",
+      "--control"
+    ],
+    "cwd": "/home/fanya/vllm",
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "1",
+      "VLLM_USE_V2_MODEL_RUNNER": "1",
+      "HF_HUB_OFFLINE": "1",
+      "PYTHONPATH": "/home/fanya/vllm/benchmarks/moe_skip:/home/fanya/vllm",
+      "PATH_prefix": "/home/fanya/vllm/.venv/bin",
+      "VLLM_MOE_SKIP_TRACE_DIR": "/home/fanya/vllm/benchmark_results/branch_probe_4x256_d16_20260908_run3/qwen_control_trace"
+    }
+  },
+  {
+    "argv": [
+      ".venv/bin/python",
+      "benchmarks/moe_skip/run_branch_probe.py",
+      "--model",
+      "gemma4",
+      "--output",
+      "benchmark_results/branch_probe_4x256_d16_20260908_run3/gemma4"
+    ],
+    "cwd": "/home/fanya/vllm",
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "0",
+      "VLLM_USE_V2_MODEL_RUNNER": "1",
+      "HF_HUB_OFFLINE": "1",
+      "PYTHONPATH": "/home/fanya/vllm/benchmarks/moe_skip:/home/fanya/vllm",
+      "PATH_prefix": "/home/fanya/vllm/.venv/bin",
+      "VLLM_MOE_SKIP_TRACE_DIR": "/home/fanya/vllm/benchmark_results/branch_probe_4x256_d16_20260908_run3/gemma_trace"
+    }
+  },
+  {
+    "argv": [
+      ".venv/bin/python",
+      "benchmarks/moe_skip/run_branch_probe.py",
+      "--model",
+      "gemma4",
+      "--output",
+      "benchmark_results/branch_probe_4x256_d16_20260908_run3/gemma4_control",
+      "--control"
+    ],
+    "cwd": "/home/fanya/vllm",
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "0",
+      "VLLM_USE_V2_MODEL_RUNNER": "1",
+      "HF_HUB_OFFLINE": "1",
+      "PYTHONPATH": "/home/fanya/vllm/benchmarks/moe_skip:/home/fanya/vllm",
+      "PATH_prefix": "/home/fanya/vllm/.venv/bin",
+      "VLLM_MOE_SKIP_TRACE_DIR": "/home/fanya/vllm/benchmark_results/branch_probe_4x256_d16_20260908_run3/gemma_control_trace"
+    }
+  }
+]

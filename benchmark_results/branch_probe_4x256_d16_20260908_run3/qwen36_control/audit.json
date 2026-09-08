@@ -1,0 +1,7 @@
+{
+  "complete": true,
+  "output_tokens": 1024,
+  "events": 0,
+  "shared_prefix_and_forced_top2_checks": "not applicable (control)",
+  "baseline_replay_check": "not applicable (control)"
+}

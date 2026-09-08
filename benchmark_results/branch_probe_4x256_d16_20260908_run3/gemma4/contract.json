@@ -1,0 +1,15 @@
+{
+  "model": "gemma4",
+  "model_path": "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+  "num_samples": 4,
+  "max_tokens": 256,
+  "draft_length": 16,
+  "threshold": 1.0,
+  "top_h": 4,
+  "batch_size": 1,
+  "temperature": 0,
+  "enforce_eager": true,
+  "control": false,
+  "source_dataset": "/home/fanya/vllm/benchmark_results/moe_skip_gemma4_multicategory_128x512_d64_20260906/dataset/multicategory_128.jsonl",
+  "scope": "All low-margin draft positions with nonempty in-budget suffix"
+}

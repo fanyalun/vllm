@@ -1,0 +1,7 @@
+{
+  "complete": true,
+  "output_tokens": 1024,
+  "events": 171,
+  "shared_prefix_and_forced_top2_checks": "passed for every event",
+  "baseline_replay_check": "passed for every proposal with branches"
+}

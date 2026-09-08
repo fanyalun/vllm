@@ -1,0 +1,28 @@
+[
+  {
+    "model": "qwen36",
+    "samples": 4,
+    "proposals": 112,
+    "events": 171,
+    "all_equal": 16,
+    "partial_match": 30,
+    "all_different": 125,
+    "mean_suffix_length": 7.941520467836257,
+    "mean_consecutive_matches": 0.783625730994152,
+    "any_consecutive_match_fraction": 0.16374269005847952,
+    "aligned_token_match_fraction": 0.15979381443298968
+  },
+  {
+    "model": "gemma4",
+    "samples": 4,
+    "proposals": 79,
+    "events": 61,
+    "all_equal": 5,
+    "partial_match": 11,
+    "all_different": 45,
+    "mean_suffix_length": 8.885245901639344,
+    "mean_consecutive_matches": 0.7704918032786885,
+    "any_consecutive_match_fraction": 0.11475409836065574,
+    "aligned_token_match_fraction": 0.14022140221402213
+  }
+]
