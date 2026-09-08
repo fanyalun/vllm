@@ -1,0 +1,187 @@
+{
+  "status": "passed",
+  "cells": 22,
+  "requests": 352,
+  "output_tokens": 180224,
+  "contract": {
+    "methods": {
+      "ar": [
+        0
+      ],
+      "moe_skip": [
+        4,
+        8,
+        16,
+        32
+      ],
+      "mtp": [
+        4,
+        8,
+        16,
+        32
+      ],
+      "dspark": [
+        4,
+        8
+      ]
+    },
+    "num_samples": 16,
+    "max_tokens": 512,
+    "batch_size": 1,
+    "top_h": 4,
+    "max_model_len": 1024,
+    "max_num_batched_tokens": 4096,
+    "temperature": 0,
+    "ignore_eos": true,
+    "prefix_caching": false,
+    "warmup_requests": 1,
+    "timer": "sum of individual llm.generate wall times, prefill plus decode",
+    "git_head": "21a22110404d98dcab5f51cd90e9acb0acc15e47",
+    "models": [
+      "qwen36",
+      "gemma4"
+    ],
+    "cuda_devices": {
+      "qwen36": "1",
+      "gemma4": "0"
+    },
+    "source_runs": {
+      "qwen36": "/home/fanya/vllm/benchmark_results/moe_skip_e2e_16x512_b1_20260908_run2",
+      "gemma4": "/home/fanya/vllm/benchmark_results/moe_skip_e2e_16x512_b1_20260908_gemma4"
+    }
+  },
+  "ar_parity": [
+    {
+      "model": "qwen36",
+      "method": "ar",
+      "d": 0,
+      "exact_ar_requests": 16
+    },
+    {
+      "model": "qwen36",
+      "method": "moe_skip",
+      "d": 4,
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "qwen36",
+      "method": "moe_skip",
+      "d": 8,
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "qwen36",
+      "method": "moe_skip",
+      "d": 16,
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "qwen36",
+      "method": "moe_skip",
+      "d": 32,
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "qwen36",
+      "method": "mtp",
+      "d": 4,
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "qwen36",
+      "method": "mtp",
+      "d": 8,
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "qwen36",
+      "method": "mtp",
+      "d": 16,
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "qwen36",
+      "method": "mtp",
+      "d": 32,
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "qwen36",
+      "method": "dspark",
+      "d": 4,
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "qwen36",
+      "method": "dspark",
+      "d": 8,
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "gemma4",
+      "method": "ar",
+      "d": 0,
+      "exact_ar_requests": 16
+    },
+    {
+      "model": "gemma4",
+      "method": "moe_skip",
+      "d": 4,
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "gemma4",
+      "method": "moe_skip",
+      "d": 8,
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "gemma4",
+      "method": "moe_skip",
+      "d": 16,
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "gemma4",
+      "method": "moe_skip",
+      "d": 32,
+      "exact_ar_requests": 3
+    },
+    {
+      "model": "gemma4",
+      "method": "mtp",
+      "d": 4,
+      "exact_ar_requests": 0
+    },
+    {
+      "model": "gemma4",
+      "method": "mtp",
+      "d": 8,
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "gemma4",
+      "method": "mtp",
+      "d": 16,
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "gemma4",
+      "method": "mtp",
+      "d": 32,
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "gemma4",
+      "method": "dspark",
+      "d": 4,
+      "exact_ar_requests": 0
+    },
+    {
+      "model": "gemma4",
+      "method": "dspark",
+      "d": 8,
+      "exact_ar_requests": 0
+    }
+  ]
+}

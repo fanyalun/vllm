@@ -1,0 +1,229 @@
+{
+  "status": "passed",
+  "cells": [
+    {
+      "model": "qwen36",
+      "method": "ar",
+      "d": 0,
+      "cuda_device": "1",
+      "async_scheduling_disabled_by_gate": false,
+      "warmup_marker_present": false,
+      "jit_after_boundary": [],
+      "result_sha256": "b5d90db976d2ea71dd071fafa91d95633297e5c6fb4bb0b872e32c5fae317c27"
+    },
+    {
+      "model": "qwen36",
+      "method": "moe_skip",
+      "d": 4,
+      "cuda_device": "1",
+      "async_scheduling_disabled_by_gate": true,
+      "warmup_marker_present": false,
+      "jit_after_boundary": [],
+      "result_sha256": "4d6bc40aaa4366e79c67862d43003ea5e7aed0ca966988a4bf5dca003b4f83f7"
+    },
+    {
+      "model": "qwen36",
+      "method": "moe_skip",
+      "d": 8,
+      "cuda_device": "1",
+      "async_scheduling_disabled_by_gate": true,
+      "warmup_marker_present": false,
+      "jit_after_boundary": [],
+      "result_sha256": "8310175a053e3ca52242d384f4cae3d6662d3fafe702c92b9dbd07238e4f17b5"
+    },
+    {
+      "model": "qwen36",
+      "method": "moe_skip",
+      "d": 16,
+      "cuda_device": "1",
+      "async_scheduling_disabled_by_gate": true,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "b0f19f906f1a23a7d421a92c60adec38b820b76e14e3689ec38b2e7d3e797fe1"
+    },
+    {
+      "model": "qwen36",
+      "method": "moe_skip",
+      "d": 32,
+      "cuda_device": "1",
+      "async_scheduling_disabled_by_gate": true,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "c694cfbfa41771cb0c4c1fec596ef05e494a334834cb1c7601c0980d8dc338e6"
+    },
+    {
+      "model": "qwen36",
+      "method": "mtp",
+      "d": 4,
+      "cuda_device": "1",
+      "async_scheduling_disabled_by_gate": false,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "d21a0acc7755c2b2abcdc9a49a0fe1d6155d3f1935f8395a71d139816a2870cc"
+    },
+    {
+      "model": "qwen36",
+      "method": "mtp",
+      "d": 8,
+      "cuda_device": "1",
+      "async_scheduling_disabled_by_gate": false,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "1e43bfd0514e75dbcdcf83d182675ac881bb3be22ab24f037f843c9deed00567"
+    },
+    {
+      "model": "qwen36",
+      "method": "mtp",
+      "d": 16,
+      "cuda_device": "1",
+      "async_scheduling_disabled_by_gate": false,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "b30eb7ae8db86b6b521b6612fea39583f95b220bf191f2bc31f268bc2d7b3519"
+    },
+    {
+      "model": "qwen36",
+      "method": "mtp",
+      "d": 32,
+      "cuda_device": "1",
+      "async_scheduling_disabled_by_gate": false,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "cac2255505f97433df1532468da3ab6a2f9db4dc08d78513f5faac4709f1a706"
+    },
+    {
+      "model": "qwen36",
+      "method": "dspark",
+      "d": 4,
+      "cuda_device": "1",
+      "async_scheduling_disabled_by_gate": false,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "c67d58e032c2fef31c243b5473bdbc9034de5ed5a64794ed13312b057e604e99"
+    },
+    {
+      "model": "qwen36",
+      "method": "dspark",
+      "d": 8,
+      "cuda_device": "1",
+      "async_scheduling_disabled_by_gate": false,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "82e18235372cbb41e5157d264913c484048d549e3261257c326a0acef5802589"
+    },
+    {
+      "model": "gemma4",
+      "method": "ar",
+      "d": 0,
+      "cuda_device": "0",
+      "async_scheduling_disabled_by_gate": false,
+      "warmup_marker_present": false,
+      "jit_after_boundary": [],
+      "result_sha256": "2b4d2a36748e4fc469dbc35845304a52b68c3a5a15b80e5570a5c211e3ae425a"
+    },
+    {
+      "model": "gemma4",
+      "method": "moe_skip",
+      "d": 4,
+      "cuda_device": "0",
+      "async_scheduling_disabled_by_gate": true,
+      "warmup_marker_present": false,
+      "jit_after_boundary": [],
+      "result_sha256": "0bb09075ef006fdff8a43b7cc208756a6400c553571d0a025ff00cf5147795d2"
+    },
+    {
+      "model": "gemma4",
+      "method": "moe_skip",
+      "d": 8,
+      "cuda_device": "0",
+      "async_scheduling_disabled_by_gate": true,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "e1569732b400649f17312c63c6bf8ebff4df877111bd14ace81c88244ab1dd90"
+    },
+    {
+      "model": "gemma4",
+      "method": "moe_skip",
+      "d": 16,
+      "cuda_device": "0",
+      "async_scheduling_disabled_by_gate": true,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "e7d28058ed4a876e19f9bc55302fbaa42bbc2a12cac23e00c1c24c1d0d009905"
+    },
+    {
+      "model": "gemma4",
+      "method": "moe_skip",
+      "d": 32,
+      "cuda_device": "0",
+      "async_scheduling_disabled_by_gate": true,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "44a6a9a00aecc1bf73e5b47622aab2bf3dc75af5583890654d4486cb0d5cca09"
+    },
+    {
+      "model": "gemma4",
+      "method": "mtp",
+      "d": 4,
+      "cuda_device": "0",
+      "async_scheduling_disabled_by_gate": false,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "f0aee434dae762490db76da9233deeebe78385f21dd22521024a22f5f393169b"
+    },
+    {
+      "model": "gemma4",
+      "method": "mtp",
+      "d": 8,
+      "cuda_device": "0",
+      "async_scheduling_disabled_by_gate": false,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "59febc45ad80a90c54c24a5c61803b7a18c380d2726a46cda8bfc4e8bd44b4b7"
+    },
+    {
+      "model": "gemma4",
+      "method": "mtp",
+      "d": 16,
+      "cuda_device": "0",
+      "async_scheduling_disabled_by_gate": false,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "c71e3ab48b1e097812bf1ee3d598d1cac2a6f17a29dd8eed266c7f9d487374f9"
+    },
+    {
+      "model": "gemma4",
+      "method": "mtp",
+      "d": 32,
+      "cuda_device": "0",
+      "async_scheduling_disabled_by_gate": false,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "ece0306a2ee2df82962d759a733450a864cc42dcd7b77b5b569706d017c15ad4"
+    },
+    {
+      "model": "gemma4",
+      "method": "dspark",
+      "d": 4,
+      "cuda_device": "0",
+      "async_scheduling_disabled_by_gate": false,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "2fd56c44c111dab708e7a3b0ae0f7bc5b85feb83c0565ccbec0880a664c32c72"
+    },
+    {
+      "model": "gemma4",
+      "method": "dspark",
+      "d": 8,
+      "cuda_device": "0",
+      "async_scheduling_disabled_by_gate": false,
+      "warmup_marker_present": true,
+      "jit_after_boundary": [],
+      "result_sha256": "5160823e9e6c437895c92c13c0e009eab546e040dd1f38901ae2176dfff4168f"
+    }
+  ],
+  "identical_ordered_prompt_text_hashes_across_models": true,
+  "timing_note": "Early cells lack an explicit warmup log marker; their first timed request reuses the warmed prompt. Audit checks subsequent samples for JIT.",
+  "total_requests": 352,
+  "total_output_tokens": 180224
+}
