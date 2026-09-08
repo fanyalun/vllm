@@ -418,11 +418,7 @@ def prepare_manifest(
             "num_speculative_tokens": args.num_speculative_tokens,
             "target_verify_width": args.num_speculative_tokens,
             "sync_backbone_width": args.num_speculative_tokens,
-            "async_branch_backbone_width": (
-                2 * args.num_speculative_tokens + 1
-                if args.method == "dspark"
-                else args.num_speculative_tokens
-            ),
+            "async_branch_backbone_width": args.num_speculative_tokens,
             "native_proposal_bank_width": native_bank_width,
             "fan_out": fan_out,
             "draft_sample_method": "greedy",
@@ -1064,7 +1060,7 @@ def audit_dspark_bank_trace(trace_path: Path, verify_width: int) -> dict[str, ob
 
 
 def audit_dspark_round_trace(trace_path: Path, verify_width: int) -> dict[str, object]:
-    """Audit D-wide Target proposals backed by a 2D+1 async backbone."""
+    """Audit D-wide proposals with independently sized provisional queries."""
     records = [
         json.loads(line)
         for line in trace_path.read_text(encoding="utf-8").splitlines()
@@ -1086,13 +1082,27 @@ def audit_dspark_round_trace(trace_path: Path, verify_width: int) -> dict[str, o
             errors.append(
                 "fixed-width DSpark trace unexpectedly contains a bank cursor"
             )
-        branch_width = 2 * verify_width + 1
+        branch_width = verify_width
         if record.get("dspark_target_verify_width") != verify_width:
             errors.append("Target verification width is not D")
         if record.get("dspark_proposal_execution_width") != branch_width:
-            errors.append("proposal backbone execution width is not 2D+1")
+            errors.append("proposal backbone execution width is not D")
         if record.get("dspark_branch_backbone_width") != branch_width:
-            errors.append("branch backbone width is not 2D+1")
+            errors.append("branch backbone width is not D")
+        if record.get("dspark_proposal_source") == "cache":
+            query_len = record.get("dspark_query_length", 0)
+            prefix_len = record.get("dspark_prefix_length", 0)
+            sample_start = record.get("dspark_sample_start", -1)
+            if query_len - sample_start != verify_width:
+                errors.append("branch query does not expose exactly D sample positions")
+            if prefix_len != accepted_count + 2:
+                errors.append(
+                    "branch prefix is not anchor plus accepted tokens plus recovery"
+                )
+            if sample_start not in (prefix_len - 1, prefix_len):
+                errors.append(
+                    "branch sampling does not start at recovery or its next mask"
+                )
         if errors:
             failures.append(
                 {
@@ -1105,7 +1115,7 @@ def audit_dspark_round_trace(trace_path: Path, verify_width: int) -> dict[str, o
     return {
         "status": "passed" if records and not failures else "failed",
         "verify_width": verify_width,
-        "branch_backbone_width": 2 * verify_width + 1,
+        "branch_backbone_width": verify_width,
         "record_count": len(records),
         "failures": failures,
     }
@@ -1167,6 +1177,7 @@ def run_cell(
             "ASYNC_DRAFT_FORCE_JIT",
             "ASYNC_DRAFT_MTP_FAN_OUT",
             "ASYNC_DRAFT_DSPARK_FAN_OUT",
+            "ASYNC_DRAFT_DSPARK_SHADOW_PATH",
             "REPLAYSSM_SPEC_DECODE_TRACE_PATH",
             "REPLAYSSM_SPEC_DECODE_TRACE_LOGITS",
             "VLLM_WORKER_MULTIPROC_METHOD",

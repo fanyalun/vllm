@@ -506,7 +506,11 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
                 ),
                 "dspark_current_backbone_runs": (
                     "vllm:async_draft_dspark_current_backbone_runs",
-                    "Number of foreground D-wide DSpark backbone executions.",
+                    "Number of requests processed by foreground DSpark backbones.",
+                ),
+                "dspark_current_backbone_forwards": (
+                    "vllm:async_draft_dspark_current_backbone_forwards",
+                    "Number of batched foreground DSpark backbone forwards.",
                 ),
                 "dspark_current_backbone_seconds": (
                     "vllm:async_draft_dspark_current_backbone_seconds",
@@ -514,11 +518,27 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
                 ),
                 "dspark_backbone_refreshes": (
                     "vllm:async_draft_dspark_backbone_refreshes",
-                    "Number of per-round 2D+1 DSpark backbone refreshes.",
+                    "Number of cache-hit requests refreshed from real Target state.",
                 ),
                 "dspark_branch_backbone_seconds": (
                     "vllm:async_draft_dspark_branch_backbone_seconds",
-                    "Seconds spent in per-round 2D+1 DSpark backbones.",
+                    "Seconds spent in provisional branch backbones and KV setup.",
+                ),
+                "dspark_branch_backbone_forwards": (
+                    "vllm:async_draft_dspark_branch_backbone_forwards",
+                    "Number of batched provisional DSpark backbone forwards.",
+                ),
+                "dspark_candidate_backbone_forwards": (
+                    "vllm:async_draft_dspark_candidate_backbone_forwards",
+                    "Number of batched DSpark recovery-candidate forwards.",
+                ),
+                "dspark_candidate_seconds": (
+                    "vllm:async_draft_dspark_candidate_seconds",
+                    "Seconds spent evaluating DSpark recovery candidates.",
+                ),
+                "dspark_markov_seconds": (
+                    "vllm:async_draft_dspark_markov_seconds",
+                    "Seconds spent sampling DSpark branch Markov heads.",
                 ),
                 "dspark_markov_branches": (
                     "vllm:async_draft_dspark_markov_branches",

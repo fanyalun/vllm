@@ -559,16 +559,16 @@ def test_dspark_round_trace_audit_requires_fixed_d_width(tmp_path) -> None:
             "accepted_draft_count": 0,
             "draft_tokens": [1, 2, 3],
             "dspark_target_verify_width": 3,
-            "dspark_proposal_execution_width": 7,
-            "dspark_branch_backbone_width": 7,
+            "dspark_proposal_execution_width": 3,
+            "dspark_branch_backbone_width": 3,
         },
         {
             "request_id": "request",
             "accepted_draft_count": 3,
             "draft_tokens": [4, 5, 6],
             "dspark_target_verify_width": 3,
-            "dspark_proposal_execution_width": 7,
-            "dspark_branch_backbone_width": 7,
+            "dspark_proposal_execution_width": 3,
+            "dspark_branch_backbone_width": 3,
         },
     ]
     trace_path.write_text(
@@ -580,7 +580,7 @@ def test_dspark_round_trace_audit_requires_fixed_d_width(tmp_path) -> None:
 
     assert audit["status"] == "passed"
     assert audit["record_count"] == 2
-    assert audit["branch_backbone_width"] == 7
+    assert audit["branch_backbone_width"] == 3
 
 
 def test_dspark_round_trace_audit_rejects_native_bank_width(tmp_path) -> None:
@@ -593,8 +593,8 @@ def test_dspark_round_trace_audit_rejects_native_bank_width(tmp_path) -> None:
                 "draft_tokens": list(range(8)),
                 "dspark_bank_cursor": 2,
                 "dspark_target_verify_width": 3,
-                "dspark_proposal_execution_width": 7,
-                "dspark_branch_backbone_width": 7,
+                "dspark_proposal_execution_width": 3,
+                "dspark_branch_backbone_width": 3,
             }
         )
         + "\n",

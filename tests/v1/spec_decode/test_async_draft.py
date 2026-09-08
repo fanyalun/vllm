@@ -194,7 +194,7 @@ def test_dspark_adapter_rejects_bank_narrower_than_target_width() -> None:
 
 @pytest.mark.parametrize(
     ("verify_width", "checkpoint_width", "expected"),
-    [(3, 8, 7), (2, 6, 5)],
+    [(3, 8, 3), (2, 6, 2)],
 )
 def test_dspark_adapter_derives_round_branch_backbone_width(
     verify_width, checkpoint_width, expected
@@ -215,7 +215,7 @@ def test_dspark_adapter_derives_round_branch_backbone_width(
     assert DSparkAsyncDraftAdapter(config).branch_backbone_width() == expected
 
 
-def test_dspark_adapter_rejects_incomplete_round_branch_backbone() -> None:
+def test_dspark_adapter_prefix_length_is_not_output_width() -> None:
     hf_config = SimpleNamespace(
         speculators_config={"proposal_methods": [{"speculative_tokens": 8}]}
     )
@@ -227,8 +227,7 @@ def test_dspark_adapter_rejects_incomplete_round_branch_backbone() -> None:
         )
     )
 
-    with pytest.raises(ValueError, match="branch backbone width exceeds"):
-        DSparkAsyncDraftAdapter(config).branch_backbone_width()
+    assert DSparkAsyncDraftAdapter(config).branch_backbone_width() == 4
 
 
 def test_dspark_adapter_accepts_internal_fan_out_override(monkeypatch) -> None:
@@ -392,156 +391,7 @@ def test_dspark_recovery_candidates_exclude_returned_target_token() -> None:
     assert candidates.tolist() == [[101, 102, 103]]
 
 
-def test_dspark_fanout_uses_shifted_logits_and_markov_only(
-    monkeypatch,
-) -> None:
-    class FakeModel:
-        @staticmethod
-        def markov_embed(tokens):
-            return tokens
-
-        @staticmethod
-        def markov_bias(tokens):
-            return torch.zeros(tokens.shape[0], 8)
-
-    class FakeDSparkSpeculator:
-        draft_logits = None
-        model = FakeModel()
-
-        def __init__(self) -> None:
-            self._async_base_logits = torch.zeros(1, 7, 8)
-            self.input_buffers = SimpleNamespace(
-                input_ids=torch.tensor([9, 0, 0, 0, 0, 0, 0])
-            )
-
-        @staticmethod
-        def anchor_indices(num_reqs, *, execution_width=None):
-            assert num_reqs == 1
-            assert execution_width == 7
-            return torch.tensor([0])
-
-    class FakeEvent:
-        def record(self, stream) -> None:
-            del stream
-
-    recovery_calls = 0
-    observed_windows: list[torch.Tensor] = []
-    observed_previous: list[torch.Tensor] = []
-
-    def fake_candidates(speculator, logits, returned, fan_out):
-        nonlocal recovery_calls
-        del speculator, logits, returned
-        assert fan_out == 3
-        base = 100 + recovery_calls * 10
-        recovery_calls += 1
-        return torch.tensor([[base, base + 1, base + 2]])
-
-    def fake_markov(speculator, base_logits, previous_tokens, *, record_top2):
-        del speculator, record_top2
-        observed_windows.append(base_logits.clone())
-        observed_previous.append(previous_tokens.clone())
-        tokens = torch.arange(base_logits.shape[0] * 3).view(-1, 3)
-        return tokens, [{} for _ in range(base_logits.shape[0])]
-
-    monkeypatch.setattr(runtime, "DSparkSpeculator", FakeDSparkSpeculator)
-    monkeypatch.setattr(
-        runtime,
-        "_dspark_top_recovery_candidates",
-        fake_candidates,
-    )
-    monkeypatch.setattr(runtime, "_dspark_markov_propose", fake_markov)
-    monkeypatch.setattr(runtime.torch.cuda, "Event", FakeEvent)
-    monkeypatch.setattr(runtime.torch.cuda, "current_stream", lambda device: device)
-    monkeypatch.setattr(runtime.torch.cuda, "synchronize", lambda device: None)
-    base_logits = torch.stack(
-        [torch.full((8,), float(position)) for position in range(7)]
-    )
-
-    def fake_execute(
-        runner,
-        block_pool,
-        branch_cache,
-        batch,
-        ring_slot,
-        conditioning_splits,
-        num_speculative_steps=None,
-        dspark_base_logits_only=False,
-    ):
-        del (
-            runner,
-            block_pool,
-            branch_cache,
-            batch,
-            ring_slot,
-            conditioning_splits,
-            num_speculative_steps,
-            dspark_base_logits_only,
-        )
-        raise AssertionError("cache-miss backbone logits must be reused")
-
-    monkeypatch.setattr(runtime, "_execute_jit_proposal", fake_execute)
-    branch_cache = BranchCache()
-    fake_speculator = FakeDSparkSpeculator()
-
-    elapsed, evictions, metrics = runtime._build_dspark_round_fanout_branches(
-        SimpleNamespace(
-            speculator=fake_speculator,
-            device=torch.device("cpu"),
-            num_speculative_steps=7,
-            async_target_verify_width=3,
-            async_draft_fan_out=3,
-        ),
-        SimpleNamespace(),
-        branch_cache,
-        SimpleNamespace(
-            draft_tokens=torch.tensor([[11, 12, 13]]),
-        ),
-        SimpleNamespace(
-            req_ids=["request"],
-            request_epochs=[7],
-            engine_instance_id="engine",
-            generation=11,
-            num_reqs=1,
-        ),
-        (8,),
-        [],
-        runtime.DSparkRoundState(
-            base_logits=[base_logits],
-            anchor_tokens=[torch.tensor(9)],
-        ),
-    )
-
-    assert elapsed >= 0
-    assert evictions == 0
-    assert metrics["dspark_backbone_refreshes"] == 1
-    assert metrics["dspark_branch_backbone_seconds"] == 0
-    assert metrics["dspark_markov_branches"] == 12
-    assert recovery_calls == 4
-    assert len(observed_windows) == 1
-    assert observed_windows[0].shape == (12, 3, 8)
-    assert observed_windows[0][:3, :, 0].tolist() == [[1, 2, 3]] * 3
-    assert observed_windows[0][3:6, :, 0].tolist() == [[2, 3, 4]] * 3
-    assert observed_windows[0][6:9, :, 0].tolist() == [[3, 4, 5]] * 3
-    assert observed_windows[0][9:12, :, 0].tolist() == [[4, 5, 6]] * 3
-    assert observed_previous[0].tolist() == [
-        100,
-        101,
-        102,
-        110,
-        111,
-        112,
-        120,
-        121,
-        122,
-        130,
-        131,
-        132,
-    ]
-    assert len(branch_cache.entries) == 12
-    assert {key[3] for key in branch_cache.entries} == {0, 1, 2, 3}
-
-
-def test_dspark_cache_miss_executes_2d_plus_1_backbone(monkeypatch) -> None:
+def test_dspark_cache_miss_executes_normal_d_backbone(monkeypatch) -> None:
     class FakeDSparkSpeculator:
         hidden_size = 4
         sample_from_anchor = True
@@ -555,7 +405,7 @@ def test_dspark_cache_miss_executes_2d_plus_1_backbone(monkeypatch) -> None:
         @staticmethod
         def anchor_indices(num_reqs, *, execution_width=None):
             assert num_reqs == 1
-            assert execution_width == 7
+            assert execution_width == 3
             return torch.tensor([0])
 
     speculator = FakeDSparkSpeculator()
@@ -587,9 +437,9 @@ def test_dspark_cache_miss_executes_2d_plus_1_backbone(monkeypatch) -> None:
     )
     runner = SimpleNamespace(
         speculator=speculator,
-        num_speculative_steps=7,
+        num_speculative_steps=3,
         async_target_verify_width=3,
-        async_branch_backbone_width=7,
+        async_branch_backbone_width=3,
         vllm_config=SimpleNamespace(model_config=SimpleNamespace(dtype=torch.float32)),
         device=torch.device("cpu"),
     )
@@ -613,12 +463,12 @@ def test_dspark_cache_miss_executes_2d_plus_1_backbone(monkeypatch) -> None:
 
     assert observed == {
         "num_reqs": 1,
-        "width": 7,
+        "width": 3,
         "base_logits_only": False,
     }
     assert ring_slot.draft_tokens.tolist() == [[1, 2, 3]]
     assert round_state is not None
-    assert torch.equal(round_state.base_logits[0], torch.zeros(7, 8))
+    assert torch.equal(round_state.base_logits[0], torch.zeros(3, 8))
     assert round_state.anchor_tokens[0].item() == 9
     assert metrics["dspark_current_backbone_runs"] == 1
     assert metrics["dspark_current_backbone_seconds"] >= 0
@@ -730,7 +580,8 @@ def test_branch_budget_charges_only_copy_on_write_blocks() -> None:
     assert selected == [0, 1]
 
 
-def test_draft_block_pool_clone_copies_only_mutated_tail() -> None:
+@pytest.mark.parametrize("mutation_start", [4, 5, 7])
+def test_draft_block_pool_clone_copies_only_mutated_tail(mutation_start) -> None:
     class FakeBlockTables:
         block_sizes = [4]
         blocks_per_kv_block = [1]
@@ -766,7 +617,7 @@ def test_draft_block_pool_clone_copies_only_mutated_tail() -> None:
         "request",
         ["branch"],
         torch.tensor([12]).numpy(),
-        torch.tensor([5]).numpy(),
+        torch.tensor([mutation_start]).numpy(),
     )
 
     branch_blocks = pool.allocations["branch"][0]
@@ -778,6 +629,12 @@ def test_draft_block_pool_clone_copies_only_mutated_tail() -> None:
     )
     assert pool.block_refcounts[0][source_blocks[0]] == 2
     assert pool.block_refcounts[0][source_blocks[1]] == 1
+
+    canonical = runner.kv_caches[0][source_blocks].clone()
+    for position in range(mutation_start, 12):
+        block = branch_blocks[position // 4]
+        runner.kv_caches[0][block, position % 4] = -1
+    assert torch.equal(runner.kv_caches[0][source_blocks], canonical)
 
     pool.release(["branch", "request"])
 

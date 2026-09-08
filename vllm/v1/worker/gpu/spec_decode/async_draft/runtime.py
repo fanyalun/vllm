@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import gc
+import json
 import os
 import signal
 import time
@@ -484,6 +485,14 @@ def _standalone_load_draft_model(
     model_vllm_config = runner.vllm_config
     if isinstance(adapter, DSparkAsyncDraftAdapter):
         assert isinstance(speculator, DSparkSpeculator)
+        # This standalone child bypasses WorkerBase, which normally installs
+        # the IR kernel priorities. Match Sync instead of falling back to native.
+        from vllm.ir import set_default_torch_wrap
+
+        runner.vllm_config.kernel_config.ir_op_priority.set_default()
+        set_default_torch_wrap(
+            runner.vllm_config.compilation_config.ir_enable_torch_wrap
+        )
         speculator.reserve_execution_width(runner.async_branch_backbone_width)
         from vllm.config import replace
 
@@ -527,15 +536,11 @@ def _standalone_load_draft_model(
             device=runner.device,
         )
     elif isinstance(speculator, DSparkSpeculator):
-        async_width = speculator._max_execution_width
-        fan_out = runner.async_draft_fan_out
-        speculator._async_candidate_ids = torch.empty(
-            runner.max_num_reqs,
-            async_width,
-            fan_out,
-            dtype=torch.int64,
-            device=runner.device,
+        speculator._async_context_kv_events = (
+            torch.cuda.Event(enable_timing=True),
+            torch.cuda.Event(enable_timing=True),
         )
+        async_width = speculator._max_execution_width
         draft_vocab_size = speculator.model.compute_draft_logits(
             torch.zeros(
                 1,
@@ -890,9 +895,7 @@ def _execute_jit_proposal(
             next_prefill_tokens=next_prefill_tokens,
             temperature=temperature,
             seeds=seeds,
-            # The DSpark query graph is captured for the private 2D+1 branch
-            # width. A D-wide foreground execution, or the base-logit-only
-            # branch execution, must stay eager until dual-width graphs exist.
+            # Normal D-wide JIT retains its graph; canonical refresh is eager.
             is_profile=(
                 is_dspark
                 and (proposal_steps != previous_num_steps or dspark_base_logits_only)
@@ -905,6 +908,12 @@ def _execute_jit_proposal(
         else:
             speculator.num_speculative_steps = previous_num_steps
     recorded_feedback = getattr(speculator, "recorded_feedback_hidden_states", None)
+    if is_dspark:
+        context_start, context_end = speculator._async_context_kv_events
+        context_end.synchronize()
+        speculator._async_last_context_projection_seconds = (
+            context_start.elapsed_time(context_end) / 1000
+        )
     feedback_hidden_states = (
         recorded_feedback[: batch.num_reqs].clone()
         if recorded_feedback is not None
@@ -937,6 +946,7 @@ def _format_dspark_top2(
     ]
 
 
+@torch.inference_mode()
 def _dspark_markov_propose(
     speculator: DSparkSpeculator,
     base_logits: torch.Tensor,
@@ -969,9 +979,7 @@ def _dspark_markov_propose(
             values, draft_ids = logits.float().topk(2, dim=-1)
             top_values.append(values)
             top_ids.append(speculator.model.map_draft_to_target(draft_ids))
-            sampled = top_ids[-1][:, 0]
-        else:
-            sampled = speculator.model.map_draft_to_target(logits.argmax(dim=-1))
+        sampled = speculator.model.map_draft_to_target(logits.argmax(dim=-1))
         tokens[:, step].copy_(sampled)
         previous = sampled
     trace = None
@@ -1218,6 +1226,12 @@ def _run_proposal(
     }
     if is_dspark:
         metrics["dspark_current_backbone_runs"] = len(miss_indices)
+        metrics["dspark_current_backbone_forwards"] = int(bool(miss_indices))
+        metrics["context_kv_projection_seconds"] = (
+            getattr(speculator, "_async_last_context_projection_seconds", 0.0)
+            if miss_indices
+            else 0.0
+        )
         metrics["dspark_current_backbone_seconds"] = dspark_current_backbone_seconds
         metrics["dspark_backbone_refreshes"] = 0
         metrics["dspark_branch_backbone_seconds"] = 0.0
@@ -1438,6 +1452,44 @@ def _dspark_top_recovery_candidates(
     return mapped[..., :fan_out]
 
 
+def _dspark_private_query(
+    runner: GPUModelRunner,
+    block_pool: DraftBlockPool,
+    batch: AsyncDraftBatch,
+    source_indices: list[int],
+    prefix: torch.Tensor,
+    anchor_positions: torch.Tensor,
+    sample_count: int,
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    speculator = runner.speculator
+    query, sample_start = speculator.branch_query(prefix)
+    branch_ids = [
+        f"__async_dspark_query_{batch.generation}_{i}"
+        for i in range(len(source_indices))
+    ]
+    # The old anchor/mask KV is never shared as real context. The pool copies
+    # the boundary page and shares only complete pages before the anchor.
+    positions_cpu = anchor_positions.cpu().numpy()
+    if int(positions_cpu.max()) + query.shape[1] > speculator.max_model_len:
+        raise DraftCapacityError("Provisional DSpark query exceeds model length")
+    try:
+        slots = block_pool.clone_many(
+            [batch.req_ids[i] for i in source_indices],
+            branch_ids,
+            positions_cpu + query.shape[1],
+            mutation_start_positions=positions_cpu,
+        )
+        logits = speculator.branch_query_logits(
+            slots, query, anchor_positions, sample_start, sample_count
+        )
+        return logits, query, sample_start
+    finally:
+        # Even on a failed forward, no queued GPU write may outlive its pages.
+        torch.cuda.synchronize(runner.device)
+        block_pool.release(branch_ids)
+
+
+@torch.inference_mode()
 def _build_dspark_round_fanout_branches(
     runner: GPUModelRunner,
     block_pool: DraftBlockPool,
@@ -1451,23 +1503,9 @@ def _build_dspark_round_fanout_branches(
     started = time.perf_counter()
     speculator = runner.speculator
     assert isinstance(speculator, DSparkSpeculator)
-    verify_width = getattr(
-        runner, "async_target_verify_width", runner.num_speculative_steps
-    )
-    branch_backbone_width = getattr(
-        runner, "async_branch_backbone_width", runner.num_speculative_steps
-    )
-    expected_width = 2 * verify_width + 1
-    fan_out = getattr(runner, "async_draft_fan_out", ASYNC_DRAFT_FAN_OUT)
-    if branch_backbone_width != expected_width:
-        raise RuntimeError(
-            "Async DSpark branch backbone must cover every Target outcome: "
-            f"backbone_width={branch_backbone_width}, "
-            f"expected={expected_width}, verify_width={verify_width}"
-        )
-
+    width = runner.async_target_verify_width
+    fan_out = runner.async_draft_fan_out
     cache_evictions = 0
-    canonical_seconds = 0.0
     canonical_started = time.perf_counter()
     if hit_indices:
         hit_batch, hit_slot = _slice_proposal_batch(batch, ring_slot, hit_indices)
@@ -1478,136 +1516,178 @@ def _build_dspark_round_fanout_branches(
             hit_batch,
             hit_slot,
             conditioning_splits,
-            num_speculative_steps=branch_backbone_width,
             dspark_base_logits_only=True,
         )
-        canonical_seconds = time.perf_counter() - canonical_started
-        hit_logits = speculator._async_base_logits[
-            : len(hit_indices), :branch_backbone_width
-        ].clone()
-        hit_anchors = speculator.input_buffers.input_ids[
-            speculator.anchor_indices(
-                len(hit_indices), execution_width=branch_backbone_width
-            )
-        ].clone()
-        for hit_row, output_row in enumerate(hit_indices):
-            round_state.base_logits[output_row] = hit_logits[hit_row]
-            round_state.anchor_tokens[output_row] = hit_anchors[hit_row]
-
-    if any(value is None for value in round_state.base_logits):
-        raise RuntimeError("Async DSpark round is missing backbone base logits")
-    if any(value is None for value in round_state.anchor_tokens):
-        raise RuntimeError("Async DSpark round is missing backbone anchor tokens")
-    base_logits = torch.stack(
-        [value for value in round_state.base_logits if value is not None]
-    )
-    anchor_tokens = torch.stack(
-        [value for value in round_state.anchor_tokens if value is not None]
-    )
-    if base_logits.shape[1] != branch_backbone_width:
-        raise RuntimeError(
-            "Async DSpark base-logit width does not match the branch backbone: "
-            f"logits={base_logits.shape[1]}, expected={branch_backbone_width}"
-        )
-
-    candidate_started = time.perf_counter()
-    proposal = ring_slot.draft_tokens[: batch.num_reqs, :verify_width]
-    previous = anchor_tokens
-    candidates_by_depth: list[torch.Tensor] = []
-    for accepted_count in range(verify_width + 1):
-        logits = base_logits[:, accepted_count] + speculator.model.markov_bias(
-            speculator.model.markov_embed(previous)
-        )
-        returned = (
-            proposal[:, accepted_count] if accepted_count < verify_width else None
-        )
-        candidates_by_depth.append(
-            _dspark_top_recovery_candidates(speculator, logits, returned, fan_out)
-        )
-        if accepted_count < verify_width:
-            previous = proposal[:, accepted_count]
-    candidates = torch.stack(candidates_by_depth, dim=1)
-
-    windows = torch.stack(
-        [
-            base_logits[:, depth + 1 : depth + verify_width + 1]
-            for depth in range(verify_width + 1)
-        ],
-        dim=1,
-    )
-    windows = (
-        windows[:, :, None]
-        .expand(
-            -1,
-            -1,
-            fan_out,
-            -1,
-            -1,
-        )
-        .reshape(-1, verify_width, base_logits.shape[-1])
-    )
-    branch_previous = candidates.reshape(-1)
-    candidate_seconds = time.perf_counter() - candidate_started
-
-    branch_started = time.perf_counter()
-    record_top2 = os.environ.get("REPLAYSSM_SPEC_DECODE_TRACE_LOGITS") == "1"
-    tokens, traces = _dspark_markov_propose(
-        speculator,
-        windows,
-        branch_previous,
-        record_top2=record_top2,
-    )
-    completion_event = torch.cuda.Event()
-    completion_event.record(torch.cuda.current_stream(runner.device))
-    flat_index = 0
-    for request_index, (request_id, request_epoch) in enumerate(
-        zip(batch.req_ids, batch.request_epochs)
-    ):
-        for accepted_count in range(verify_width + 1):
-            for candidate_index in range(fan_out):
-                candidate = int(
-                    candidates[request_index, accepted_count, candidate_index].item()
-                )
-                trace = traces[flat_index] if traces is not None else {}
-                trace = {
-                    **trace,
-                    "dspark_proposal_source": "cache",
-                    "dspark_target_verify_width": verify_width,
-                    "dspark_proposal_execution_width": branch_backbone_width,
-                    "dspark_branch_backbone_width": branch_backbone_width,
-                }
-                branch_cache.add(
-                    (
-                        batch.engine_instance_id,
-                        request_id,
-                        request_epoch,
-                        accepted_count,
-                        candidate,
-                    ),
-                    CachedBranch(
-                        branch_id=(
-                            f"__async_dspark_markov_{batch.generation}_"
-                            f"{request_index}_{accepted_count}_{candidate_index}"
-                        ),
-                        tokens=tokens[flat_index].clone(),
-                        provisional_state=DSparkBranchState(trace_top2=trace),
-                        completion_event=completion_event,
-                    ),
-                )
-                flat_index += 1
+        for row, index in enumerate(hit_indices):
+            round_state.base_logits[index] = speculator._async_base_logits[
+                row, :width
+            ].clone()
+            round_state.anchor_tokens[index] = speculator.input_buffers.input_ids[
+                speculator.anchor_indices(len(hit_indices))[row]
+            ].clone()
     torch.cuda.synchronize(runner.device)
+    canonical_seconds = time.perf_counter() - canonical_started
+    if any(x is None for x in round_state.base_logits + round_state.anchor_tokens):
+        raise RuntimeError("Async DSpark round is missing canonical proposal state")
+    anchors = torch.stack([x for x in round_state.anchor_tokens if x is not None])
+    base_logits = torch.stack([x for x in round_state.base_logits if x is not None])
+    proposal = ring_slot.draft_tokens[: batch.num_reqs, :width]
+    last_valid = (
+        ring_slot.query_start_loc[1 : batch.num_reqs + 1]
+        - ring_slot.num_rejected[: batch.num_reqs]
+        - 1
+    ).long()
+    anchor_positions = ring_slot.positions[last_valid] + 1
+    shadow_path = os.environ.get("ASYNC_DRAFT_DSPARK_SHADOW_PATH")
+    if shadow_path and hit_indices:
+        fresh, fresh_traces = _dspark_markov_propose(
+            speculator,
+            base_logits[hit_indices],
+            anchors[hit_indices],
+            record_top2=True,
+        )
+        with open(shadow_path, "a", encoding="utf-8") as stream:
+            for row, index in enumerate(hit_indices):
+                cached = proposal[index].tolist()
+                exact = fresh[row].tolist()
+                record = {
+                    "engine_instance_id": batch.engine_instance_id,
+                    "request_id": batch.req_ids[index],
+                    "request_epoch": batch.request_epochs[index],
+                    "generation": batch.generation,
+                    "real_anchor_position": int(anchor_positions[index].item()),
+                    "real_anchor_token": int(anchors[index].item()),
+                    "cache_tokens": cached,
+                    "fresh_jit_tokens": exact,
+                    "first_difference": next(
+                        (i for i, (a, b) in enumerate(zip(cached, exact)) if a != b),
+                        None,
+                    ),
+                    "fresh_jit_trace": fresh_traces[row],
+                }
+                stream.write(json.dumps(record) + "\n")
+    candidate_seconds = backbone_seconds = markov_seconds = 0.0
+    candidate_forwards = branch_forwards = branch_count = 0
+    record_top2 = os.environ.get("REPLAYSSM_SPEC_DECODE_TRACE_LOGITS") == "1"
+    for depth in range(width + 1):
+        prefix = torch.cat((anchors[:, None], proposal[:, :depth]), dim=1)
+        candidate_started = time.perf_counter()
+        try:
+            if depth == 0:
+                # This query is identical to the normal-width real-context JIT.
+                first_logits = base_logits[:, 0]
+            else:
+                logits, _, _ = _dspark_private_query(
+                    runner,
+                    block_pool,
+                    batch,
+                    list(range(batch.num_reqs)),
+                    prefix,
+                    anchor_positions,
+                    1,
+                )
+                first_logits = logits[:, 0]
+                candidate_forwards += 1
+            first_logits = first_logits + speculator.model.markov_bias(
+                speculator.model.markov_embed(prefix[:, -1])
+            )
+            returned = proposal[:, depth : depth + 1] if depth < width else None
+            candidates = _dspark_top_recovery_candidates(
+                speculator, first_logits, returned, fan_out
+            )
+            torch.cuda.synchronize(runner.device)
+            candidate_seconds += time.perf_counter() - candidate_started
+            branch_prefix = torch.cat(
+                (prefix.repeat_interleave(fan_out, dim=0), candidates.reshape(-1, 1)),
+                dim=1,
+            )
+            source_indices = [i for i in range(batch.num_reqs) for _ in range(fan_out)]
+            branch_positions = anchor_positions.repeat_interleave(fan_out)
+            backbone_started = time.perf_counter()
+            logits, query, sample_start = _dspark_private_query(
+                runner,
+                block_pool,
+                batch,
+                source_indices,
+                branch_prefix,
+                branch_positions,
+                width,
+            )
+        except DraftCapacityError:
+            cache_evictions += batch.num_reqs * fan_out
+            continue
+        backbone_seconds += time.perf_counter() - backbone_started
+        branch_forwards += 1
+        markov_started = time.perf_counter()
+        tokens, traces = _dspark_markov_propose(
+            speculator,
+            logits,
+            candidates.reshape(-1),
+            record_top2=record_top2,
+        )
+        completion_event = torch.cuda.Event()
+        completion_event.record(torch.cuda.current_stream(runner.device))
+        completion_event.synchronize()
+        markov_seconds += time.perf_counter() - markov_started
+        candidates_cpu = candidates.cpu().tolist()
+        query_cpu = query.cpu().tolist() if record_top2 else None
+        for row, index in enumerate(source_indices):
+            candidate_index = row % fan_out
+            trace = traces[row] if traces is not None else {}
+            trace.update(
+                dspark_proposal_source="cache",
+                dspark_target_verify_width=width,
+                dspark_proposal_execution_width=width,
+                dspark_branch_backbone_width=width,
+                dspark_query_length=query.shape[1],
+                dspark_prefix_length=branch_prefix.shape[1],
+                dspark_sample_start=sample_start,
+                dspark_branch_accepted_depth=depth,
+            )
+            if query_cpu is not None:
+                position = int(branch_positions[row].item())
+                trace.update(
+                    dspark_query_input_ids=query_cpu[row],
+                    dspark_query_positions=list(
+                        range(position, position + query.shape[1])
+                    ),
+                )
+            branch_cache.add(
+                (
+                    batch.engine_instance_id,
+                    batch.req_ids[index],
+                    batch.request_epochs[index],
+                    depth,
+                    candidates_cpu[index][candidate_index],
+                ),
+                CachedBranch(
+                    branch_id=f"__async_dspark_tokens_{batch.generation}_{depth}_{row}",
+                    tokens=tokens[row],
+                    provisional_state=DSparkBranchState(trace_top2=trace),
+                    completion_event=completion_event,
+                ),
+            )
+            branch_count += 1
     return (
         time.perf_counter() - started,
         cache_evictions,
         {
             "canonical_commit_seconds": canonical_seconds,
             "candidate_or_glue_seconds": candidate_seconds,
-            "tree_or_block_build_seconds": time.perf_counter() - branch_started,
-            "context_kv_projection_seconds": canonical_seconds,
-            "dspark_backbone_refreshes": batch.num_reqs,
-            "dspark_branch_backbone_seconds": canonical_seconds,
-            "dspark_markov_branches": flat_index,
-            "fanout_branches": flat_index,
+            "tree_or_block_build_seconds": backbone_seconds + markov_seconds,
+            "context_kv_projection_seconds": (
+                getattr(speculator, "_async_last_context_projection_seconds", 0.0)
+                if hit_indices
+                else 0.0
+            ),
+            "dspark_backbone_refreshes": len(hit_indices),
+            "dspark_candidate_backbone_forwards": candidate_forwards,
+            "dspark_candidate_seconds": candidate_seconds,
+            "dspark_branch_backbone_forwards": branch_forwards,
+            "dspark_branch_backbone_seconds": backbone_seconds,
+            "dspark_markov_seconds": markov_seconds,
+            "dspark_markov_branches": branch_count,
+            "fanout_branches": branch_count,
             "fanout_build_rounds": batch.num_reqs,
         },
     )
@@ -1879,7 +1959,9 @@ def run_async_draft_child(
         )
         branch_capacity = 0
         if adapter.uses_kv_branches:
-            branch_capacity = target_max_num_reqs * (verify_width + 1) * fan_out
+            branch_capacity = target_max_num_reqs * fan_out
+            if not isinstance(adapter, DSparkAsyncDraftAdapter):
+                branch_capacity *= verify_width + 1
         child_config.scheduler_config.max_num_seqs = target_max_num_reqs
         if adapter.uses_kv_branches:
             child_config.scheduler_config.max_num_seqs = (
@@ -1887,7 +1969,9 @@ def run_async_draft_child(
             )
         child_config.scheduler_config.max_num_batched_tokens = max(
             target_max_num_tokens,
-            branch_capacity,
+            branch_capacity * (2 * verify_width + 2)
+            if isinstance(adapter, DSparkAsyncDraftAdapter)
+            else branch_capacity,
         )
         # Recompute this derived limit after increasing max_num_seqs. Keeping
         # the Target value can violate the child drafter's slot reservation.
@@ -1906,8 +1990,7 @@ def run_async_draft_child(
             )
         child_config.speculative_config.async_draft_device = None
         # Construct the standalone model and attention backend at the same D
-        # used by Sync. DSpark separately grows private eager buffers to 2D+1
-        # for provisional branch construction.
+        # used by Sync. Explicit branch prefixes only extend eager queries.
         child_config.speculative_config.num_speculative_tokens = verify_width
         child_config.scheduler_config.async_scheduling = False
         # Target-only block-count overrides are useful for forcing scheduler

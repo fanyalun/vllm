@@ -31,12 +31,14 @@ import torch
 from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
 from vllm.logger import init_logger
+from vllm.v1.worker.gpu.attn_utils import build_slot_mappings_by_layer
 from vllm.v1.worker.gpu.sample.gumbel import gumbel_sample
 from vllm.v1.worker.gpu.spec_decode.dflash.speculator import DFlashSpeculator
 from vllm.v1.worker.gpu.spec_decode.dspark.utils import (
     get_dspark_proposal_bank_width,
     load_dspark_model,
 )
+from vllm.v1.worker.gpu.spec_decode.speculator import DraftModelSpeculator
 
 logger = init_logger(__name__)
 
@@ -47,10 +49,8 @@ class DSparkSpeculator(DFlashSpeculator):
     def __init__(self, vllm_config: VllmConfig, device: torch.device):
         super().__init__(vllm_config, device)
 
-        # The public proposal/verification width is D. Sync executes D directly;
-        # an async child may instantiate this speculator at its private 2D+1
-        # branch-backbone width while exposing only D tokens to the Target.
-        # The checkpoint width remains a compatibility upper bound.
+        # Output width is D, including in the asynchronous child. Explicit
+        # branch prefixes extend only the eager query, never the output width.
         bank_width = get_dspark_proposal_bank_width(self.draft_model_config.hf_config)
         if bank_width < self.num_speculative_steps:
             raise ValueError(
@@ -122,6 +122,70 @@ class DSparkSpeculator(DFlashSpeculator):
             self._trace_base_top2_ids = torch.empty(
                 trace_shape, dtype=torch.int64, device=device
             )
+
+    def branch_query(self, prefix: torch.Tensor) -> tuple[torch.Tensor, int]:
+        """Build a query whose last prefix token seeds D predictions."""
+        if prefix.ndim != 2 or prefix.shape[1] < 1:
+            raise ValueError("DSpark branch prefix must be a nonempty token matrix")
+        sample_start = prefix.shape[1] - int(self.sample_from_anchor)
+        query = prefix.new_full(
+            (prefix.shape[0], sample_start + self.num_speculative_steps),
+            self.parallel_drafting_token_id,
+        )
+        query[:, : prefix.shape[1]] = prefix
+        return query, sample_start
+
+    @torch.inference_mode()
+    def branch_query_logits(
+        self,
+        slots: torch.Tensor,
+        query: torch.Tensor,
+        anchor_positions: torch.Tensor,
+        sample_start: int,
+        sample_count: int,
+    ) -> torch.Tensor:
+        """Run an eager provisional query on caller-owned private KV pages."""
+        num_reqs, query_width = query.shape
+        num_tokens = query.numel()
+        if num_reqs > self.max_num_reqs or num_tokens > self.max_num_tokens:
+            raise ValueError("DSpark branch query exceeds temporary buffer capacity")
+        if not 0 <= sample_start < sample_start + sample_count <= query_width:
+            raise ValueError("DSpark branch sample positions are outside the query")
+        seq_lens = anchor_positions + query_width
+        self.draft_max_seq_len = int(seq_lens.max().item())
+        if self.draft_max_seq_len > self.max_model_len:
+            raise ValueError("DSpark branch query exceeds maximum model length")
+        positions = anchor_positions[:, None] + torch.arange(
+            query_width, device=query.device
+        )
+        self.input_buffers.input_ids[:num_tokens].copy_(query.flatten())
+        self.input_buffers.positions[:num_tokens].copy_(positions.flatten())
+        self.input_buffers.query_start_loc[: num_reqs + 1].copy_(
+            torch.arange(num_reqs + 1, device=query.device) * query_width
+        )
+        self.input_buffers.seq_lens[:num_reqs].copy_(seq_lens)
+        self.block_tables.gather_block_tables(slots, num_reqs)
+        slot_mappings = self.block_tables.compute_slot_mappings(
+            slots,
+            self.input_buffers.query_start_loc[: num_reqs + 1],
+            self.input_buffers.positions[:num_tokens],
+            num_tokens,
+        )
+        metadata = DraftModelSpeculator._build_draft_attn_metadata(
+            self, num_reqs, num_reqs, num_tokens, query_width, causal=False
+        )
+        hidden = self._run_model(
+            num_tokens,
+            metadata,
+            build_slot_mappings_by_layer(slot_mappings, self.kv_cache_config),
+            None,
+        )
+        selected = hidden.view(num_reqs, query_width, -1)[
+            :, sample_start : sample_start + sample_count
+        ]
+        return self.model.compute_draft_logits(
+            selected.reshape(num_reqs * sample_count, -1)
+        ).view(num_reqs, sample_count, -1)
 
     def set_execution_width(self, width: int) -> None:
         """Select a DSpark execution width within the allocated maximum."""

@@ -160,14 +160,11 @@ class QwenMTPAsyncDraftAdapter(AsyncDraftMethodAdapter):
         return [*shared, *(item.to_dict() for item in mtp)]
 
     def fan_out(self) -> int:
-        return _internal_fan_out(
-            "ASYNC_DRAFT_MTP_FAN_OUT", _QWEN_MTP_DEFAULT_FAN_OUT
-        )
+        return _internal_fan_out("ASYNC_DRAFT_MTP_FAN_OUT", _QWEN_MTP_DEFAULT_FAN_OUT)
 
 
 class DSparkAsyncDraftAdapter(AsyncDraftMethodAdapter):
     method = "dspark"
-    uses_kv_branches = False
 
     def target_state_layout(self) -> TargetStateLayout:
         speculative_config = self.vllm_config.speculative_config
@@ -223,15 +220,8 @@ class DSparkAsyncDraftAdapter(AsyncDraftMethodAdapter):
         speculative_config = self.vllm_config.speculative_config
         assert speculative_config is not None
         verify_width = speculative_config.num_speculative_tokens
-        branch_width = 2 * verify_width + 1
-        checkpoint_width = self.proposal_bank_width()
-        if branch_width > checkpoint_width:
-            raise ValueError(
-                "DSpark async branch backbone width exceeds the checkpoint "
-                f"limit: branch_width={branch_width}, "
-                f"checkpoint_width={checkpoint_width}, verify_width={verify_width}"
-            )
-        return branch_width
+        self.proposal_bank_width()
+        return verify_width
 
 
 def _materialize_shared_weights(

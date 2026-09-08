@@ -296,9 +296,14 @@ class AsyncDraftSpeculator(BaseSpeculator):
             "tree_or_block_build_seconds",
             "context_kv_projection_seconds",
             "dspark_current_backbone_runs",
+            "dspark_current_backbone_forwards",
             "dspark_current_backbone_seconds",
             "dspark_backbone_refreshes",
             "dspark_branch_backbone_seconds",
+            "dspark_branch_backbone_forwards",
+            "dspark_candidate_backbone_forwards",
+            "dspark_candidate_seconds",
+            "dspark_markov_seconds",
             "dspark_markov_branches",
             "fanout_branches",
             "fanout_build_rounds",
@@ -562,6 +567,7 @@ class AsyncDraftSpeculator(BaseSpeculator):
             ),
             "async_next_proposal_wait_seconds": elapsed,
             "async_batch_num_reqs": num_reqs,
+            "async_response_metrics": response_metrics,
         }
         self._last_response_ready_at = time.perf_counter()
         return self._draft_tokens[:num_reqs]
