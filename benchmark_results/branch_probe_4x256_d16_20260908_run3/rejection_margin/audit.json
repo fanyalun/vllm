@@ -1,0 +1,20 @@
+{
+  "qwen36": {
+    "trace_sha256": "91197b1ae48dacb19c7c4bc5c42217a700e9c7616747671ba483ad40fdbdfb88",
+    "trace_rows": 1728,
+    "excluded_beyond_output_budget": 95,
+    "verification_rounds": 108,
+    "accepted_and_correction_tokens_match_actual_output": true,
+    "first_rejection_equals_first_greedy_mismatch": true,
+    "top1_uses_actual_argmax_not_unstable_topk_tie_order": true
+  },
+  "gemma4": {
+    "trace_sha256": "816aed567113a58dd582ee47bf891b6038b82818d9d69f9d0d4bde888dae02a3",
+    "trace_rows": 1200,
+    "excluded_beyond_output_budget": 23,
+    "verification_rounds": 75,
+    "accepted_and_correction_tokens_match_actual_output": true,
+    "first_rejection_equals_first_greedy_mismatch": true,
+    "top1_uses_actual_argmax_not_unstable_topk_tie_order": true
+  }
+}

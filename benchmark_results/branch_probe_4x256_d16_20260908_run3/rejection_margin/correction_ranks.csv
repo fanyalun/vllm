@@ -1,0 +1,5 @@
+model,scope,first_rejections,top1,top2,neither,top1_probability,top2_probability,neither_probability
+qwen36,all_first_rejections,67,0,51,16,0.0,0.7611940298507462,0.23880597014925373
+qwen36,low_margin_first_rejections,37,0,26,11,0.0,0.7027027027027027,0.2972972972972973
+gemma4,all_first_rejections,20,0,12,8,0.0,0.6,0.4
+gemma4,low_margin_first_rejections,15,0,9,6,0.0,0.6,0.4
