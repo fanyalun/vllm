@@ -1,0 +1,11 @@
+{
+  "status": "passed",
+  "cells": 20,
+  "requests": 320,
+  "proposal_calls": 28507,
+  "boundary": "propose inputs/state preparation + draft forward + sampling",
+  "metric": "CUDA stream elapsed interval, including CPU-induced idle gaps",
+  "excluded": "target verify; initialization; warmup; RPC collection",
+  "amortized_note": "block time / D, not measured single-forward latency",
+  "aggregation": "proposal-call-weighted mean; prefill proposals separate"
+}

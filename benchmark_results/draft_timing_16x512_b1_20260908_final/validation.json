@@ -1,0 +1,198 @@
+{
+  "status": "timing_and_completeness_passed",
+  "cells": [
+    {
+      "model": "qwen36",
+      "method": "moe_skip",
+      "d": 4,
+      "exact_match_uninstrumented": 16,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "81265d1e29a5e77d869bd31de361370224767e94161e59a5db5ed796dc59331a"
+    },
+    {
+      "model": "qwen36",
+      "method": "moe_skip",
+      "d": 8,
+      "exact_match_uninstrumented": 4,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "398afd81e57396e59ba55255a38c527e6d522bfc7462bb260fecd578ff2bbee0"
+    },
+    {
+      "model": "qwen36",
+      "method": "moe_skip",
+      "d": 16,
+      "exact_match_uninstrumented": 8,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "66967e1a272d72cfac909407e342c96566bb4be55e02bc0b0ad1426e6921c0f4"
+    },
+    {
+      "model": "qwen36",
+      "method": "moe_skip",
+      "d": 32,
+      "exact_match_uninstrumented": 16,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "c99b5cef6c9b166dfeb4d2aefc13adea23bd282aafdb4f5848b61d46b367758a"
+    },
+    {
+      "model": "qwen36",
+      "method": "mtp",
+      "d": 4,
+      "exact_match_uninstrumented": 16,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "23cb0411d4107a355cdd7a01f88e63c09a2e51eb661e2c914af5cadbe049fae9"
+    },
+    {
+      "model": "qwen36",
+      "method": "mtp",
+      "d": 8,
+      "exact_match_uninstrumented": 4,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "c90c9029c8b7154ac8103f060c78005da2791f7340bd3bb77bb260a0491dde53"
+    },
+    {
+      "model": "qwen36",
+      "method": "mtp",
+      "d": 16,
+      "exact_match_uninstrumented": 3,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "92d7c9c36c5b1a9e7b7ce8a2092350728801495f8d325376f8622973afb26758"
+    },
+    {
+      "model": "qwen36",
+      "method": "mtp",
+      "d": 32,
+      "exact_match_uninstrumented": 16,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "f5f96b8cd40fa7de4ee57662e871429bc93cbd7f04bc45c3a1a74a4c25f915ad"
+    },
+    {
+      "model": "qwen36",
+      "method": "dspark",
+      "d": 4,
+      "exact_match_uninstrumented": 6,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "bb44155bee758946dd10765287d26f55491a205875b6787a7e22bfa3c49496ac"
+    },
+    {
+      "model": "qwen36",
+      "method": "dspark",
+      "d": 8,
+      "exact_match_uninstrumented": 2,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "8d7dde0e0849d6a8b4c817daf1fed46650ce3123a8128313b3950002b2225f1f"
+    },
+    {
+      "model": "gemma4",
+      "method": "moe_skip",
+      "d": 4,
+      "exact_match_uninstrumented": 16,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "e7f0dfece39e437242d8138960b5621cf577b1a3f762f862cd14764d6e827f20"
+    },
+    {
+      "model": "gemma4",
+      "method": "moe_skip",
+      "d": 8,
+      "exact_match_uninstrumented": 5,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "84591f5ed109549600bb186de0b658317f99a10b1cfd7a68a78f2653780498b0"
+    },
+    {
+      "model": "gemma4",
+      "method": "moe_skip",
+      "d": 16,
+      "exact_match_uninstrumented": 3,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "49cc2568b3e5eb56a43081c124d0e31b677a1853215e5e126014fa40e4be6942"
+    },
+    {
+      "model": "gemma4",
+      "method": "moe_skip",
+      "d": 32,
+      "exact_match_uninstrumented": 5,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "b428e118659ef6bccf984fda2ac1e683098eff2c05ca73d5801690f005550c57"
+    },
+    {
+      "model": "gemma4",
+      "method": "mtp",
+      "d": 4,
+      "exact_match_uninstrumented": 3,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "d2337473bebe5119852db25c9a8b48d125458089a35b551d83b2cc1b4d2373a5"
+    },
+    {
+      "model": "gemma4",
+      "method": "mtp",
+      "d": 8,
+      "exact_match_uninstrumented": 4,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "ed567a250813ef97a964f305d7618d2a279460e49a8ad6ab36fb4b05e97d47fe"
+    },
+    {
+      "model": "gemma4",
+      "method": "mtp",
+      "d": 16,
+      "exact_match_uninstrumented": 4,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "7c5759de8206cc7e114762a3c23fc138cd77a2e919a103024728d5bfff42898e"
+    },
+    {
+      "model": "gemma4",
+      "method": "mtp",
+      "d": 32,
+      "exact_match_uninstrumented": 5,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "3b7e289e8bafd9a453deb79802879f5bb22cedbe3b7aafd13f475f534753a8f9"
+    },
+    {
+      "model": "gemma4",
+      "method": "dspark",
+      "d": 4,
+      "exact_match_uninstrumented": 16,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "c8c57e71a0c4eaaa545c7894a87bb877a8daecaedac893d536be727a8b4cec79"
+    },
+    {
+      "model": "gemma4",
+      "method": "dspark",
+      "d": 8,
+      "exact_match_uninstrumented": 1,
+      "requests": 16,
+      "post_warmup_jit_warnings": [],
+      "result_sha256": "222979732d3275980ddf028368f3a36c9c9029a17b32a93c7bc448e606740e69"
+    }
+  ],
+  "runtime_unchanged_from_e2e_source_snapshot": true,
+  "script_sha256": {
+    "draft_timing_worker.py": "15fec798df16b1c14bd653151c5430edf3aa271486815fcf51c9cdd9eb00108f",
+    "run_draft_timing.py": "8c833996fcdabc26bcd831cab86ec0b3acc8827742b801c6258e9b6fca9bf2a8",
+    "run_performance.py": "2a845347c166af354e3ffe9020c6f169207810c5bdff9ab5764d1ed795f2f5cf"
+  },
+  "requests": 320,
+  "output_tokens": 163840,
+  "exact_match_uninstrumented_requests": 153,
+  "output_parity_status": "not_established_against_prior_process_runs",
+  "output_parity_note": "153/320 match prior same-method runs; no same-process instrumented/uninstrumented control was run, so the source of divergence is not isolated.",
+  "publication_only_change": "Replaced torch.cuda.synchronize with torch.accelerator.synchronize outside measured proposals. Both GPUs passed event completion and value checks. No full matrix rerun after this API-only change.",
+  "published_worker_sha256": "a6e5edae45536e9114a7a65b390cbce02c743dd8fa319f9508d0f6632042ee2a"
+}
