@@ -25,10 +25,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=Path)
     parser.add_argument("--threshold", type=float, default=1.0)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    directory = args.root / "rejection_margin"
+    directory = args.output or args.root / "rejection_margin"
     directory.mkdir(exist_ok=True)
     detection, ranks, first_rows, audit = [], [], [], {}
+    proposal_rows = []
     for model, trace_name in (("qwen36", "qwen_trace"), ("gemma4", "gemma_trace")):
         cell = args.root / model
         assert (cell / "RUN_COMPLETE").exists()
@@ -54,6 +56,46 @@ def main():
             assert [x["draft_position"] for x in rows] == list(range(1, len(rows) + 1))
             accepted = rows[0]["accepted_draft_tokens"]
             assert 0 <= accepted <= len(rows)
+            eligible = [
+                row for row in rows if offsets[req] + row["draft_position"] - 1 < 256
+            ]
+            predicted = next(
+                (
+                    row["draft_position"]
+                    for row in eligible
+                    if row["draft_top1_minus_top2"] < args.threshold
+                ),
+                None,
+            )
+            actual = next(
+                (
+                    row["draft_position"]
+                    for row in eligible
+                    if row["draft_position"] == accepted + 1
+                ),
+                None,
+            )
+            if predicted is None:
+                outcome = "no_prediction" if actual is not None else "neither"
+            elif actual is None:
+                outcome = "prediction_without_rejection"
+            elif predicted == actual:
+                outcome = "exact"
+            else:
+                outcome = "early" if predicted < actual else "late"
+            proposal_rows.append(
+                {
+                    "model": model,
+                    "sample_index": req,
+                    "category": outputs[req]["category"],
+                    "verify_step": step,
+                    "threshold": args.threshold,
+                    "eligible_positions": len(eligible),
+                    "predicted_position": predicted,
+                    "actual_first_rejection_position": actual,
+                    "outcome": outcome,
+                }
+            )
             for row in rows:
                 assert row["accepted_draft_tokens"] == accepted
                 position = row["draft_position"]
@@ -71,6 +113,11 @@ def main():
                 low = row["draft_top1_minus_top2"] < args.threshold
                 scopes = [("all_positions_first_rejection", first)]
                 scopes.append(("all_positions_local_mismatch", mismatch))
+                counts["first_low_margin_position"][
+                    ("tp" if first else "fp")
+                    if position == predicted
+                    else ("fn" if first else "tn")
+                ] += 1
                 if reached:
                     assert mismatch == first
                     assert outputs[req]["token_ids"][output_index] == target
@@ -150,6 +197,46 @@ def main():
     write_csv(directory / "detection.csv", detection)
     write_csv(directory / "correction_ranks.csv", ranks)
     write_csv(directory / "first_rejections.csv", first_rows)
+    write_csv(directory / "proposal_predictions.csv", proposal_rows)
+    proposal_summary = []
+    for model in audit:
+        rows = [row for row in proposal_rows if row["model"] == model]
+        outcomes = Counter(row["outcome"] for row in rows)
+        prediction_count = sum(row["predicted_position"] is not None for row in rows)
+        rejection_count = sum(
+            row["actual_first_rejection_position"] is not None for row in rows
+        )
+        metrics = next(
+            row
+            for row in detection
+            if row["model"] == model and row["scope"] == "first_low_margin_position"
+        )
+        assert metrics["tp"] == outcomes["exact"]
+        assert metrics["predicted_positive"] == prediction_count
+        assert metrics["actual_positive"] == rejection_count
+        proposal_summary.append(
+            {
+                "model": model,
+                "threshold": args.threshold,
+                "verification_rounds": len(rows),
+                "predicted_rounds": prediction_count,
+                "rejection_rounds": rejection_count,
+                **{
+                    name: outcomes[name]
+                    for name in (
+                        "exact",
+                        "early",
+                        "late",
+                        "prediction_without_rejection",
+                        "no_prediction",
+                        "neither",
+                    )
+                },
+                "precision": metrics["precision"],
+                "recall": metrics["recall"],
+            }
+        )
+    write_csv(directory / "proposal_summary.csv", proposal_summary)
     (directory / "audit.json").write_text(json.dumps(audit, indent=2) + "\n")
     (directory / "RUN_COMPLETE").write_text(
         f"Two models; {len(first_rows)} first rejections audited against output\n"

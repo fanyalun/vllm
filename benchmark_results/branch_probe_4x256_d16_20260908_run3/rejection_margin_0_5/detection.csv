@@ -1,0 +1,9 @@
+model,scope,threshold,positions,tp,fp,fn,tn,predicted_positive,actual_positive,precision,recall
+qwen36,first_low_margin_position,0.5,1633,20,30,47,1536,50,67,0.4,0.29850746268656714
+qwen36,all_positions_first_rejection,0.5,1633,25,66,42,1500,91,67,0.27472527472527475,0.373134328358209
+qwen36,all_positions_local_mismatch,0.5,1633,53,38,83,1459,91,136,0.5824175824175825,0.3897058823529412
+qwen36,reached_positions_first_rejection,0.5,983,25,12,42,904,37,67,0.6756756756756757,0.373134328358209
+gemma4,first_low_margin_position,0.5,1177,6,9,14,1148,15,20,0.4,0.3
+gemma4,all_positions_first_rejection,0.5,1177,11,24,9,1133,35,20,0.3142857142857143,0.55
+gemma4,all_positions_local_mismatch,0.5,1177,19,16,34,1108,35,53,0.5428571428571428,0.3584905660377358
+gemma4,reached_positions_first_rejection,0.5,969,11,11,9,938,22,20,0.5,0.55
