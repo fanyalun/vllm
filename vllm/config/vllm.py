@@ -521,13 +521,12 @@ class VllmConfig:
         if use_v2_model_runner is not None:
             return use_v2_model_runner
 
-        # DSpark is implemented only by the V2 GPU model runner, and DeepSeek-V4
-        # is not otherwise a default-V2 architecture, so force V2 for it. If V2
-        # is unsupported for the rest of the config, _validate_v2_model_runner
-        # raises rather than silently falling back to V1 (which can't run dspark).
-        if (
-            self.speculative_config is not None
-            and self.speculative_config.method == "dspark"
+        # Standalone asynchronous drafting and DSpark are implemented only by
+        # Model Runner V2. Explicit VLLM_USE_V2_MODEL_RUNNER=0 is respected here
+        # and rejected by config validation instead of silently changing intent.
+        if self.speculative_config is not None and (
+            self.speculative_config.method == "dspark"
+            or self.speculative_config.async_draft_device is not None
         ):
             return True
 
@@ -906,7 +905,7 @@ class VllmConfig:
                 "draft_tensor_parallel_size="
                 f"{speculative_config.draft_tensor_parallel_size}"
             )
-        if speculative_config.method != "eagle3":
+        if speculative_config.method not in ("eagle3", "mtp", "dspark"):
             unsupported.append(f"method={speculative_config.method!r}")
         if speculative_config.draft_sample_method != "greedy":
             unsupported.append(
@@ -919,11 +918,28 @@ class VllmConfig:
             )
 
         model_config = self.model_config
-        if model_config is None or model_config.architecture != "LlamaForCausalLM":
-            architecture = None if model_config is None else model_config.architecture
+        architecture = None if model_config is None else model_config.architecture
+        supported_target_architectures = {
+            "eagle3": {"LlamaForCausalLM"},
+            "mtp": {
+                "Qwen3_5MoeForCausalLM",
+                "Qwen3_5MoeForConditionalGeneration",
+            },
+            "dspark": {
+                "Qwen3_5MoeForCausalLM",
+                "Qwen3_5MoeForConditionalGeneration",
+                "Gemma4ForCausalLM",
+                "Gemma4ForConditionalGeneration",
+            },
+        }
+        if architecture not in supported_target_architectures.get(
+            speculative_config.method, set()
+        ):
             unsupported.append(f"target_architecture={architecture!r}")
         if model_config is not None and model_config.is_multimodal_model:
-            unsupported.append("multimodal_model=True")
+            multimodal_config = getattr(model_config, "multimodal_config", None)
+            if multimodal_config is None or not multimodal_config.language_model_only:
+                unsupported.append("multimodal_model=True")
         if model_config is not None and model_config.enable_prompt_embeds:
             unsupported.append("enable_prompt_embeds=True")
         if self.lora_config is not None:
@@ -933,13 +949,24 @@ class VllmConfig:
 
         draft_config = speculative_config.draft_model_config
         draft_architecture = None if draft_config is None else draft_config.architecture
-        if draft_architecture not in (
-            "LlamaForCausalLMEagle3",
-            "Eagle3LlamaForCausalLM",
-            "PEagleDraftModel",
-            "PeagleLlamaForCausalLM",
+        supported_draft_architectures = {
+            "eagle3": {
+                "LlamaForCausalLMEagle3",
+                "Eagle3LlamaForCausalLM",
+                "PEagleDraftModel",
+                "PeagleLlamaForCausalLM",
+            },
+            "mtp": {"Qwen3_5MoeMTP"},
+            "dspark": {"Qwen3DSparkModel"},
+        }
+        if draft_architecture not in supported_draft_architectures.get(
+            speculative_config.method, set()
         ):
             unsupported.append(f"draft_architecture={draft_architecture!r}")
+
+        use_gemma4_mtp = getattr(speculative_config, "use_gemma4_mtp", None)
+        if callable(use_gemma4_mtp) and use_gemma4_mtp():
+            unsupported.append("blocked_missing_26b_mtp_checkpoint")
 
         if not isinstance(async_draft_device, int) or async_draft_device < 0:
             unsupported.append(f"async_draft_device={async_draft_device!r}")
@@ -955,7 +982,8 @@ class VllmConfig:
         if unsupported:
             raise ValueError(
                 "async_draft_device currently supports only single-node CUDA "
-                "MRV2 LlamaForCausalLM + EAGLE3 with Target TP1/PP1/DP1/DCP1, "
+                "MRV2 Llama+EAGLE3, Qwen3.6+MTP/DSpark, or Gemma4+DSpark "
+                "with Target TP1/PP1/DP1/DCP1, "
                 "Draft TP1, greedy draft sampling, standard rejection sampling, "
                 "and prefix caching/LoRA/multimodal/prompt embeddings/DBO disabled. "
                 "Incompatible fields: " + ", ".join(unsupported)

@@ -88,6 +88,40 @@ def load_safetensors_key(model_path: str, key: str) -> tuple[torch.Tensor, Path]
         return file.get_tensor(key), path
 
 
+def audit_safetensors_prefixes(
+    model_path: str, prefixes: tuple[str, ...]
+) -> list[MaterializedWeight]:
+    """Record exact indexed tensors loaded for a standalone Draft component."""
+    root = Path(model_path).expanduser().resolve()
+    index_path = root / "model.safetensors.index.json"
+    if not index_path.is_file():
+        raise ValueError(
+            "Keyed standalone Draft loading requires model.safetensors.index.json"
+        )
+    with index_path.open(encoding="utf-8") as file:
+        weight_map = json.load(file).get("weight_map", {})
+    keys = sorted(
+        key for key in weight_map if any(key.startswith(prefix) for prefix in prefixes)
+    )
+    if not keys:
+        raise KeyError(f"No checkpoint tensors match prefixes {prefixes!r}")
+    audited: list[MaterializedWeight] = []
+    for key in keys:
+        tensor, path = load_safetensors_key(str(root), key)
+        audited.append(
+            MaterializedWeight(
+                name=key,
+                source="target",
+                checkpoint_key=key,
+                checkpoint_file=path.name,
+                shape=tuple(tensor.shape),
+                dtype=str(tensor.dtype),
+                sha256=_tensor_sha256(tensor),
+            )
+        )
+    return audited
+
+
 def _copy_weight(
     module: nn.Module,
     checkpoint_tensor: torch.Tensor,
@@ -107,39 +141,39 @@ def _copy_weight(
     return parameter
 
 
-def materialize_standalone_eagle_weights(
-    eagle_model: nn.Module,
+def materialize_standalone_draft_weights(
+    draft_model: nn.Module,
     target_model_path: str,
 ) -> list[MaterializedWeight]:
-    """Fill EAGLE weights that the in-process path normally shares.
+    """Fill Draft weights that the in-process path normally shares.
 
     Only individual safetensors keys are read from the target checkpoint. The
     full target model is never instantiated in the standalone draft process.
     """
 
-    inner = getattr(eagle_model, "model", None)
+    inner = getattr(draft_model, "model", None)
     if inner is None:
-        raise ValueError("EAGLE model has no inner model")
+        raise ValueError("Draft model has no inner model")
 
     specs = (
         (
             "model.embed_tokens.weight",
-            bool(getattr(eagle_model, "has_own_embed_tokens", False)),
+            ("model.embed_tokens.weight", "model.language_model.embed_tokens.weight"),
+            bool(getattr(draft_model, "has_own_embed_tokens", False)),
             getattr(inner, "embed_tokens", None),
-            "model.embed_tokens.weight",
         ),
         (
             "lm_head.weight",
-            bool(getattr(eagle_model, "has_own_lm_head", False)),
-            getattr(eagle_model, "lm_head", None),
-            "lm_head.weight",
+            ("lm_head.weight",),
+            bool(getattr(draft_model, "has_own_lm_head", False)),
+            getattr(draft_model, "lm_head", None),
         ),
     )
 
     results: list[MaterializedWeight] = []
-    for name, has_own_weight, module, checkpoint_key in specs:
+    for name, checkpoint_keys, has_own_weight, module in specs:
         if module is None:
-            raise ValueError(f"EAGLE model is missing {name}")
+            raise ValueError(f"Draft model is missing {name}")
 
         if has_own_weight:
             parameter = module.weight
@@ -156,9 +190,20 @@ def materialize_standalone_eagle_weights(
             )
             continue
 
-        checkpoint_tensor, checkpoint_file = load_safetensors_key(
-            target_model_path, checkpoint_key
-        )
+        missing: list[str] = []
+        for checkpoint_key in checkpoint_keys:
+            try:
+                checkpoint_tensor, checkpoint_file = load_safetensors_key(
+                    target_model_path, checkpoint_key
+                )
+                break
+            except KeyError:
+                missing.append(checkpoint_key)
+        else:
+            raise KeyError(
+                "None of the shared-weight keys are present in the target "
+                f"checkpoint: {missing}"
+            )
         parameter = _copy_weight(module, checkpoint_tensor, name)
         if _tensor_sha256(parameter) != _tensor_sha256(
             checkpoint_tensor.to(dtype=parameter.dtype)
@@ -177,3 +222,6 @@ def materialize_standalone_eagle_weights(
         )
 
     return results
+
+
+materialize_standalone_eagle_weights = materialize_standalone_draft_weights

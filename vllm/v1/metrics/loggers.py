@@ -466,7 +466,7 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
                 ),
                 "jit_fallbacks": (
                     "vllm:async_draft_jit_fallbacks",
-                    "Number of exact asynchronous draft JIT fallbacks.",
+                    "Number of on-demand asynchronous draft JIT fallbacks.",
                 ),
                 "cache_evictions": (
                     "vllm:async_draft_cache_evictions",
@@ -487,6 +487,58 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
                 "overlap_seconds": (
                     "vllm:async_draft_overlap_seconds",
                     "Target execution seconds available to asynchronous Draft.",
+                ),
+                "canonical_commit_seconds": (
+                    "vllm:async_draft_canonical_commit_seconds",
+                    "Seconds spent refreshing canonical Draft state.",
+                ),
+                "candidate_or_glue_seconds": (
+                    "vllm:async_draft_candidate_or_glue_seconds",
+                    "Seconds spent selecting outcomes or running glue decode.",
+                ),
+                "tree_or_block_build_seconds": (
+                    "vllm:async_draft_tree_or_block_build_seconds",
+                    "Seconds spent decoding provisional tree or block branches.",
+                ),
+                "context_kv_projection_seconds": (
+                    "vllm:async_draft_context_kv_projection_seconds",
+                    "Seconds spent projecting real Target states into context KV.",
+                ),
+                "dspark_current_backbone_runs": (
+                    "vllm:async_draft_dspark_current_backbone_runs",
+                    "Number of foreground D-wide DSpark backbone executions.",
+                ),
+                "dspark_current_backbone_seconds": (
+                    "vllm:async_draft_dspark_current_backbone_seconds",
+                    "Seconds spent in foreground D-wide DSpark backbones.",
+                ),
+                "dspark_backbone_refreshes": (
+                    "vllm:async_draft_dspark_backbone_refreshes",
+                    "Number of per-round 2D+1 DSpark backbone refreshes.",
+                ),
+                "dspark_branch_backbone_seconds": (
+                    "vllm:async_draft_dspark_branch_backbone_seconds",
+                    "Seconds spent in per-round 2D+1 DSpark backbones.",
+                ),
+                "dspark_markov_branches": (
+                    "vllm:async_draft_dspark_markov_branches",
+                    "Number of DSpark outcome branches built by the Markov head.",
+                ),
+                "fanout_branches": (
+                    "vllm:async_draft_fanout_branches",
+                    "Number of asynchronous outcome branches actually built.",
+                ),
+                "fanout_build_rounds": (
+                    "vllm:async_draft_fanout_build_rounds",
+                    "Number of asynchronous outcome branch-build rounds.",
+                ),
+                "next_proposal_wait_seconds": (
+                    "vllm:async_draft_next_proposal_wait_seconds",
+                    "Seconds Target waited for the next Draft proposal.",
+                ),
+                "ipc_latency_seconds": (
+                    "vllm:async_draft_ipc_latency_seconds",
+                    "Seconds spent copying asynchronous Draft IPC payloads.",
                 ),
             }
             for key, (name, documentation) in async_draft_counter_specs.items():

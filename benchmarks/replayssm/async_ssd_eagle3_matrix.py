@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Run and audit the Llama-3.1-8B EAGLE3 asynchronous SSD phase-A matrix."""
+"""Run and audit an asynchronous SSD correctness/performance matrix."""
 
 from __future__ import annotations
 
@@ -156,11 +156,30 @@ def normalize_template_token_ids(rendered: object) -> list[int]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True)
-    parser.add_argument("--draft", required=True)
+    parser.add_argument("--draft")
+    parser.add_argument(
+        "--method", choices=("eagle3", "mtp", "dspark"), default="eagle3"
+    )
+    parser.add_argument(
+        "--dtype",
+        choices=("float16", "bfloat16", "float32"),
+        default="float16",
+    )
     parser.add_argument("--dataset-root", required=True)
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--target-device", type=int, default=0)
     parser.add_argument("--draft-device", type=int, default=1)
+    parser.add_argument("--target-tensor-parallel-size", type=int, default=1)
+    parser.add_argument("--draft-tensor-parallel-size", type=int, default=1)
+    parser.add_argument("--attention-backend")
+    parser.add_argument("--gdn-recurrent-reference", action="store_true")
+    parser.add_argument(
+        "--qwen-gdn-mode",
+        choices=("replayssm", "baseline"),
+        default="replayssm",
+        help="Qwen3.6 Target GDN path; baseline disables ReplaySSM in every mode",
+    )
+    parser.add_argument("--replayssm-buffer-len", type=int, default=16)
     parser.add_argument("--num-prompts-per-dataset", type=int, default=32)
     parser.add_argument("--input-length", type=int, default=128)
     parser.add_argument("--output-length", type=int, default=512)
@@ -180,12 +199,27 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.01,
     )
+    parser.add_argument(
+        "--correctness-scope",
+        choices=("full", "b1-eager"),
+        default="full",
+        help="Limit the expected correctness matrix without claiming full coverage",
+    )
+    parser.add_argument(
+        "--target-output-policy",
+        choices=("exact-or-tie", "audited-path-numerical"),
+        default="exact-or-tie",
+        help=(
+            "Allow deterministic Target path drift only with explicit logprob evidence"
+        ),
+    )
     parser.add_argument("--startup-timeout", type=float, default=900.0)
     parser.add_argument(
         "--phase",
         choices=(
             "prepare",
             "cell",
+            "forced-jit-audit",
             "correctness",
             "lifecycle",
             "performance",
@@ -336,8 +370,35 @@ def prepare_manifest(
             "--format=csv,noheader",
         ]
     )
+    target_family = _target_family(args)
+    qwen_gdn_mode = (
+        getattr(args, "qwen_gdn_mode", "replayssm")
+        if target_family == "qwen36"
+        else "not_applicable"
+    )
+    native_bank_width = (
+        _dspark_native_bank_width(args)
+        if getattr(args, "method", "eagle3") == "dspark"
+        else None
+    )
+    default_fan_out = 3
+    fan_out_environment = None
+    if getattr(args, "method", "eagle3") == "mtp":
+        default_fan_out = 96
+        fan_out_environment = "ASYNC_DRAFT_MTP_FAN_OUT"
+    elif getattr(args, "method", "eagle3") == "dspark":
+        default_fan_out = {
+            "qwen36": 24,
+            "gemma4": 48,
+        }.get(target_family, 3)
+        fan_out_environment = "ASYNC_DRAFT_DSPARK_FAN_OUT"
+    fan_out = int(
+        os.environ.get(fan_out_environment, str(default_fan_out))
+        if fan_out_environment
+        else default_fan_out
+    )
     manifest = {
-        "artifact_kind": "async_ssd_eagle3_phase_a",
+        "artifact_kind": f"async_ssd_{args.method}_matrix",
         "created_at_utc": utc_now(),
         "git": {
             "branch": command_output(["git", "branch", "--show-current"]),
@@ -351,12 +412,55 @@ def prepare_manifest(
         },
         "models": {
             "target": checkpoint_manifest(Path(args.target)),
-            "draft": checkpoint_manifest(Path(args.draft)),
-            "dtype": "float16",
+            "draft": (checkpoint_manifest(Path(args.draft)) if args.draft else None),
+            "dtype": args.dtype,
+            "adapter": args.method,
             "num_speculative_tokens": args.num_speculative_tokens,
-            "fan_out": 3,
+            "target_verify_width": args.num_speculative_tokens,
+            "sync_backbone_width": args.num_speculative_tokens,
+            "async_branch_backbone_width": (
+                2 * args.num_speculative_tokens + 1
+                if args.method == "dspark"
+                else args.num_speculative_tokens
+            ),
+            "native_proposal_bank_width": native_bank_width,
+            "fan_out": fan_out,
             "draft_sample_method": "greedy",
             "rejection_sample_method": "standard",
+            "target_tensor_parallel_size": args.target_tensor_parallel_size,
+            "draft_tensor_parallel_size": args.draft_tensor_parallel_size,
+            "attention_backend": getattr(args, "attention_backend", None),
+            "gdn_recurrent_reference": getattr(args, "gdn_recurrent_reference", False),
+            "target_family": target_family,
+            "qwen36_replayssm": qwen_gdn_mode == "replayssm",
+            "qwen_gdn_mode": qwen_gdn_mode,
+            "replayssm_buffer_len": (
+                getattr(args, "replayssm_buffer_len", 16)
+                if target_family == "qwen36"
+                else None
+            ),
+            "replayssm_route_by_mode": (
+                {
+                    "ar": "use_replayssm",
+                    "sync": "use_replayssm_spec",
+                    "async_jit": "use_replayssm_spec",
+                    "async_cache": "use_replayssm_spec",
+                }
+                if qwen_gdn_mode == "replayssm"
+                else {
+                    "ar": "baseline",
+                    "sync": "baseline",
+                    "async_jit": "baseline",
+                    "async_cache": "baseline",
+                }
+                if qwen_gdn_mode == "baseline"
+                else {
+                    "ar": "not_applicable",
+                    "sync": "not_applicable",
+                    "async_jit": "not_applicable",
+                    "async_cache": "not_applicable",
+                }
+            ),
         },
         "workload": {
             "prompt_count": len(prompts),
@@ -364,16 +468,29 @@ def prepare_manifest(
             "input_length_cap": args.input_length,
             "output_length": args.output_length,
             "temperature": 0.0,
+            "seed": 0,
             "ignore_eos": True,
         },
         "topology": {
             "target_device": args.target_device,
+            "target_devices": list(
+                range(
+                    args.target_device,
+                    args.target_device + args.target_tensor_parallel_size,
+                )
+            ),
             "draft_device": args.draft_device,
             "gpus": gpu_query,
             "nvidia_smi_topo": topology,
         },
         "correctness_contract": {
-            "exact_output_tokens_by_default": True,
+            "scope": getattr(args, "correctness_scope", "full"),
+            "target_output_policy": getattr(
+                args, "target_output_policy", "exact-or-tie"
+            ),
+            "exact_output_tokens_by_default": (
+                getattr(args, "target_output_policy", "exact-or-tie") == "exact-or-tie"
+            ),
             "allow_first_divergence_only_when_both_modes_show_a_top1_tie": True,
             "tie_logprob_tolerance": args.tie_logprob_tolerance,
             "tie_tolerance_scope": "first Target token divergence only",
@@ -401,13 +518,20 @@ def prepare_manifest(
     write_json(output_root / "manifest.json", manifest)
 
 
-def correctness_cells() -> list[Cell]:
-    return [
+def correctness_cells(scope: str = "full") -> list[Cell]:
+    cells = [
         Cell("correctness", mode, engine, batch_size)
         for engine in ENGINES
         for batch_size in BATCH_SIZES
         for mode in MODES
     ]
+    if scope == "full":
+        return cells
+    if scope == "b1-eager":
+        return [
+            cell for cell in cells if cell.engine == "eager" and cell.batch_size == 1
+        ]
+    raise ValueError(f"Unknown correctness scope: {scope!r}")
 
 
 def lifecycle_cells() -> list[Cell]:
@@ -436,17 +560,22 @@ def performance_cells() -> list[Cell]:
     return cells
 
 
-def prepare_matrix(output_root: Path) -> None:
-    cells = correctness_cells() + lifecycle_cells() + performance_cells()
+def prepare_matrix(args: argparse.Namespace, output_root: Path) -> None:
+    correctness = correctness_cells(getattr(args, "correctness_scope", "full"))
+    reduced_scope = getattr(args, "correctness_scope", "full") != "full"
+    lifecycle = [] if reduced_scope else lifecycle_cells()
+    performance = [] if reduced_scope else performance_cells()
+    cells = correctness + lifecycle + performance
     write_json(
         output_root / "matrix.json",
         {
             "status": "expected",
             "created_at_utc": utc_now(),
+            "correctness_scope": getattr(args, "correctness_scope", "full"),
             "cells": [asdict(cell) | {"name": cell.name} for cell in cells],
-            "correctness_cell_count": len(correctness_cells()),
-            "lifecycle_cell_count": len(lifecycle_cells()),
-            "performance_cell_count": len(performance_cells()),
+            "correctness_cell_count": len(correctness),
+            "lifecycle_cell_count": len(lifecycle),
+            "performance_cell_count": len(performance),
         },
     )
 
@@ -454,17 +583,73 @@ def prepare_matrix(output_root: Path) -> None:
 def spec_config(args: argparse.Namespace, mode: str) -> dict[str, object] | None:
     if mode == "ar":
         return None
+    method = getattr(args, "method", "eagle3")
+    if method != "mtp" and not args.draft:
+        raise ValueError(f"--draft is required for method={method}")
     config: dict[str, object] = {
-        "model": str(Path(args.draft).resolve()),
-        "method": "eagle3",
+        "method": method,
         "num_speculative_tokens": args.num_speculative_tokens,
-        "draft_tensor_parallel_size": 1,
+        "draft_tensor_parallel_size": getattr(args, "draft_tensor_parallel_size", 1),
         "draft_sample_method": "greedy",
         "rejection_sample_method": "standard",
     }
+    if args.draft:
+        config["model"] = str(Path(args.draft).resolve())
     if mode in ("async_jit", "async_cache"):
         config["async_draft_device"] = args.draft_device
     return config
+
+
+def _target_family(args: argparse.Namespace) -> str:
+    target = Path(args.target)
+    identifiers = [str(target).lower()]
+    config_path = target / "config.json"
+    if config_path.is_file():
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        identifiers.extend(
+            str(value).lower()
+            for value in (
+                config.get("model_type"),
+                config.get("_name_or_path"),
+                *(config.get("architectures") or ()),
+            )
+            if value is not None
+        )
+    if any(
+        marker in identifier
+        for identifier in identifiers
+        for marker in ("qwen3.6", "qwen3_6", "qwen3_5_moe", "qwen3_5moe")
+    ):
+        return "qwen36"
+    if any(
+        "gemma4" in identifier or "gemma-4" in identifier for identifier in identifiers
+    ):
+        return "gemma4"
+    return "other"
+
+
+def _target_uses_qwen36_replayssm(args: argparse.Namespace) -> bool:
+    return _target_family(args) == "qwen36"
+
+
+def _dspark_native_bank_width(args: argparse.Namespace) -> int:
+    if not args.draft:
+        raise ValueError("--draft is required to resolve DSpark proposal bank width")
+    config_path = Path(args.draft) / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    speculators_config = config.get("speculators_config") or {}
+    proposal_methods = speculators_config.get("proposal_methods") or ()
+    widths = [
+        int(method["speculative_tokens"])
+        for method in proposal_methods
+        if method.get("speculative_tokens") is not None
+    ]
+    if widths:
+        return max(widths)
+    block_size = config.get("block_size")
+    if block_size is None:
+        raise ValueError("DSpark checkpoint does not declare a proposal bank width")
+    return int(block_size) - (0 if config.get("sample_from_anchor", False) else 1)
 
 
 def server_command(
@@ -472,6 +657,14 @@ def server_command(
     cell: Cell,
     port: int,
 ) -> list[str]:
+    target_tensor_parallel_size = getattr(args, "target_tensor_parallel_size", 1)
+    target_devices = list(
+        range(args.target_device, args.target_device + target_tensor_parallel_size)
+    )
+    if cell.mode.startswith("async") and args.draft_device in target_devices:
+        raise ValueError(
+            "Async Draft device must not overlap Target tensor-parallel devices"
+        )
     command = [
         sys.executable,
         "-m",
@@ -481,9 +674,11 @@ def server_command(
         "--served-model-name",
         "async-ssd-eagle3",
         "--dtype",
-        "float16",
+        getattr(args, "dtype", "float16"),
         "--device-ids",
-        str(args.target_device),
+        ",".join(map(str, target_devices)),
+        "--tensor-parallel-size",
+        str(target_tensor_parallel_size),
         "--max-model-len",
         str(args.max_model_len),
         "--max-num-seqs",
@@ -494,6 +689,7 @@ def server_command(
         str(args.gpu_memory_utilization),
         "--generation-config",
         "vllm",
+        "--language-model-only",
         "--no-async-scheduling",
         "--no-enable-prefix-caching",
         "--no-enable-log-requests",
@@ -502,6 +698,9 @@ def server_command(
     ]
     if cell.engine == "eager":
         command.append("--enforce-eager")
+    attention_backend = getattr(args, "attention_backend", None)
+    if attention_backend is not None:
+        command.extend(("--attention-backend", attention_backend))
     if cell.variant == "chunked_prefill":
         index = command.index("4096")
         command[index] = "64"
@@ -510,6 +709,34 @@ def server_command(
         command[max_model_len_index] = "256"
         command.extend(("--num-gpu-blocks-override", "32"))
     config = spec_config(args, cell.mode)
+    if _target_uses_qwen36_replayssm(args):
+        command.extend(
+            (
+                "--mamba-cache-mode",
+                "none",
+                "--mamba-backend",
+                "triton",
+            )
+        )
+        if getattr(args, "qwen_gdn_mode", "replayssm") == "replayssm":
+            replayssm_buffer_len = getattr(args, "replayssm_buffer_len", 16)
+            if replayssm_buffer_len <= 0:
+                raise ValueError("ReplaySSM buffer length must be positive")
+            if (
+                config is not None
+                and replayssm_buffer_len < args.num_speculative_tokens + 1
+            ):
+                raise ValueError(
+                    "Qwen3.6 speculative runs require ReplaySSM buffer length "
+                    ">= num_speculative_tokens + 1: "
+                    f"buffer={replayssm_buffer_len}, "
+                    f"num_speculative_tokens={args.num_speculative_tokens}"
+                )
+            command.extend(("--replayssm-buffer-len", str(replayssm_buffer_len)))
+            if config is None:
+                command.append("--use-replayssm")
+            else:
+                command.append("--use-replayssm-spec")
     if config is not None:
         command.extend(("--speculative-config", json.dumps(config)))
     return command
@@ -595,6 +822,7 @@ def stream_request(
         "prompt": prompt_token_ids,
         "max_tokens": max_tokens,
         "temperature": 0.0,
+        "seed": 0,
         "ignore_eos": True,
         "stream": True,
         "stream_options": {"include_usage": True},
@@ -768,6 +996,121 @@ def cell_is_complete(cell_dir: Path) -> bool:
     return marker_value.get("status") == result_value.get("status") == "complete"
 
 
+def audit_dspark_bank_trace(trace_path: Path, verify_width: int) -> dict[str, object]:
+    records = [
+        json.loads(line)
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    by_request: dict[str, list[dict[str, Any]]] = {}
+    skipped_records = 0
+    for record in records:
+        if "dspark_bank_cursor" not in record:
+            skipped_records += 1
+            continue
+        by_request.setdefault(record["request_id"], []).append(record)
+    failures: list[dict[str, object]] = []
+    refresh_reasons: dict[str, int] = {}
+    for request_id, request_records in by_request.items():
+        previous: dict[str, Any] | None = None
+        for index, record in enumerate(request_records):
+            cursor = int(record["dspark_bank_cursor"])
+            bank_width = int(record["dspark_bank_width"])
+            refreshed = bool(record["dspark_backbone_refreshed"])
+            reason = record.get("dspark_refresh_reason")
+            if refreshed and isinstance(reason, str):
+                refresh_reasons[reason] = refresh_reasons.get(reason, 0) + 1
+            errors = []
+            if cursor < 0 or cursor + verify_width > bank_width:
+                errors.append("proposal window exceeds the DSpark bank")
+            if previous is not None:
+                num_sampled = int(record["accepted_draft_count"]) + 1
+                expected_cursor = int(previous["dspark_bank_cursor"]) + num_sampled
+                if refreshed:
+                    before_refresh = int(record["dspark_cursor_before_refresh"])
+                    if before_refresh != expected_cursor:
+                        errors.append(
+                            "cursor_before_refresh does not advance by num_sampled"
+                        )
+                    if reason == "insufficient_remaining" and (
+                        before_refresh + verify_width <= bank_width
+                    ):
+                        errors.append(
+                            "backbone refreshed while at least D bank slots remained"
+                        )
+                    if cursor != 0:
+                        errors.append("refreshed DSpark bank did not reset cursor")
+                elif cursor != expected_cursor:
+                    errors.append("bank cursor does not advance by num_sampled")
+            if errors:
+                failures.append(
+                    {
+                        "request_id": request_id,
+                        "record_index": index,
+                        "errors": errors,
+                        "record": record,
+                    }
+                )
+            previous = record
+    return {
+        "status": "passed" if by_request and not failures else "failed",
+        "verify_width": verify_width,
+        "request_count": len(by_request),
+        "record_count": sum(len(value) for value in by_request.values()),
+        "skipped_transient_records": skipped_records,
+        "refresh_reasons": refresh_reasons,
+        "failures": failures,
+    }
+
+
+def audit_dspark_round_trace(trace_path: Path, verify_width: int) -> dict[str, object]:
+    """Audit D-wide Target proposals backed by a 2D+1 async backbone."""
+    records = [
+        json.loads(line)
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    failures: list[dict[str, object]] = []
+    for index, record in enumerate(records):
+        errors = []
+        draft_tokens = record.get("draft_tokens")
+        accepted_count = record.get("accepted_draft_count")
+        if not isinstance(draft_tokens, list) or len(draft_tokens) != verify_width:
+            errors.append("proposal width differs from Target verification width")
+        if (
+            not isinstance(accepted_count, int)
+            or not 0 <= accepted_count <= verify_width
+        ):
+            errors.append("accepted draft count is outside the D-wide outcome range")
+        if "dspark_bank_cursor" in record:
+            errors.append(
+                "fixed-width DSpark trace unexpectedly contains a bank cursor"
+            )
+        branch_width = 2 * verify_width + 1
+        if record.get("dspark_target_verify_width") != verify_width:
+            errors.append("Target verification width is not D")
+        if record.get("dspark_proposal_execution_width") != branch_width:
+            errors.append("proposal backbone execution width is not 2D+1")
+        if record.get("dspark_branch_backbone_width") != branch_width:
+            errors.append("branch backbone width is not 2D+1")
+        if errors:
+            failures.append(
+                {
+                    "record_index": index,
+                    "request_id": record.get("request_id"),
+                    "errors": errors,
+                    "record": record,
+                }
+            )
+    return {
+        "status": "passed" if records and not failures else "failed",
+        "verify_width": verify_width,
+        "branch_backbone_width": 2 * verify_width + 1,
+        "record_count": len(records),
+        "failures": failures,
+    }
+
+
 def run_cell(
     args: argparse,
     output_root: Path,
@@ -799,13 +1142,20 @@ def run_cell(
             "HF_DATASETS_OFFLINE": "1",
             "HF_HUB_DISABLE_TELEMETRY": "1",
             "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
+            "VLLM_USE_V2_MODEL_RUNNER": "1",
             "PATH": f"{Path(sys.executable).parent}{os.pathsep}"
             f"{environment.get('PATH', '')}",
         }
     )
     if cell.mode == "async_jit":
         environment["ASYNC_DRAFT_FORCE_JIT"] = "1"
-    if cell.suite in ("correctness", "lifecycle") and cell.mode != "ar":
+    if getattr(args, "gdn_recurrent_reference", False):
+        environment["VLLM_GDN_PREFILL_USE_RECURRENT_REFERENCE"] = "1"
+    trace_async_timing = bool(getattr(args, "trace_async_timing", False))
+    if (
+        cell.suite in ("correctness", "lifecycle")
+        or (trace_async_timing and cell.mode.startswith("async"))
+    ) and cell.mode != "ar":
         environment["REPLAYSSM_SPEC_DECODE_TRACE_PATH"] = str(
             cell_dir / "proposals.jsonl"
         )
@@ -815,9 +1165,13 @@ def run_cell(
         name: environment[name]
         for name in (
             "ASYNC_DRAFT_FORCE_JIT",
+            "ASYNC_DRAFT_MTP_FAN_OUT",
+            "ASYNC_DRAFT_DSPARK_FAN_OUT",
             "REPLAYSSM_SPEC_DECODE_TRACE_PATH",
             "REPLAYSSM_SPEC_DECODE_TRACE_LOGITS",
             "VLLM_WORKER_MULTIPROC_METHOD",
+            "VLLM_USE_V2_MODEL_RUNNER",
+            "VLLM_GDN_PREFILL_USE_RECURRENT_REFERENCE",
         )
         if name in environment
     }
@@ -873,8 +1227,22 @@ def run_cell(
         deltas = metric_delta(before, after)
         write_json(cell_dir / "metrics_delta.json", deltas)
         write_json(cell_dir / "requests.json", results)
+        if (
+            getattr(args, "method", "eagle3") == "dspark"
+            and cell.mode.startswith("async")
+            and cell.suite in ("correctness", "lifecycle")
+        ):
+            round_audit = audit_dspark_round_trace(
+                cell_dir / "proposals.jsonl", args.num_speculative_tokens
+            )
+            write_json(cell_dir / "dspark_round_audit.json", round_audit)
+            if round_audit["status"] != "passed":
+                raise AssertionError("DSpark fixed-width round trace audit failed")
 
-        gpu_count = 2 if cell.mode.startswith("async") else 1
+        gpu_count = max(
+            getattr(args, "target_tensor_parallel_size", 1),
+            2 if cell.mode.startswith("async") else 1,
+        )
         summary = summarize_requests(results, elapsed, gpu_count)
         expected_tokens = None
         if cell.suite in ("correctness", "performance"):
@@ -1010,6 +1378,134 @@ def audit_request_pair(
         "baseline_logprob_gap": baseline_gap,
         "candidate_logprob_gap": candidate_gap,
     }
+
+
+def _sampled_tokens_are_top1(request: dict[str, Any], end: int) -> bool:
+    tokens = request["token_ids"]
+    top_logprobs = request["top_logprobs"]
+    if len(top_logprobs) <= end:
+        return False
+    for index in range(end + 1):
+        top = top_logprobs[index]
+        own = top_logprob(top, tokens[index])
+        if own is None or top is None or own < max(top.values()) - 1e-6:
+            return False
+    return True
+
+
+def _predivergence_logprob_drift(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+    mismatch: int,
+) -> dict[str, Any] | None:
+    first_offset = None
+    max_delta = 0.0
+    max_delta_offset = None
+    for index in range(mismatch):
+        baseline_top = baseline["top_logprobs"][index]
+        candidate_top = candidate["top_logprobs"][index]
+        if baseline_top is None or candidate_top is None:
+            continue
+        common = baseline_top.keys() & candidate_top.keys()
+        delta = max(
+            (
+                abs(float(baseline_top[token]) - float(candidate_top[token]))
+                for token in common
+            ),
+            default=0.0,
+        )
+        changed = baseline_top.keys() != candidate_top.keys() or delta > 1e-6
+        if changed and first_offset is None:
+            first_offset = index
+        if delta > max_delta:
+            max_delta = delta
+            max_delta_offset = index
+    if first_offset is None:
+        return None
+    return {
+        "first_observed_offset": first_offset,
+        "max_common_top_logprob_delta": max_delta,
+        "max_delta_offset": max_delta_offset,
+    }
+
+
+def audit_request_pair_with_policy(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+    tolerance: float,
+    policy: str,
+) -> dict[str, Any]:
+    audit = audit_request_pair(baseline, candidate, tolerance)
+    numerical_reasons = {
+        "non_tie_token_divergence",
+        "divergent_token_missing_from_top_logprobs",
+    }
+    if policy == "exact-or-tie" or audit.get("reason") not in numerical_reasons:
+        return audit
+    if policy != "audited-path-numerical":
+        raise ValueError(f"Unknown Target output policy: {policy!r}")
+    mismatch = int(audit["offset"])
+    if mismatch == 0:
+        return {**audit, "path_numerical_rejection": "diverged at first token"}
+    if not _sampled_tokens_are_top1(baseline, mismatch):
+        return {**audit, "path_numerical_rejection": "baseline token is not top-1"}
+    if not _sampled_tokens_are_top1(candidate, mismatch):
+        return {**audit, "path_numerical_rejection": "candidate token is not top-1"}
+    drift = _predivergence_logprob_drift(baseline, candidate, mismatch)
+    if drift is None:
+        return {
+            **audit,
+            "path_numerical_rejection": (
+                "no Target logprob drift before token divergence"
+            ),
+        }
+    return {
+        **audit,
+        "status": "target_path_numerical_divergence",
+        "original_status": "failed",
+        "numerical_evidence": drift,
+    }
+
+
+def _triangulated_path_numerical_evidence(
+    record: dict[str, Any],
+    comparisons: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if (
+        record.get("baseline_mode") != "sync"
+        or record.get("candidate_mode") != "async_jit"
+        or record.get("path_numerical_rejection")
+        != "no Target logprob drift before token divergence"
+    ):
+        return None
+    related = {
+        comparison.get("candidate_mode"): comparison
+        for comparison in comparisons
+        if comparison.get("baseline_mode") == "ar"
+        and comparison.get("engine") == record.get("engine")
+        and comparison.get("batch_size") == record.get("batch_size")
+        and comparison.get("prompt_index") == record.get("prompt_index")
+        and comparison.get("candidate_mode") in ("sync", "async_jit")
+    }
+    if set(related) != {"sync", "async_jit"}:
+        return None
+    mismatch = int(record["offset"])
+    evidence = {}
+    for mode, comparison in related.items():
+        if comparison.get("status") != "target_path_numerical_divergence":
+            return None
+        numerical = comparison.get("numerical_evidence") or {}
+        first_offset = numerical.get("first_observed_offset")
+        if first_offset is None or int(first_offset) >= mismatch:
+            return None
+        evidence[f"ar_vs_{mode}"] = {
+            "first_observed_offset": first_offset,
+            "max_common_top_logprob_delta": numerical.get(
+                "max_common_top_logprob_delta"
+            ),
+            "max_delta_offset": numerical.get("max_delta_offset"),
+        }
+    return evidence
 
 
 def normalized_trace(path: Path) -> dict[int, list[dict[str, Any]]]:
@@ -1214,7 +1710,9 @@ def audit_draft_trace_pair(
     }
 
 
-def draft_trace_statistics(traces: dict[int, list[dict[str, Any]]]) -> dict[str, Any]:
+def draft_trace_statistics(
+    traces: dict[int, list[dict[str, Any]]], num_speculative_tokens: int = 7
+) -> dict[str, Any]:
     records = [record for trace in traces.values() for record in trace]
     accepted_tokens = sum(record["accepted_draft_count"] for record in records)
     return {
@@ -1223,7 +1721,7 @@ def draft_trace_statistics(traces: dict[int, list[dict[str, Any]]]) -> dict[str,
         "num_accepted_tokens": accepted_tokens,
         "accepted_counts_per_position": [
             sum(record["accepted_draft_count"] > position for record in records)
-            for position in range(7)
+            for position in range(num_speculative_tokens)
         ],
         "mean_accepted_draft_length": (
             accepted_tokens / len(records) if records else 0.0
@@ -1231,6 +1729,45 @@ def draft_trace_statistics(traces: dict[int, list[dict[str, Any]]]) -> dict[str,
         "mean_acceptance_length": (
             1.0 + accepted_tokens / len(records) if records else 0.0
         ),
+    }
+
+
+def compare_acceptance_profiles(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+    tolerance: float,
+) -> dict[str, Any]:
+    baseline_mean = baseline["mean_acceptance_length"]
+    candidate_mean = candidate["mean_acceptance_length"]
+    relative_difference = (
+        abs(baseline_mean - candidate_mean) / baseline_mean
+        if baseline_mean
+        else (0.0 if candidate_mean == 0 else math.inf)
+    )
+    baseline_drafts = baseline["num_drafts"]
+    candidate_drafts = candidate["num_drafts"]
+    baseline_rates = [
+        count / baseline_drafts if baseline_drafts else 0.0
+        for count in baseline["accepted_counts_per_position"]
+    ]
+    candidate_rates = [
+        count / candidate_drafts if candidate_drafts else 0.0
+        for count in candidate["accepted_counts_per_position"]
+    ]
+    position_differences = [
+        abs(baseline_rate - candidate_rate)
+        for baseline_rate, candidate_rate in zip(baseline_rates, candidate_rates)
+    ]
+    passed = relative_difference <= tolerance and all(
+        difference <= tolerance for difference in position_differences
+    )
+    return {
+        "status": "passed" if passed else "failed",
+        "mean_acceptance_length_relative_difference": relative_difference,
+        "accepted_rate_baseline": baseline_rates,
+        "accepted_rate_candidate": candidate_rates,
+        "accepted_rate_absolute_differences": position_differences,
+        "tolerance": tolerance,
     }
 
 
@@ -1271,7 +1808,8 @@ def is_batch_shape_numerical_exception(
 
 
 def audit_correctness(args: argparse, output_root: Path) -> bool:
-    cells = correctness_cells()
+    scope = getattr(args, "correctness_scope", "full")
+    cells = correctness_cells(scope)
     missing = [
         cell.name
         for cell in cells
@@ -1289,178 +1827,243 @@ def audit_correctness(args: argparse, output_root: Path) -> bool:
     trace_summaries = []
     failed = []
     ties = []
-    for engine in ENGINES:
-        for batch_size in BATCH_SIZES:
-            baseline_cell = Cell("correctness", "ar", engine, batch_size)
-            baseline = request_map(load_requests(output_root, baseline_cell))
-            mode_requests = {}
-            for mode in ("sync", "async_jit", "async_cache"):
-                cell = Cell("correctness", mode, engine, batch_size)
-                cell_result = json.loads(
-                    (output_root / "cells" / cell.name / "result.json").read_text(
-                        encoding="utf-8"
-                    )
+    path_numerical = []
+    target_output_policy = getattr(args, "target_output_policy", "exact-or-tie")
+    dimensions = (
+        tuple((engine, batch_size) for engine in ENGINES for batch_size in BATCH_SIZES)
+        if scope == "full"
+        else (("eager", 1),)
+    )
+    for engine, batch_size in dimensions:
+        baseline_cell = Cell("correctness", "ar", engine, batch_size)
+        baseline = request_map(load_requests(output_root, baseline_cell))
+        mode_requests = {}
+        for mode in ("sync", "async_jit", "async_cache"):
+            cell = Cell("correctness", mode, engine, batch_size)
+            cell_result = json.loads(
+                (output_root / "cells" / cell.name / "result.json").read_text(
+                    encoding="utf-8"
                 )
-                candidate = request_map(load_requests(output_root, cell))
-                mode_requests[mode] = candidate
-                for prompt_index in sorted(baseline):
-                    audit = audit_request_pair(
-                        baseline[prompt_index],
-                        candidate[prompt_index],
-                        args.tie_logprob_tolerance,
-                    )
-                    record = {
-                        "cell": cell.name,
-                        "baseline_cell": baseline_cell.name,
-                        "prompt_index": prompt_index,
-                        **audit,
-                    }
-                    comparisons.append(record)
-                    if audit["status"] == "failed":
-                        failed.append(record)
-                    elif audit["status"] == "target_top1_tie_equivalent":
-                        ties.append(record)
+            )
+            candidate = request_map(load_requests(output_root, cell))
+            mode_requests[mode] = candidate
+            for prompt_index in sorted(baseline):
+                audit = audit_request_pair_with_policy(
+                    baseline[prompt_index],
+                    candidate[prompt_index],
+                    args.tie_logprob_tolerance,
+                    target_output_policy,
+                )
+                record = {
+                    "cell": cell.name,
+                    "baseline_cell": baseline_cell.name,
+                    "prompt_index": prompt_index,
+                    **audit,
+                }
+                comparisons.append(record)
+                if audit["status"] == "failed":
+                    failed.append(record)
+                elif audit["status"] == "target_top1_tie_equivalent":
+                    ties.append(record)
+                elif audit["status"] == "target_path_numerical_divergence":
+                    path_numerical.append(record)
 
-                if mode.startswith("async"):
-                    metrics = cell_result["metrics_delta"]
-                    jit_fallbacks = sum(
+            if mode.startswith("async"):
+                metrics = cell_result["metrics_delta"]
+                jit_fallbacks = sum(
+                    value
+                    for name, value in metrics.items()
+                    if name.startswith("vllm:async_draft_jit_fallbacks_total")
+                )
+                if jit_fallbacks <= 0:
+                    failed.append(
+                        {
+                            "status": "failed",
+                            "reason": "async_path_has_no_jit_fallbacks",
+                            "cell": cell.name,
+                        }
+                    )
+                if mode == "async_cache":
+                    cache_hits = sum(
                         value
                         for name, value in metrics.items()
-                        if name.startswith("vllm:async_draft_jit_fallbacks_total")
+                        if name.startswith("vllm:async_draft_cache_hits_total")
                     )
-                    if jit_fallbacks <= 0:
+                    if cache_hits <= 0:
                         failed.append(
                             {
                                 "status": "failed",
-                                "reason": "async_path_has_no_jit_fallbacks",
+                                "reason": "async_cache_path_has_no_hits",
                                 "cell": cell.name,
                             }
                         )
-                    if mode == "async_cache":
-                        cache_hits = sum(
-                            value
-                            for name, value in metrics.items()
-                            if name.startswith("vllm:async_draft_cache_hits_total")
-                        )
-                        if cache_hits <= 0:
-                            failed.append(
-                                {
-                                    "status": "failed",
-                                    "reason": "async_cache_path_has_no_hits",
-                                    "cell": cell.name,
-                                }
-                            )
 
-            sync_trace = normalized_trace(
-                output_root
-                / "cells"
-                / Cell("correctness", "sync", engine, batch_size).name
-                / "proposals.jsonl"
+        for prompt_index in sorted(baseline):
+            audit = audit_request_pair_with_policy(
+                mode_requests["async_jit"][prompt_index],
+                mode_requests["async_cache"][prompt_index],
+                args.tie_logprob_tolerance,
+                target_output_policy,
             )
-            jit_trace = normalized_trace(
-                output_root
-                / "cells"
-                / Cell("correctness", "async_jit", engine, batch_size).name
-                / "proposals.jsonl"
-            )
-            if set(sync_trace) != set(jit_trace):
-                failed.append(
-                    {
-                        "status": "failed",
-                        "reason": "sync_forced_jit_request_set_mismatch",
-                        "engine": engine,
-                        "batch_size": batch_size,
-                    }
-                )
-                continue
-            sync_stats = draft_trace_statistics(sync_trace)
-            jit_stats = draft_trace_statistics(jit_trace)
-            sync_mean = sync_stats["mean_acceptance_length"]
-            jit_mean = jit_stats["mean_acceptance_length"]
-            acceptance_relative_difference = (
-                abs(sync_mean - jit_mean) / sync_mean
-                if sync_mean
-                else (0.0 if jit_mean == 0 else math.inf)
-            )
-            trace_summary = {
-                "engine": engine,
-                "batch_size": batch_size,
-                "sync": sync_stats,
-                "async_jit": jit_stats,
-                "acceptance_length_relative_difference": (
-                    acceptance_relative_difference
-                ),
-                "acceptance_length_relative_tolerance": (
-                    args.acceptance_length_relative_tolerance
-                ),
+            record = {
+                "cell": Cell("correctness", "async_cache", engine, batch_size).name,
+                "baseline_cell": Cell(
+                    "correctness", "async_jit", engine, batch_size
+                ).name,
+                "prompt_index": prompt_index,
+                **audit,
             }
-            trace_summaries.append(trace_summary)
-            if (
-                acceptance_relative_difference
-                > args.acceptance_length_relative_tolerance
-            ):
-                failed.append(
-                    {
-                        "status": "failed",
-                        "reason": "acceptance_length_relative_difference_exceeded",
-                        **trace_summary,
-                    }
-                )
-            for prompt_index in sorted(sync_trace):
-                sync_jit_output_audit = audit_request_pair(
-                    mode_requests["sync"][prompt_index],
-                    mode_requests["async_jit"][prompt_index],
-                    args.tie_logprob_tolerance,
-                )
-                trace_audit = audit_draft_trace_pair(
-                    sync_trace[prompt_index],
-                    jit_trace[prompt_index],
-                    args.draft_tie_logit_tolerance,
-                    sync_jit_output_audit,
-                )
-                smaller_batch_audits = [
-                    record
-                    for record in trace_comparisons
-                    if record["engine"] == engine
-                    and record["prompt_index"] == prompt_index
-                    and record["batch_size"] < batch_size
-                ]
-                if is_batch_shape_numerical_exception(
-                    trace_audit,
-                    sync_jit_output_audit,
-                    batch_size,
-                    smaller_batch_audits,
-                    acceptance_relative_difference,
-                    args.acceptance_length_relative_tolerance,
-                ):
-                    trace_audit = {
-                        **trace_audit,
-                        "status": "batch_shape_numerical_equivalent",
-                        "original_status": "failed",
-                        "waiver": {
-                            "reason": "batch_shape_numerical_nondeterminism",
-                            "smaller_batch_evidence": [
-                                {
-                                    "batch_size": record["batch_size"],
-                                    "status": record["status"],
-                                }
-                                for record in smaller_batch_audits
-                            ],
-                            "acceptance_length_relative_difference": (
-                                acceptance_relative_difference
-                            ),
-                        },
-                    }
-                trace_record = {
+            comparisons.append(record)
+            if audit["status"] == "failed":
+                failed.append(record)
+            elif audit["status"] == "target_top1_tie_equivalent":
+                ties.append(record)
+            elif audit["status"] == "target_path_numerical_divergence":
+                path_numerical.append(record)
+
+        sync_trace = normalized_trace(
+            output_root
+            / "cells"
+            / Cell("correctness", "sync", engine, batch_size).name
+            / "proposals.jsonl"
+        )
+        jit_trace = normalized_trace(
+            output_root
+            / "cells"
+            / Cell("correctness", "async_jit", engine, batch_size).name
+            / "proposals.jsonl"
+        )
+        cache_trace = normalized_trace(
+            output_root
+            / "cells"
+            / Cell("correctness", "async_cache", engine, batch_size).name
+            / "proposals.jsonl"
+        )
+        if not (set(sync_trace) == set(jit_trace) == set(cache_trace)):
+            failed.append(
+                {
+                    "status": "failed",
+                    "reason": "draft_trace_request_set_mismatch",
                     "engine": engine,
                     "batch_size": batch_size,
-                    "prompt_index": prompt_index,
-                    "sync_jit_output_audit": sync_jit_output_audit,
-                    **trace_audit,
+                    "sync_requests": sorted(sync_trace),
+                    "async_jit_requests": sorted(jit_trace),
+                    "async_cache_requests": sorted(cache_trace),
                 }
-                trace_comparisons.append(trace_record)
-                if trace_audit["status"] == "failed":
-                    failed.append(trace_record)
+            )
+            continue
+        sync_stats = draft_trace_statistics(sync_trace, args.num_speculative_tokens)
+        jit_stats = draft_trace_statistics(jit_trace, args.num_speculative_tokens)
+        cache_stats = draft_trace_statistics(cache_trace, args.num_speculative_tokens)
+        sync_mean = sync_stats["mean_acceptance_length"]
+        jit_mean = jit_stats["mean_acceptance_length"]
+        acceptance_relative_difference = (
+            abs(sync_mean - jit_mean) / sync_mean
+            if sync_mean
+            else (0.0 if jit_mean == 0 else math.inf)
+        )
+        trace_summary = {
+            "engine": engine,
+            "batch_size": batch_size,
+            "sync": sync_stats,
+            "async_jit": jit_stats,
+            "async_cache": cache_stats,
+            "acceptance_length_relative_difference": (acceptance_relative_difference),
+            "acceptance_length_relative_tolerance": (
+                args.acceptance_length_relative_tolerance
+            ),
+        }
+        trace_summary["sync_vs_async_cache"] = compare_acceptance_profiles(
+            sync_stats,
+            cache_stats,
+            args.acceptance_length_relative_tolerance,
+        )
+        trace_summary["async_jit_vs_async_cache"] = compare_acceptance_profiles(
+            jit_stats,
+            cache_stats,
+            args.acceptance_length_relative_tolerance,
+        )
+        trace_summaries.append(trace_summary)
+        for comparison_name in (
+            "sync_vs_async_cache",
+            "async_jit_vs_async_cache",
+        ):
+            profile = trace_summary[comparison_name]
+            if profile["status"] == "failed":
+                failed.append(
+                    {
+                        "status": "failed",
+                        "reason": "acceptance_profile_tolerance_exceeded",
+                        "comparison": comparison_name,
+                        "engine": engine,
+                        "batch_size": batch_size,
+                        "profile": profile,
+                    }
+                )
+        if acceptance_relative_difference > args.acceptance_length_relative_tolerance:
+            failed.append(
+                {
+                    "status": "failed",
+                    "reason": "acceptance_length_relative_difference_exceeded",
+                    **trace_summary,
+                }
+            )
+        for prompt_index in sorted(sync_trace):
+            sync_jit_output_audit = audit_request_pair_with_policy(
+                mode_requests["sync"][prompt_index],
+                mode_requests["async_jit"][prompt_index],
+                args.tie_logprob_tolerance,
+                target_output_policy,
+            )
+            trace_audit = audit_draft_trace_pair(
+                sync_trace[prompt_index],
+                jit_trace[prompt_index],
+                args.draft_tie_logit_tolerance,
+                sync_jit_output_audit,
+            )
+            smaller_batch_audits = [
+                record
+                for record in trace_comparisons
+                if record["engine"] == engine
+                and record["prompt_index"] == prompt_index
+                and record["batch_size"] < batch_size
+            ]
+            if is_batch_shape_numerical_exception(
+                trace_audit,
+                sync_jit_output_audit,
+                batch_size,
+                smaller_batch_audits,
+                acceptance_relative_difference,
+                args.acceptance_length_relative_tolerance,
+            ):
+                trace_audit = {
+                    **trace_audit,
+                    "status": "batch_shape_numerical_equivalent",
+                    "original_status": "failed",
+                    "waiver": {
+                        "reason": "batch_shape_numerical_nondeterminism",
+                        "smaller_batch_evidence": [
+                            {
+                                "batch_size": record["batch_size"],
+                                "status": record["status"],
+                            }
+                            for record in smaller_batch_audits
+                        ],
+                        "acceptance_length_relative_difference": (
+                            acceptance_relative_difference
+                        ),
+                    },
+                }
+            trace_record = {
+                "engine": engine,
+                "batch_size": batch_size,
+                "prompt_index": prompt_index,
+                "sync_jit_output_audit": sync_jit_output_audit,
+                **trace_audit,
+            }
+            trace_comparisons.append(trace_record)
+            if trace_audit["status"] == "failed":
+                failed.append(trace_record)
 
     status = "passed" if not failed else "failed"
     audit = {
@@ -1469,6 +2072,8 @@ def audit_correctness(args: argparse, output_root: Path) -> bool:
         "comparison_count": len(comparisons),
         "exact_count": sum(record["status"] == "exact" for record in comparisons),
         "tie_equivalent_count": len(ties),
+        "path_numerical_divergence_count": len(path_numerical),
+        "target_output_policy": target_output_policy,
         "failed_count": len(failed),
         "tie_logprob_tolerance": args.tie_logprob_tolerance,
         "draft_tie_logit_tolerance": args.draft_tie_logit_tolerance,
@@ -1482,6 +2087,154 @@ def audit_correctness(args: argparse, output_root: Path) -> bool:
         "draft_trace_summaries": trace_summaries,
     }
     write_json(output_root / "correctness_audit.json", audit)
+    return status == "passed"
+
+
+def audit_forced_jit(args: argparse, output_root: Path) -> bool:
+    scope = getattr(args, "correctness_scope", "full")
+    required = [
+        cell
+        for cell in correctness_cells(scope)
+        if cell.mode in ("ar", "sync", "async_jit")
+    ]
+    missing = [
+        cell.name
+        for cell in required
+        if not cell_is_complete(output_root / "cells" / cell.name)
+    ]
+    if missing:
+        write_json(
+            output_root / "forced_jit_audit.json",
+            {"status": "incomplete", "missing_cells": missing},
+        )
+        return False
+
+    failures = []
+    comparisons = []
+    policy = getattr(args, "target_output_policy", "exact-or-tie")
+    dimensions = sorted({(cell.engine, cell.batch_size) for cell in required})
+    for engine, batch_size in dimensions:
+        cells_by_mode = {
+            mode: Cell("correctness", mode, engine, batch_size)
+            for mode in ("ar", "sync", "async_jit")
+        }
+        requests_by_mode = {
+            mode: request_map(load_requests(output_root, cell))
+            for mode, cell in cells_by_mode.items()
+        }
+        prompt_indices = set(requests_by_mode["ar"])
+        if any(
+            set(requests) != prompt_indices for requests in requests_by_mode.values()
+        ):
+            failures.append(
+                {
+                    "reason": "request_set_mismatch",
+                    "engine": engine,
+                    "batch_size": batch_size,
+                }
+            )
+            continue
+        for baseline_mode, candidate_mode in (
+            ("ar", "sync"),
+            ("ar", "async_jit"),
+            ("sync", "async_jit"),
+        ):
+            for prompt_index in sorted(prompt_indices):
+                result = audit_request_pair_with_policy(
+                    requests_by_mode[baseline_mode][prompt_index],
+                    requests_by_mode[candidate_mode][prompt_index],
+                    args.tie_logprob_tolerance,
+                    policy,
+                )
+                record = {
+                    "engine": engine,
+                    "batch_size": batch_size,
+                    "baseline_mode": baseline_mode,
+                    "candidate_mode": candidate_mode,
+                    "prompt_index": prompt_index,
+                    **result,
+                }
+                comparisons.append(record)
+                if result["status"] == "failed":
+                    failures.append(record)
+
+        async_cell = cells_by_mode["async_jit"]
+        async_dir = output_root / "cells" / async_cell.name
+        async_result = json.loads(
+            (async_dir / "result.json").read_text(encoding="utf-8")
+        )
+        metrics = async_result["metrics_delta"]
+        misses = metric_total(metrics, "vllm:async_draft_cache_misses_total")
+        jit = metric_total(metrics, "vllm:async_draft_jit_fallbacks_total")
+        hits = metric_total(metrics, "vllm:async_draft_cache_hits_total")
+        if misses <= 0 or jit != misses or hits != 0:
+            failures.append(
+                {
+                    "reason": "forced_jit_metric_contract_failed",
+                    "cell": async_cell.name,
+                    "cache_misses": misses,
+                    "jit_fallbacks": jit,
+                    "cache_hits": hits,
+                }
+            )
+        shutdown = json.loads((async_dir / "shutdown.json").read_text(encoding="utf-8"))
+        if shutdown.get("forced_kill") or shutdown.get("exit_code") != 0:
+            failures.append(
+                {
+                    "reason": "async_forced_jit_shutdown_failed",
+                    "cell": async_cell.name,
+                    "shutdown": shutdown,
+                }
+            )
+        if getattr(args, "method", "eagle3") == "dspark":
+            round_audit = json.loads(
+                (async_dir / "dspark_round_audit.json").read_text(encoding="utf-8")
+            )
+            if round_audit.get("status") != "passed":
+                failures.append(
+                    {
+                        "reason": "dspark_round_audit_failed",
+                        "cell": async_cell.name,
+                        "round_audit": round_audit,
+                    }
+                )
+
+    remaining_failures = []
+    for failure in failures:
+        triangulated = _triangulated_path_numerical_evidence(failure, comparisons)
+        if triangulated is None:
+            remaining_failures.append(failure)
+            continue
+        failure.update(
+            {
+                "status": "target_path_numerical_divergence",
+                "original_status": "failed",
+                "triangulated_numerical_evidence": triangulated,
+            }
+        )
+    failures = remaining_failures
+    status = "passed" if not failures else "failed"
+    write_json(
+        output_root / "forced_jit_audit.json",
+        {
+            "status": status,
+            "completed_at_utc": utc_now(),
+            "correctness_scope": scope,
+            "target_output_policy": policy,
+            "comparison_count": len(comparisons),
+            "exact_count": sum(record["status"] == "exact" for record in comparisons),
+            "tie_equivalent_count": sum(
+                record["status"] == "target_top1_tie_equivalent"
+                for record in comparisons
+            ),
+            "path_numerical_divergence_count": sum(
+                record["status"] == "target_path_numerical_divergence"
+                for record in comparisons
+            ),
+            "failures": failures,
+            "comparisons": comparisons,
+        },
+    )
     return status == "passed"
 
 
@@ -1818,7 +2571,9 @@ def render_performance_plot(
 
     batches = list(BATCH_SIZES)
     sync = [
-        by_batch[batch]["sync"]["median_completion_throughput_tok_s"]  # type: ignore[index]
+        by_batch[batch]["sync"][  # type: ignore[index]
+            "median_completion_throughput_tok_s"
+        ]
         for batch in batches
     ]
     async_values = [
@@ -1840,7 +2595,7 @@ def render_performance_plot(
     axis.set_xticks(list(x), [str(batch) for batch in batches])
     axis.set_xlabel("Continuous batch size")
     axis.set_ylabel("Median completion tokens/s")
-    axis.set_title("Llama-3.1-8B + EAGLE3 D=7 FP16")
+    axis.set_title("Asynchronous SSD completion throughput")
     axis.legend()
     figure.tight_layout()
     figure.savefig(output_root / "performance.png", dpi=160)
@@ -1849,20 +2604,71 @@ def render_performance_plot(
 
 def finalize_matrix(args: argparse, output_root: Path) -> bool:
     correctness = audit_correctness(args, output_root)
+    scope = getattr(args, "correctness_scope", "full")
+    if scope != "full":
+        not_evaluated = {
+            "status": "not_evaluated",
+            "reason": f"correctness_scope={scope}",
+            "completed_at_utc": utc_now(),
+        }
+        write_json(output_root / "lifecycle_audit.json", not_evaluated)
+        write_json(output_root / "performance_summary.json", not_evaluated)
+        write_json(
+            output_root / "performance_measurement_incomplete.json",
+            not_evaluated,
+        )
+        write_json(
+            output_root / "matrix_incomplete.json",
+            {
+                "status": "incomplete",
+                "completed_at_utc": utc_now(),
+                "correctness": correctness,
+                "correctness_scope": scope,
+                "lifecycle": "not_evaluated",
+                "performance": "not_evaluated",
+                "engineering_complete": False,
+            },
+        )
+        return False
     lifecycle = audit_lifecycle(output_root)
     performance = audit_performance(output_root)
-    complete = correctness and lifecycle and performance
+    engineering_complete = correctness and lifecycle
+    complete = engineering_complete and performance
     marker = {
         "status": "complete" if complete else "incomplete",
         "completed_at_utc": utc_now(),
         "correctness": correctness,
         "lifecycle": lifecycle,
         "performance": performance,
+        "engineering_complete": engineering_complete,
     }
     if complete:
         write_json(output_root / "matrix_complete.json", marker)
     else:
         write_json(output_root / "matrix_incomplete.json", marker)
+    write_json(
+        output_root
+        / (
+            "performance_gate_passed.json"
+            if performance
+            else "performance_gate_failed.json"
+        ),
+        {
+            "status": "passed" if performance else "failed",
+            "completed_at_utc": utc_now(),
+        },
+    )
+    if engineering_complete:
+        write_json(
+            output_root / "phase_b_engineering_complete.json",
+            {
+                "status": "complete",
+                "completed_at_utc": utc_now(),
+                "correctness": correctness,
+                "lifecycle": lifecycle,
+                "performance_gate_passed": performance,
+            },
+        )
     return complete
 
 
@@ -1883,20 +2689,32 @@ def main() -> int:
     prompts = prepare_prompts(args, output_root)
     if args.phase in ("prepare", "all"):
         prepare_manifest(args, output_root, prompts)
-        prepare_matrix(output_root)
+        prepare_matrix(args, output_root)
         if args.phase == "prepare":
             return 0
     if args.phase == "cell":
         if not args.cell:
             raise ValueError("--phase cell requires --cell")
-        cells = correctness_cells() + lifecycle_cells() + performance_cells()
+        cells = (
+            correctness_cells(args.correctness_scope)
+            + lifecycle_cells()
+            + performance_cells()
+        )
         matches = [cell for cell in cells if cell.name == args.cell]
         if len(matches) != 1:
             raise ValueError(f"Unknown or ambiguous matrix cell: {args.cell!r}")
         run_cells(args, output_root, prompts, matches)
         return 0
+    if args.phase == "forced-jit-audit":
+        return 0 if audit_forced_jit(args, output_root) else 2
     if args.phase in ("correctness", "all"):
-        run_cells(args, output_root, prompts, correctness_cells())
+        correctness = correctness_cells(args.correctness_scope)
+        pre_cache = [cell for cell in correctness if cell.mode != "async_cache"]
+        run_cells(args, output_root, prompts, pre_cache)
+        if not audit_forced_jit(args, output_root):
+            return 2
+        cache = [cell for cell in correctness if cell.mode == "async_cache"]
+        run_cells(args, output_root, prompts, cache)
         if not audit_correctness(args, output_root):
             return 2
     if args.phase in ("lifecycle", "all"):

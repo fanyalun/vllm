@@ -17,7 +17,7 @@ class AsyncDraftRingSlot:
     positions: torch.Tensor
     query_start_loc: torch.Tensor
     seq_lens: torch.Tensor
-    aux_hidden_states: torch.Tensor
+    conditioning_states: torch.Tensor
     num_sampled: torch.Tensor
     num_rejected: torch.Tensor
     last_sampled: torch.Tensor
@@ -25,6 +25,11 @@ class AsyncDraftRingSlot:
     temperature: torch.Tensor
     seeds: torch.Tensor
     draft_tokens: torch.Tensor
+
+    @property
+    def aux_hidden_states(self) -> torch.Tensor:
+        """Compatibility alias for phase-A EAGLE3 code and artifacts."""
+        return self.conditioning_states
 
 
 @dataclass
@@ -66,7 +71,7 @@ def make_ring_slots(
     max_num_reqs: int,
     max_num_tokens: int,
     num_speculative_tokens: int,
-    aux_hidden_size: int,
+    conditioning_size: int,
     dtype: torch.dtype,
     device: torch.device,
 ) -> list[AsyncDraftRingSlot]:
@@ -80,9 +85,9 @@ def make_ring_slots(
                     max_num_reqs + 1, dtype=torch.int32, device=device
                 ),
                 seq_lens=torch.empty(max_num_reqs, dtype=torch.int32, device=device),
-                aux_hidden_states=torch.empty(
+                conditioning_states=torch.empty(
                     max_num_tokens,
-                    aux_hidden_size,
+                    conditioning_size,
                     dtype=dtype,
                     device=device,
                 ),

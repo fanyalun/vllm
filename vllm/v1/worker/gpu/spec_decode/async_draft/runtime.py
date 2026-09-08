@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from __future__ import annotations
+
 import copy
 import gc
 import os
 import signal
 import time
 import traceback
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from multiprocessing.connection import Connection
 from types import SimpleNamespace
 from typing import Any
@@ -32,11 +34,17 @@ from vllm.v1.worker.gpu.cudagraph_utils import (
 from vllm.v1.worker.gpu.dp_utils import dispatch_cg_and_sync_dp
 from vllm.v1.worker.gpu.input_batch import InputBatch
 from vllm.v1.worker.gpu.model_runner import GPUModelRunner
-from vllm.v1.worker.gpu.model_states import init_model_state
+from vllm.v1.worker.gpu.model_states.default import DefaultModelState
+from vllm.v1.worker.gpu.model_states.interface import ModelState
+from vllm.v1.worker.gpu.spec_decode.async_draft.adapters import (
+    AsyncDraftMethodAdapter,
+    DSparkAsyncDraftAdapter,
+    get_async_draft_adapter,
+)
 from vllm.v1.worker.gpu.spec_decode.async_draft.cache import (
     BranchCache,
     CachedBranch,
-    select_branches_within_budget,
+    select_branches_with_group_budget,
     select_recovery_candidates,
 )
 from vllm.v1.worker.gpu.spec_decode.async_draft.ipc import (
@@ -46,9 +54,10 @@ from vllm.v1.worker.gpu.spec_decode.async_draft.ipc import (
     make_ring_slots,
     response_error,
 )
-from vllm.v1.worker.gpu.spec_decode.async_draft.weights import (
-    materialize_standalone_eagle_weights,
+from vllm.v1.worker.gpu.spec_decode.autoregressive.speculator import (
+    AutoRegressiveSpeculator,
 )
+from vllm.v1.worker.gpu.spec_decode.dspark.speculator import DSparkSpeculator
 from vllm.v1.worker.gpu.spec_decode.eagle.speculator import EagleSpeculator
 from vllm.v1.worker.gpu.spec_decode.speculator import DraftModelSpeculator
 
@@ -57,6 +66,33 @@ logger = init_logger(__name__)
 
 class DraftCapacityError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class DSparkBranchState:
+    trace_top2: dict[str, Any]
+
+
+@dataclass
+class DSparkRoundState:
+    """Per-request base logits produced by the current async backbone."""
+
+    base_logits: list[torch.Tensor | None]
+    anchor_tokens: list[torch.Tensor | None]
+
+
+class StandaloneDraftModelState(DefaultModelState):
+    """Attention-only state for Draft models with adapter-owned positions."""
+
+    def __init__(
+        self,
+        vllm_config: VllmConfig,
+        model: torch.nn.Module,
+        device: torch.device,
+    ) -> None:
+        ModelState.__init__(self, vllm_config, model, None, device)
+        self.rope_state = None
+        self.mm_pruner = None
 
 
 class DraftBlockPool:
@@ -75,6 +111,33 @@ class DraftBlockPool:
         self.request_slots: dict[str, int] = {}
         self.request_epochs: dict[str, int] = {}
         self.free_request_slots = list(range(runner.max_num_reqs - 1, -1, -1))
+
+    def _request_block_capacity(self, group: int) -> int:
+        table = self.block_tables.block_tables[group].gpu
+        blocks_per_kv_block = self.block_tables.blocks_per_kv_block[group]
+        if table.shape[1] % blocks_per_kv_block != 0:
+            raise RuntimeError(
+                "Async draft block-table width is not divisible by its "
+                "kernel blocks per KV block"
+            )
+        return table.shape[1] // blocks_per_kv_block
+
+    def _validate_request_seq_len(
+        self,
+        seq_len: int,
+        *,
+        group: int,
+        block_size: int,
+    ) -> int:
+        needed = (seq_len + block_size - 1) // block_size
+        capacity = self._request_block_capacity(group)
+        if needed > capacity:
+            raise DraftCapacityError(
+                "Async draft sequence exceeds one block-table row: "
+                f"group={group}, seq_len={seq_len}, block_size={block_size}, "
+                f"need={needed}, capacity={capacity}"
+            )
+        return needed
 
     def _release(self, req_id: str) -> None:
         allocations = self.allocations.pop(req_id, None)
@@ -126,10 +189,6 @@ class DraftBlockPool:
         required_seq_lens: np.ndarray,
         mutation_start_positions: np.ndarray | None = None,
     ) -> torch.Tensor:
-        if self.num_groups != 1:
-            raise NotImplementedError(
-                "Async EAGLE3 branch cloning currently requires one KV cache group"
-            )
         if len(source_ids) != len(branch_ids):
             raise ValueError("Async draft clone source and branch counts differ")
         if len(required_seq_lens) != len(branch_ids):
@@ -150,67 +209,75 @@ class DraftBlockPool:
                 f"available={len(self.free_request_slots)}"
             )
 
-        block_costs = [
-            self.clone_new_block_count(
-                source_id,
-                int(seq_len),
-                None
-                if mutation_start_positions is None
-                else int(mutation_start_positions[index]),
-            )
-            for index, (source_id, seq_len) in enumerate(
-                zip(source_ids, required_seq_lens)
-            )
-        ]
-        if sum(block_costs) > len(self.free_blocks[0]):
-            raise DraftCapacityError(
-                "Async draft KV block pool exhausted during clone: "
-                f"need={sum(block_costs)}, "
-                f"available={len(self.free_blocks[0])}"
-            )
+        block_costs = [0] * self.num_groups
+        for index, (source_id, seq_len) in enumerate(
+            zip(source_ids, required_seq_lens)
+        ):
+            for group in range(self.num_groups):
+                block_costs[group] += self.clone_new_block_count(
+                    source_id,
+                    int(seq_len),
+                    None
+                    if mutation_start_positions is None
+                    else int(mutation_start_positions[index]),
+                    group=group,
+                )
+        for group, cost in enumerate(block_costs):
+            if cost > len(self.free_blocks[group]):
+                raise DraftCapacityError(
+                    "Async draft KV block pool exhausted during clone: "
+                    f"group={group}, need={cost}, "
+                    f"available={len(self.free_blocks[group])}"
+                )
 
         branch_slots: list[int] = []
-        copy_sources: list[int] = []
-        copy_destinations: list[int] = []
-        block_size = self.block_tables.block_sizes[0]
+        copy_sources = [[] for _ in range(self.num_groups)]
+        copy_destinations = [[] for _ in range(self.num_groups)]
         for index, (source_id, branch_id, seq_len) in enumerate(
             zip(source_ids, branch_ids, required_seq_lens)
         ):
-            source_blocks = self.allocations[source_id][0]
-            needed = (int(seq_len) + block_size - 1) // block_size
-            shared_count = self.clone_shared_prefix_blocks(
-                source_id,
-                int(seq_len),
-                None
-                if mutation_start_positions is None
-                else int(mutation_start_positions[index]),
-            )
-            destination_blocks = list(source_blocks[:shared_count])
-            for block in destination_blocks:
-                self.block_refcounts[0][block] += 1
+            destination_by_group: list[list[int]] = []
+            for group, block_size in enumerate(self.block_tables.block_sizes):
+                source_blocks = self.allocations[source_id][group]
+                needed = self._validate_request_seq_len(
+                    int(seq_len), group=group, block_size=block_size
+                )
+                shared_count = self.clone_shared_prefix_blocks(
+                    source_id,
+                    int(seq_len),
+                    None
+                    if mutation_start_positions is None
+                    else int(mutation_start_positions[index]),
+                    group=group,
+                )
+                destination_blocks = list(source_blocks[:shared_count])
+                for block in destination_blocks:
+                    self.block_refcounts[group][block] += 1
 
-            copied_source_blocks = source_blocks[
-                shared_count : min(len(source_blocks), needed)
-            ]
-            new_count = needed - shared_count
-            new_blocks = [self.free_blocks[0].pop() for _ in range(new_count)]
-            for block in new_blocks:
-                if self.block_refcounts[0][block] != 0:
-                    raise RuntimeError(
-                        f"Async draft free KV block {block} has live references"
-                    )
-                self.block_refcounts[0][block] = 1
-            destination_blocks.extend(new_blocks)
-            copy_sources.extend(copied_source_blocks)
-            copy_destinations.extend(new_blocks[: len(copied_source_blocks)])
+                copied_source_blocks = source_blocks[
+                    shared_count : min(len(source_blocks), needed)
+                ]
+                new_count = needed - shared_count
+                new_blocks = [self.free_blocks[group].pop() for _ in range(new_count)]
+                for block in new_blocks:
+                    if self.block_refcounts[group][block] != 0:
+                        raise RuntimeError(
+                            "Async draft free KV block has live references: "
+                            f"group={group}, block={block}"
+                        )
+                    self.block_refcounts[group][block] = 1
+                destination_blocks.extend(new_blocks)
+                copy_sources[group].extend(copied_source_blocks)
+                copy_destinations[group].extend(new_blocks[: len(copied_source_blocks)])
+                destination_by_group.append(destination_blocks)
 
             req_slot = self.free_request_slots.pop()
             branch_slots.append(req_slot)
             self.request_slots[branch_id] = req_slot
             self.request_epochs[branch_id] = -1
-            self.allocations[branch_id] = [destination_blocks]
+            self.allocations[branch_id] = destination_by_group
             self.block_tables.append_block_ids(
-                req_slot, (destination_blocks,), overwrite=True
+                req_slot, tuple(destination_by_group), overwrite=True
             )
 
         self.block_tables.apply_staged_writes()
@@ -226,9 +293,11 @@ class DraftBlockPool:
         source_id: str,
         seq_len: int,
         mutation_start_position: int | None = None,
+        *,
+        group: int = 0,
     ) -> int:
-        source_blocks = self.allocations[source_id][0]
-        block_size = self.block_tables.block_sizes[0]
+        source_blocks = self.allocations[source_id][group]
+        block_size = self.block_tables.block_sizes[group]
         needed = (seq_len + block_size - 1) // block_size
         if mutation_start_position is not None:
             if mutation_start_position < 0:
@@ -247,34 +316,55 @@ class DraftBlockPool:
         source_id: str,
         seq_len: int,
         mutation_start_position: int | None = None,
+        *,
+        group: int = 0,
     ) -> int:
-        block_size = self.block_tables.block_sizes[0]
+        block_size = self.block_tables.block_sizes[group]
         needed = (seq_len + block_size - 1) // block_size
         return needed - self.clone_shared_prefix_blocks(
-            source_id, seq_len, mutation_start_position
+            source_id, seq_len, mutation_start_position, group=group
         )
 
     def _copy_kv_blocks(
         self,
-        source_blocks: list[int],
-        destination_blocks: list[int],
+        source_blocks: list[list[int]],
+        destination_blocks: list[list[int]],
     ) -> None:
-        if not source_blocks:
-            return
-        source = torch.tensor(
-            source_blocks, dtype=torch.long, device=runner_device(self.runner)
+        caches_by_group = self._kv_caches_by_group()
+        for group, group_sources in enumerate(source_blocks):
+            if not group_sources:
+                continue
+            source = torch.tensor(
+                group_sources, dtype=torch.long, device=runner_device(self.runner)
+            )
+            destination = torch.tensor(
+                destination_blocks[group][: len(group_sources)],
+                dtype=torch.long,
+                device=runner_device(self.runner),
+            )
+            for kv_cache in caches_by_group[group]:
+                if not isinstance(kv_cache, torch.Tensor):
+                    raise TypeError(
+                        "Async draft branch cloning requires tensor KV caches"
+                    )
+                block_dim = 1 if kv_cache.shape[0] == 2 else 0
+                source_values = kv_cache.index_select(block_dim, source)
+                kv_cache.index_copy_(block_dim, destination, source_values)
+
+    def _kv_caches_by_group(self) -> list[list[torch.Tensor]]:
+        explicit = getattr(self.runner, "kv_caches_by_group", None)
+        if explicit is not None:
+            if len(explicit) != self.num_groups:
+                raise ValueError("KV cache group count does not match block tables")
+            return explicit
+        if self.num_groups == 1:
+            return [list(self.runner.kv_caches)]
+        if len(self.runner.kv_caches) == self.num_groups:
+            return [[cache] for cache in self.runner.kv_caches]
+        raise RuntimeError(
+            "Multi-group async draft cloning requires KV caches grouped by "
+            "block-table group"
         )
-        destination = torch.tensor(
-            destination_blocks[: len(source_blocks)],
-            dtype=torch.long,
-            device=runner_device(self.runner),
-        )
-        for kv_cache in self.runner.kv_caches:
-            if not isinstance(kv_cache, torch.Tensor):
-                raise TypeError("Async EAGLE3 requires tensor attention KV caches")
-            block_dim = 1 if kv_cache.shape[0] == 2 else 0
-            source_values = kv_cache.index_select(block_dim, source)
-            kv_cache.index_copy_(block_dim, destination, source_values)
 
     def ensure(
         self,
@@ -307,7 +397,9 @@ class DraftBlockPool:
             allocations = self.allocations.get(req_id)
             for group, block_size in enumerate(block_sizes):
                 allocated = len(allocations[group]) if allocations else 0
-                needed = (int(seq_len) + block_size - 1) // block_size
+                needed = self._validate_request_seq_len(
+                    int(seq_len), group=group, block_size=block_size
+                )
                 missing_blocks[group] += max(needed - allocated, 0)
         for group, missing in enumerate(missing_blocks):
             if missing > len(self.free_blocks[group]):
@@ -328,7 +420,9 @@ class DraftBlockPool:
             allocations = self.allocations[req_id]
             new_block_ids: list[list[int]] = []
             for group, block_size in enumerate(block_sizes):
-                needed = (int(seq_len) + block_size - 1) // block_size
+                needed = self._validate_request_seq_len(
+                    int(seq_len), group=group, block_size=block_size
+                )
                 missing = needed - len(allocations[group])
                 blocks = [self.free_blocks[group].pop() for _ in range(missing)]
                 for block in blocks:
@@ -364,8 +458,9 @@ def runner_device(runner: GPUModelRunner) -> torch.device:
 def _branch_cudagraph_capture_sizes(
     num_speculative_tokens: int,
     max_num_reqs: int,
+    fan_out: int = ASYNC_DRAFT_FAN_OUT,
 ) -> set[int]:
-    branches_per_request = (num_speculative_tokens + 1) * ASYNC_DRAFT_FAN_OUT
+    branches_per_request = (num_speculative_tokens + 1) * fan_out
     return {
         branches_per_request * (1 << power)
         for power in range(max_num_reqs.bit_length())
@@ -373,62 +468,114 @@ def _branch_cudagraph_capture_sizes(
     }
 
 
-def _standalone_load_draft(
+def _standalone_load_draft_model(
     runner: GPUModelRunner,
-    target_model_path: str,
+    adapter: AsyncDraftMethodAdapter,
 ) -> list[dict[str, object]]:
     speculator = runner.speculator
-    if not isinstance(speculator, EagleSpeculator):
+    if not isinstance(speculator, DraftModelSpeculator):
         raise TypeError(
-            "Async draft child expected EagleSpeculator, got "
+            "Async draft child expected DraftModelSpeculator, got "
             f"{type(speculator).__name__}"
         )
 
     draft_config = runner.vllm_config.speculative_config
     assert draft_config is not None
-    with set_current_vllm_config(runner.vllm_config):
+    model_vllm_config = runner.vllm_config
+    if isinstance(adapter, DSparkAsyncDraftAdapter):
+        assert isinstance(speculator, DSparkSpeculator)
+        speculator.reserve_execution_width(runner.async_branch_backbone_width)
+        from vllm.config import replace
+
+        # DSpark's decoder layers are registered after the Target layer stack
+        # (the in-process loader passes the Target config while constructing
+        # the standalone draft model).  The child runner itself still uses
+        # the draft config for its buffers and KV metadata, so only the model
+        # construction config is switched here.
+        target_model_config = draft_config.target_model_config
+        if target_model_config is None:
+            raise ValueError("DSpark standalone loading requires target model config")
+        model_vllm_config = replace(
+            runner.vllm_config,
+            model_config=target_model_config,
+            attention_config=replace(
+                runner.vllm_config.attention_config,
+                use_non_causal=True,
+                backend=draft_config.attention_backend,
+            ),
+        )
+    with set_current_vllm_config(model_vllm_config):
         speculator.model = get_model(
-            vllm_config=runner.vllm_config,
+            vllm_config=model_vllm_config,
             model_config=draft_config.draft_model_config,
         )
-    materialized = materialize_standalone_eagle_weights(
-        speculator.model, target_model_path
-    )
+    materialized = adapter.materialize_shared_weights(speculator.model)
     speculator._validate_local_argmax_reduction()
-    speculator.recorded_greedy_logits = torch.empty(
-        runner.max_num_reqs,
-        runner.num_speculative_steps,
-        speculator.vocab_size,
-        dtype=runner.vllm_config.model_config.dtype,
-        device=runner.device,
-    )
-    speculator.recorded_feedback_hidden_states = torch.empty(
-        runner.max_num_reqs,
-        runner.num_speculative_steps,
-        speculator.hidden_size,
-        dtype=runner.vllm_config.model_config.dtype,
-        device=runner.device,
-    )
+    if isinstance(speculator, AutoRegressiveSpeculator):
+        speculator.recorded_greedy_logits = torch.empty(
+            runner.max_num_reqs,
+            runner.num_speculative_steps,
+            speculator.vocab_size,
+            dtype=runner.vllm_config.model_config.dtype,
+            device=runner.device,
+        )
+        speculator.recorded_feedback_hidden_states = torch.empty(
+            runner.max_num_reqs,
+            runner.num_speculative_steps,
+            speculator.hidden_size,
+            dtype=runner.vllm_config.model_config.dtype,
+            device=runner.device,
+        )
+    elif isinstance(speculator, DSparkSpeculator):
+        async_width = speculator._max_execution_width
+        fan_out = runner.async_draft_fan_out
+        speculator._async_candidate_ids = torch.empty(
+            runner.max_num_reqs,
+            async_width,
+            fan_out,
+            dtype=torch.int64,
+            device=runner.device,
+        )
+        draft_vocab_size = speculator.model.compute_draft_logits(
+            torch.zeros(
+                1,
+                speculator.model.model.config.hidden_size,
+                dtype=runner.vllm_config.model_config.dtype,
+                device=runner.device,
+            )
+        ).shape[-1]
+        speculator._async_base_logits = torch.empty(
+            runner.max_num_reqs,
+            async_width,
+            draft_vocab_size,
+            dtype=runner.vllm_config.model_config.dtype,
+            device=runner.device,
+        )
 
     from vllm.config import get_layers_from_vllm_config
 
     speculator.draft_attn_layer_names = set(
         get_layers_from_vllm_config(
-            runner.vllm_config,
+            model_vllm_config,
             AttentionLayerBase,  # type: ignore[type-abstract]
         ).keys()
     )
-    runner.model_state = init_model_state(
+    runner.model_state = StandaloneDraftModelState(
         runner.vllm_config,
         speculator.model,
-        None,
         runner.device,
     )
     runner.decode_query_len = runner.num_speculative_steps + 1
-    return [weight.to_dict() for weight in materialized]
+    return materialized
 
 
-def _initialize_draft_kv_cache(runner: GPUModelRunner) -> None:
+_standalone_load_draft = _standalone_load_draft_model
+
+
+def _initialize_draft_kv_cache(
+    runner: GPUModelRunner,
+    min_block_table_seq_len: int | None = None,
+) -> None:
     free_memory, total_memory = torch.cuda.mem_get_info(runner.device)
     utilization = runner.cache_config.gpu_memory_utilization
     allocator_headroom = int(total_memory * (1.0 - utilization))
@@ -444,7 +591,13 @@ def _initialize_draft_kv_cache(runner: GPUModelRunner) -> None:
         runner.vllm_config, [kv_cache_spec], [available_memory]
     )[0]
     runner.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
-    runner.initialize_kv_cache(kv_cache_config)
+    original_max_model_len = runner.max_model_len
+    if min_block_table_seq_len is not None:
+        runner.max_model_len = max(original_max_model_len, min_block_table_seq_len)
+    try:
+        runner.initialize_kv_cache(kv_cache_config)
+    finally:
+        runner.max_model_len = original_max_model_len
 
 
 def _capture_standalone_draft(runner: GPUModelRunner) -> dict[str, object]:
@@ -456,6 +609,21 @@ def _capture_standalone_draft(runner: GPUModelRunner) -> dict[str, object]:
         )
     prefill_manager = getattr(speculator, "prefill_cudagraph_manager", None)
     decode_manager = getattr(speculator, "decode_cudagraph_manager", None)
+    if isinstance(speculator, DSparkSpeculator):
+        query_manager = speculator.query_cudagraph_manager
+        if query_manager is None or not query_manager.needs_capture():
+            return {
+                "mode": CUDAGraphMode.NONE.name,
+                "prefill_graphs": 0,
+                "decode_graphs": 0,
+            }
+        speculator.capture()
+        torch.cuda.synchronize(runner.device)
+        return {
+            "mode": query_manager.cudagraph_mode.name,
+            "prefill_graphs": 0,
+            "decode_graphs": len(query_manager.graphs),
+        }
     if prefill_manager is None or not prefill_manager.needs_capture():
         return {
             "mode": CUDAGraphMode.NONE.name,
@@ -587,7 +755,7 @@ def _slice_proposal_batch(
             query_start_loc_np, dtype=torch.int32, device=device
         ),
         seq_lens=ring_slot.seq_lens.index_select(0, index_tensor),
-        aux_hidden_states=pack_tokens(ring_slot.aux_hidden_states),
+        conditioning_states=pack_tokens(ring_slot.conditioning_states),
         num_sampled=ring_slot.num_sampled.index_select(0, index_tensor),
         num_rejected=ring_slot.num_rejected.index_select(0, index_tensor),
         last_sampled=ring_slot.last_sampled.index_select(0, index_tensor),
@@ -628,7 +796,8 @@ def _execute_jit_proposal(
     ring_slot: Any,
     aux_hidden_splits: tuple[int, ...],
     num_speculative_steps: int | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, int]:
+    dspark_base_logits_only: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor | None, int]:
     proposal_steps = num_speculative_steps or runner.num_speculative_steps
     required_seq_lens = (
         batch.seq_lens_cpu_upper_bound[: batch.num_reqs] + proposal_steps
@@ -686,23 +855,34 @@ def _execute_jit_proposal(
     temperature[idx_mapping] = ring_slot.temperature[: batch.num_reqs]
     seeds[idx_mapping] = ring_slot.seeds[: batch.num_reqs]
 
-    aux_hidden_states = list(
+    conditioning_states = list(
         torch.split(
-            ring_slot.aux_hidden_states[: batch.num_tokens_after_padding],
+            ring_slot.conditioning_states[: batch.num_tokens_after_padding],
             aux_hidden_splits,
             dim=-1,
         )
     )
     assert isinstance(runner.speculator, DraftModelSpeculator)
     speculator = runner.speculator
+    method = runner.vllm_config.speculative_config.method
+    aux_hidden_states = conditioning_states if method in ("eagle3", "dspark") else None
     previous_num_steps = speculator.num_speculative_steps
-    speculator.num_speculative_steps = proposal_steps
+    is_dspark = isinstance(speculator, DSparkSpeculator)
+    if dspark_base_logits_only and not is_dspark:
+        raise ValueError("Base-logit-only proposal is specific to DSpark")
+    if is_dspark:
+        speculator.set_execution_width(proposal_steps)
+    else:
+        speculator.num_speculative_steps = proposal_steps
+    previous_base_logits_only = getattr(speculator, "_async_base_logits_only", False)
+    if is_dspark:
+        speculator._async_base_logits_only = dspark_base_logits_only
     try:
         draft_tokens = speculator.propose(
             input_batch=input_batch,
             attn_metadata=attn_metadata,
             slot_mappings=slot_mappings_by_layer,
-            last_hidden_states=aux_hidden_states[-1],
+            last_hidden_states=conditioning_states[-1],
             aux_hidden_states=aux_hidden_states,
             num_sampled=ring_slot.num_sampled[: batch.num_reqs],
             num_rejected=ring_slot.num_rejected[: batch.num_reqs],
@@ -710,13 +890,96 @@ def _execute_jit_proposal(
             next_prefill_tokens=next_prefill_tokens,
             temperature=temperature,
             seeds=seeds,
+            # The DSpark query graph is captured for the private 2D+1 branch
+            # width. A D-wide foreground execution, or the base-logit-only
+            # branch execution, must stay eager until dual-width graphs exist.
+            is_profile=(
+                is_dspark
+                and (proposal_steps != previous_num_steps or dspark_base_logits_only)
+            ),
         )
     finally:
-        speculator.num_speculative_steps = previous_num_steps
-    feedback_hidden_states = speculator.recorded_feedback_hidden_states[
-        : batch.num_reqs
-    ].clone()
-    return draft_tokens.clone(), feedback_hidden_states, evictions
+        if is_dspark:
+            speculator._async_base_logits_only = previous_base_logits_only
+            speculator.set_execution_width(previous_num_steps)
+        else:
+            speculator.num_speculative_steps = previous_num_steps
+    recorded_feedback = getattr(speculator, "recorded_feedback_hidden_states", None)
+    feedback_hidden_states = (
+        recorded_feedback[: batch.num_reqs].clone()
+        if recorded_feedback is not None
+        else None
+    )
+    return (
+        draft_tokens[:, :proposal_steps].clone(),
+        feedback_hidden_states,
+        evictions,
+    )
+
+
+def _format_dspark_top2(
+    values: torch.Tensor, token_ids: torch.Tensor
+) -> list[dict[str, Any]]:
+    values_list = values.cpu().tolist()
+    ids_list = token_ids.cpu().tolist()
+    return [
+        {
+            "draft_top2": [
+                {
+                    "token_ids": step_ids,
+                    "logits": step_values,
+                    "gap": step_values[0] - step_values[1],
+                }
+                for step_ids, step_values in zip(request_ids, request_values)
+            ]
+        }
+        for request_ids, request_values in zip(ids_list, values_list)
+    ]
+
+
+def _dspark_markov_propose(
+    speculator: DSparkSpeculator,
+    base_logits: torch.Tensor,
+    previous_tokens: torch.Tensor,
+    *,
+    record_top2: bool,
+) -> tuple[torch.Tensor, list[dict[str, Any]] | None]:
+    if base_logits.ndim != 3:
+        raise ValueError(
+            f"Expected DSpark bank logits [B, D, V], got {base_logits.shape}"
+        )
+    if previous_tokens.shape != (base_logits.shape[0],):
+        raise ValueError(
+            "DSpark previous-token shape does not match bank batch: "
+            f"previous={previous_tokens.shape}, bank={base_logits.shape}"
+        )
+    if speculator.draft_logits is not None:
+        raise ValueError("Async DSpark proposal banks require greedy Draft sampling")
+    tokens = torch.empty(
+        base_logits.shape[:2], dtype=torch.int64, device=base_logits.device
+    )
+    top_values: list[torch.Tensor] = []
+    top_ids: list[torch.Tensor] = []
+    previous = previous_tokens
+    for step in range(base_logits.shape[1]):
+        logits = base_logits[:, step] + speculator.model.markov_bias(
+            speculator.model.markov_embed(previous)
+        )
+        if record_top2:
+            values, draft_ids = logits.float().topk(2, dim=-1)
+            top_values.append(values)
+            top_ids.append(speculator.model.map_draft_to_target(draft_ids))
+            sampled = top_ids[-1][:, 0]
+        else:
+            sampled = speculator.model.map_draft_to_target(logits.argmax(dim=-1))
+        tokens[:, step].copy_(sampled)
+        previous = sampled
+    trace = None
+    if record_top2:
+        trace = _format_dspark_top2(
+            torch.stack(top_values, dim=1), torch.stack(top_ids, dim=1)
+        )
+    return tokens, trace
 
 
 def _run_proposal(
@@ -728,27 +991,52 @@ def _run_proposal(
     aux_hidden_splits: tuple[int, ...],
 ) -> tuple[
     dict[str, float | int],
-    torch.Tensor,
+    torch.Tensor | None,
     list[int],
     list[dict[str, Any] | None] | None,
+    DSparkRoundState | None,
 ]:
     start = time.perf_counter()
     ring_slot = ring_slots[batch.slot]
     num_reqs = batch.num_reqs
     speculator = runner.speculator
     assert isinstance(speculator, DraftModelSpeculator)
-    feedback_hidden_states = torch.empty(
-        num_reqs,
-        runner.num_speculative_steps,
-        speculator.hidden_size,
-        dtype=runner.vllm_config.model_config.dtype,
-        device=runner.device,
+    is_dspark = isinstance(speculator, DSparkSpeculator)
+    verify_width = getattr(
+        runner, "async_target_verify_width", runner.num_speculative_steps
+    )
+    branch_backbone_width = getattr(
+        runner, "async_branch_backbone_width", runner.num_speculative_steps
+    )
+    has_feedback_state = not is_dspark
+    feedback_hidden_states = (
+        torch.empty(
+            num_reqs,
+            runner.num_speculative_steps,
+            speculator.hidden_size,
+            dtype=runner.vllm_config.model_config.dtype,
+            device=runner.device,
+        )
+        if has_feedback_state
+        else None
     )
     hits = 0
     hit_indices: list[int] = []
     cache_evictions = 0
     miss_indices: list[int] = []
-    trace_top2: list[dict[str, Any] | None] | None = None
+    dspark_current_backbone_seconds = 0.0
+    record_top2 = os.environ.get("REPLAYSSM_SPEC_DECODE_TRACE_LOGITS") == "1"
+    trace_top2: list[dict[str, Any] | None] | None = (
+        [None] * num_reqs if record_top2 else None
+    )
+    dspark_round_state = (
+        DSparkRoundState(
+            base_logits=[None] * num_reqs,
+            anchor_tokens=[None] * num_reqs,
+        )
+        if is_dspark
+        else None
+    )
     force_jit = os.environ.get("ASYNC_DRAFT_FORCE_JIT", "0") == "1"
     if batch.transient or force_jit:
         miss_indices = list(range(num_reqs))
@@ -776,8 +1064,19 @@ def _run_proposal(
                 discarded = branch_cache.discard_request(req_id)
                 block_pool.release(discarded)
                 continue
+            if branch.completion_event is not None:
+                branch.completion_event.synchronize()
             ring_slot.draft_tokens[index].copy_(branch.tokens)
-            feedback_hidden_states[index].copy_(branch.feedback_hidden_states)
+            if feedback_hidden_states is not None:
+                feedback_hidden_states[index].copy_(branch.feedback_hidden_states)
+            elif record_top2:
+                provisional = branch.provisional_state
+                if not isinstance(provisional, DSparkBranchState):
+                    raise RuntimeError(
+                        "DSpark cache branch is missing proposal trace state"
+                    )
+                assert trace_top2 is not None
+                trace_top2[index] = provisional.trace_top2
             discarded = branch_cache.discard_request(req_id)
             block_pool.release([branch.branch_id, *discarded])
             hits += 1
@@ -790,6 +1089,7 @@ def _run_proposal(
             miss_batch, miss_slot = _slice_proposal_batch(
                 batch, ring_slot, miss_indices
             )
+        jit_started = time.perf_counter()
         miss_tokens, miss_hidden_states, jit_evictions = _execute_jit_proposal(
             runner,
             block_pool,
@@ -797,8 +1097,82 @@ def _run_proposal(
             miss_batch,
             miss_slot,
             aux_hidden_splits,
+            num_speculative_steps=branch_backbone_width if is_dspark else None,
         )
-        if os.environ.get("REPLAYSSM_SPEC_DECODE_TRACE_LOGITS") == "1":
+        if is_dspark:
+            dspark_current_backbone_seconds = time.perf_counter() - jit_started
+        if is_dspark:
+            assert isinstance(speculator, DSparkSpeculator)
+            assert dspark_round_state is not None
+            miss_base_logits = speculator._async_base_logits[
+                : len(miss_indices), :branch_backbone_width
+            ].clone()
+            miss_anchors = speculator.input_buffers.input_ids[
+                speculator.anchor_indices(
+                    len(miss_indices), execution_width=branch_backbone_width
+                )
+            ].clone()
+            for miss_row, output_row in enumerate(miss_indices):
+                dspark_round_state.base_logits[output_row] = miss_base_logits[miss_row]
+                dspark_round_state.anchor_tokens[output_row] = miss_anchors[miss_row]
+            if record_top2:
+                _, miss_traces = _dspark_markov_propose(
+                    speculator,
+                    miss_base_logits[:, :verify_width],
+                    miss_anchors,
+                    record_top2=True,
+                )
+                assert miss_traces is not None
+                base_values, base_ids = (
+                    miss_base_logits[:, :verify_width].float().topk(2, dim=-1)
+                )
+                mapped_base_ids = speculator.model.map_draft_to_target(base_ids)
+                base_values_list = base_values.cpu().tolist()
+                base_ids_list = mapped_base_ids.cpu().tolist()
+                query_width = (
+                    branch_backbone_width
+                    if speculator.sample_from_anchor
+                    else branch_backbone_width + 1
+                )
+                query_ids = (
+                    speculator.input_buffers.input_ids[
+                        : len(miss_indices) * query_width
+                    ]
+                    .view(len(miss_indices), query_width)
+                    .cpu()
+                    .tolist()
+                )
+                query_positions = (
+                    speculator.input_buffers.positions[
+                        : len(miss_indices) * query_width
+                    ]
+                    .view(len(miss_indices), query_width)
+                    .cpu()
+                    .tolist()
+                )
+                assert trace_top2 is not None
+                for miss_row, output_row in enumerate(miss_indices):
+                    trace_top2[output_row] = {
+                        **miss_traces[miss_row],
+                        "draft_base_top2": [
+                            {
+                                "token_ids": step_ids,
+                                "logits": step_values,
+                            }
+                            for step_ids, step_values in zip(
+                                base_ids_list[miss_row],
+                                base_values_list[miss_row],
+                            )
+                        ],
+                        "dspark_anchor_token": int(miss_anchors[miss_row].item()),
+                        "dspark_query_input_ids": query_ids[miss_row],
+                        "dspark_query_positions": query_positions[miss_row],
+                        "dspark_proposal_source": "jit",
+                        "dspark_target_verify_width": verify_width,
+                        "dspark_proposal_execution_width": (branch_backbone_width),
+                        "dspark_branch_backbone_width": branch_backbone_width,
+                    }
+        elif record_top2:
             top_values, top_ids = (
                 speculator.recorded_greedy_logits[: len(miss_indices)]
                 .float()
@@ -806,7 +1180,7 @@ def _run_proposal(
             )
             values = top_values.cpu().tolist()
             ids = top_ids.cpu().tolist()
-            trace_top2 = [None] * num_reqs
+            assert trace_top2 is not None
             for miss_row, output_row in enumerate(miss_indices):
                 trace_top2[output_row] = {
                     "draft_top2": [
@@ -822,8 +1196,12 @@ def _run_proposal(
                 }
         cache_evictions += jit_evictions
         for miss_row, output_row in enumerate(miss_indices):
-            ring_slot.draft_tokens[output_row].copy_(miss_tokens[miss_row])
-            feedback_hidden_states[output_row].copy_(miss_hidden_states[miss_row])
+            ring_slot.draft_tokens[output_row].copy_(
+                miss_tokens[miss_row, :verify_width]
+            )
+            if feedback_hidden_states is not None:
+                assert miss_hidden_states is not None
+                feedback_hidden_states[output_row].copy_(miss_hidden_states[miss_row])
 
     if batch.transient:
         block_pool.release(batch.req_ids)
@@ -836,9 +1214,21 @@ def _run_proposal(
         "cache_evictions": cache_evictions,
         "wait_seconds": elapsed,
         "branch_build_seconds": 0.0,
-        "fan_out": ASYNC_DRAFT_FAN_OUT,
+        "fan_out": getattr(runner, "async_draft_fan_out", ASYNC_DRAFT_FAN_OUT),
     }
-    return metrics, feedback_hidden_states, hit_indices, trace_top2
+    if is_dspark:
+        metrics["dspark_current_backbone_runs"] = len(miss_indices)
+        metrics["dspark_current_backbone_seconds"] = dspark_current_backbone_seconds
+        metrics["dspark_backbone_refreshes"] = 0
+        metrics["dspark_branch_backbone_seconds"] = 0.0
+        metrics["dspark_markov_branches"] = 0
+    return (
+        metrics,
+        feedback_hidden_states,
+        hit_indices,
+        trace_top2,
+        dspark_round_state,
+    )
 
 
 def _run_glue_decode(
@@ -849,7 +1239,10 @@ def _run_glue_decode(
     feedback_hidden_states: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[str]]:
     speculator = runner.speculator
-    assert isinstance(speculator, EagleSpeculator)
+    if not isinstance(speculator, AutoRegressiveSpeculator):
+        raise TypeError(
+            "Glue decode requires an autoregressive EAGLE3 or MTP speculator"
+        )
     batch_size = batch.num_reqs
     num_steps = runner.num_speculative_steps
     query_len = num_steps + 1
@@ -860,9 +1253,15 @@ def _run_glue_decode(
         torch.long
     )
     recovery_positions = ring_slot.positions.index_select(0, recovery_indices)
-    combined_target_hidden_states = speculator.model.combine_hidden_states(
-        ring_slot.aux_hidden_states[: batch.num_tokens_after_padding]
-    )
+    conditioning_states = ring_slot.conditioning_states[
+        : batch.num_tokens_after_padding
+    ]
+    if isinstance(speculator, EagleSpeculator):
+        combined_target_hidden_states = speculator.model.combine_hidden_states(
+            conditioning_states
+        )
+    else:
+        combined_target_hidden_states = conditioning_states
     recovery_hidden_states = combined_target_hidden_states.index_select(
         0, recovery_indices
     )
@@ -937,7 +1336,11 @@ def _run_glue_decode(
         batch_size, query_len, -1
     )
     output_hidden_states = output_hidden_states.view(batch_size, query_len, -1)
-    candidates = select_recovery_candidates(logits, ring_slot.draft_tokens[:batch_size])
+    candidates = select_recovery_candidates(
+        logits,
+        ring_slot.draft_tokens[:batch_size],
+        runner.async_draft_fan_out,
+    )
     return candidates, output_hidden_states, recovery_positions, glue_ids
 
 
@@ -949,7 +1352,10 @@ def _decode_fanout_branches(
     hidden_states: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     speculator = runner.speculator
-    assert isinstance(speculator, EagleSpeculator)
+    if not isinstance(speculator, AutoRegressiveSpeculator):
+        raise TypeError(
+            "Tree decode requires an autoregressive EAGLE3 or MTP speculator"
+        )
     num_branches = input_ids.shape[0]
     num_steps = runner.num_speculative_steps
     query_start_loc = torch.arange(
@@ -1014,22 +1420,233 @@ def _decode_fanout_branches(
     )
 
 
+def _dspark_top_recovery_candidates(
+    speculator: DSparkSpeculator,
+    logits: torch.Tensor,
+    returned_token: torch.Tensor | None,
+    fan_out: int,
+) -> torch.Tensor:
+    top_count = fan_out + (returned_token is not None)
+    if logits.shape[-1] < top_count:
+        raise ValueError("DSpark draft vocabulary is smaller than SSD fan-out")
+    top_values, top_ids = logits.float().topk(top_count, dim=-1)
+    mapped = speculator.model.map_draft_to_target(top_ids)
+    if returned_token is not None:
+        keep_values = torch.where(mapped == returned_token, float("-inf"), top_values)
+        selection = keep_values.topk(fan_out, dim=-1).indices
+        mapped = mapped.gather(-1, selection)
+    return mapped[..., :fan_out]
+
+
+def _build_dspark_round_fanout_branches(
+    runner: GPUModelRunner,
+    block_pool: DraftBlockPool,
+    branch_cache: BranchCache,
+    ring_slot: Any,
+    batch: AsyncDraftBatch,
+    conditioning_splits: tuple[int, ...],
+    hit_indices: list[int],
+    round_state: DSparkRoundState,
+) -> tuple[float, int, dict[str, float | int]]:
+    started = time.perf_counter()
+    speculator = runner.speculator
+    assert isinstance(speculator, DSparkSpeculator)
+    verify_width = getattr(
+        runner, "async_target_verify_width", runner.num_speculative_steps
+    )
+    branch_backbone_width = getattr(
+        runner, "async_branch_backbone_width", runner.num_speculative_steps
+    )
+    expected_width = 2 * verify_width + 1
+    fan_out = getattr(runner, "async_draft_fan_out", ASYNC_DRAFT_FAN_OUT)
+    if branch_backbone_width != expected_width:
+        raise RuntimeError(
+            "Async DSpark branch backbone must cover every Target outcome: "
+            f"backbone_width={branch_backbone_width}, "
+            f"expected={expected_width}, verify_width={verify_width}"
+        )
+
+    cache_evictions = 0
+    canonical_seconds = 0.0
+    canonical_started = time.perf_counter()
+    if hit_indices:
+        hit_batch, hit_slot = _slice_proposal_batch(batch, ring_slot, hit_indices)
+        _, _, cache_evictions = _execute_jit_proposal(
+            runner,
+            block_pool,
+            branch_cache,
+            hit_batch,
+            hit_slot,
+            conditioning_splits,
+            num_speculative_steps=branch_backbone_width,
+            dspark_base_logits_only=True,
+        )
+        canonical_seconds = time.perf_counter() - canonical_started
+        hit_logits = speculator._async_base_logits[
+            : len(hit_indices), :branch_backbone_width
+        ].clone()
+        hit_anchors = speculator.input_buffers.input_ids[
+            speculator.anchor_indices(
+                len(hit_indices), execution_width=branch_backbone_width
+            )
+        ].clone()
+        for hit_row, output_row in enumerate(hit_indices):
+            round_state.base_logits[output_row] = hit_logits[hit_row]
+            round_state.anchor_tokens[output_row] = hit_anchors[hit_row]
+
+    if any(value is None for value in round_state.base_logits):
+        raise RuntimeError("Async DSpark round is missing backbone base logits")
+    if any(value is None for value in round_state.anchor_tokens):
+        raise RuntimeError("Async DSpark round is missing backbone anchor tokens")
+    base_logits = torch.stack(
+        [value for value in round_state.base_logits if value is not None]
+    )
+    anchor_tokens = torch.stack(
+        [value for value in round_state.anchor_tokens if value is not None]
+    )
+    if base_logits.shape[1] != branch_backbone_width:
+        raise RuntimeError(
+            "Async DSpark base-logit width does not match the branch backbone: "
+            f"logits={base_logits.shape[1]}, expected={branch_backbone_width}"
+        )
+
+    candidate_started = time.perf_counter()
+    proposal = ring_slot.draft_tokens[: batch.num_reqs, :verify_width]
+    previous = anchor_tokens
+    candidates_by_depth: list[torch.Tensor] = []
+    for accepted_count in range(verify_width + 1):
+        logits = base_logits[:, accepted_count] + speculator.model.markov_bias(
+            speculator.model.markov_embed(previous)
+        )
+        returned = (
+            proposal[:, accepted_count] if accepted_count < verify_width else None
+        )
+        candidates_by_depth.append(
+            _dspark_top_recovery_candidates(speculator, logits, returned, fan_out)
+        )
+        if accepted_count < verify_width:
+            previous = proposal[:, accepted_count]
+    candidates = torch.stack(candidates_by_depth, dim=1)
+
+    windows = torch.stack(
+        [
+            base_logits[:, depth + 1 : depth + verify_width + 1]
+            for depth in range(verify_width + 1)
+        ],
+        dim=1,
+    )
+    windows = (
+        windows[:, :, None]
+        .expand(
+            -1,
+            -1,
+            fan_out,
+            -1,
+            -1,
+        )
+        .reshape(-1, verify_width, base_logits.shape[-1])
+    )
+    branch_previous = candidates.reshape(-1)
+    candidate_seconds = time.perf_counter() - candidate_started
+
+    branch_started = time.perf_counter()
+    record_top2 = os.environ.get("REPLAYSSM_SPEC_DECODE_TRACE_LOGITS") == "1"
+    tokens, traces = _dspark_markov_propose(
+        speculator,
+        windows,
+        branch_previous,
+        record_top2=record_top2,
+    )
+    completion_event = torch.cuda.Event()
+    completion_event.record(torch.cuda.current_stream(runner.device))
+    flat_index = 0
+    for request_index, (request_id, request_epoch) in enumerate(
+        zip(batch.req_ids, batch.request_epochs)
+    ):
+        for accepted_count in range(verify_width + 1):
+            for candidate_index in range(fan_out):
+                candidate = int(
+                    candidates[request_index, accepted_count, candidate_index].item()
+                )
+                trace = traces[flat_index] if traces is not None else {}
+                trace = {
+                    **trace,
+                    "dspark_proposal_source": "cache",
+                    "dspark_target_verify_width": verify_width,
+                    "dspark_proposal_execution_width": branch_backbone_width,
+                    "dspark_branch_backbone_width": branch_backbone_width,
+                }
+                branch_cache.add(
+                    (
+                        batch.engine_instance_id,
+                        request_id,
+                        request_epoch,
+                        accepted_count,
+                        candidate,
+                    ),
+                    CachedBranch(
+                        branch_id=(
+                            f"__async_dspark_markov_{batch.generation}_"
+                            f"{request_index}_{accepted_count}_{candidate_index}"
+                        ),
+                        tokens=tokens[flat_index].clone(),
+                        provisional_state=DSparkBranchState(trace_top2=trace),
+                        completion_event=completion_event,
+                    ),
+                )
+                flat_index += 1
+    torch.cuda.synchronize(runner.device)
+    return (
+        time.perf_counter() - started,
+        cache_evictions,
+        {
+            "canonical_commit_seconds": canonical_seconds,
+            "candidate_or_glue_seconds": candidate_seconds,
+            "tree_or_block_build_seconds": time.perf_counter() - branch_started,
+            "context_kv_projection_seconds": canonical_seconds,
+            "dspark_backbone_refreshes": batch.num_reqs,
+            "dspark_branch_backbone_seconds": canonical_seconds,
+            "dspark_markov_branches": flat_index,
+            "fanout_branches": flat_index,
+            "fanout_build_rounds": batch.num_reqs,
+        },
+    )
+
+
 def _build_fanout_branches(
     runner: GPUModelRunner,
     block_pool: DraftBlockPool,
     branch_cache: BranchCache,
     ring_slot: Any,
     batch: AsyncDraftBatch,
-    feedback_hidden_states: torch.Tensor,
+    feedback_hidden_states: torch.Tensor | None,
+    dspark_round_state: DSparkRoundState | None,
     hit_indices: list[int],
     aux_hidden_splits: tuple[int, ...],
-) -> tuple[float, int]:
+) -> tuple[float, int, dict[str, float | int]]:
     if batch.transient or os.environ.get("ASYNC_DRAFT_FORCE_JIT", "0") == "1":
-        return 0.0, 0
+        return 0.0, 0, {}
+    if isinstance(runner.speculator, DSparkSpeculator):
+        if dspark_round_state is None:
+            raise RuntimeError("Async DSpark branch build is missing round state")
+        return _build_dspark_round_fanout_branches(
+            runner,
+            block_pool,
+            branch_cache,
+            ring_slot,
+            batch,
+            aux_hidden_splits,
+            hit_indices,
+            dspark_round_state,
+        )
+    if feedback_hidden_states is None:
+        raise RuntimeError("Autoregressive branch build requires feedback state")
     start = time.perf_counter()
     cache_evictions = 0
+    canonical_seconds = 0.0
     if hit_indices:
         hit_batch, hit_slot = _slice_proposal_batch(batch, ring_slot, hit_indices)
+        canonical_start = time.perf_counter()
         with torch.cuda.nvtx.range("async_draft:canonical_commit"):
             _, _, commit_evictions = _execute_jit_proposal(
                 runner,
@@ -1038,9 +1655,13 @@ def _build_fanout_branches(
                 hit_batch,
                 hit_slot,
                 aux_hidden_splits,
-                num_speculative_steps=1,
+                num_speculative_steps=(
+                    None if isinstance(runner.speculator, DSparkSpeculator) else 1
+                ),
             )
         cache_evictions += commit_evictions
+        canonical_seconds = time.perf_counter() - canonical_start
+    glue_start = time.perf_counter()
     try:
         with torch.cuda.nvtx.range("async_draft:glue_decode"):
             (
@@ -1057,13 +1678,28 @@ def _build_fanout_branches(
             )
     except DraftCapacityError:
         skipped = (
-            batch.num_reqs * (runner.num_speculative_steps + 1) * ASYNC_DRAFT_FAN_OUT
+            batch.num_reqs
+            * (runner.num_speculative_steps + 1)
+            * runner.async_draft_fan_out
         )
-        return time.perf_counter() - start, skipped
+        return (
+            time.perf_counter() - start,
+            skipped,
+            {
+                "canonical_commit_seconds": canonical_seconds,
+                "candidate_or_glue_seconds": time.perf_counter() - glue_start,
+                "tree_or_block_build_seconds": 0.0,
+                "context_kv_projection_seconds": 0.0,
+                "fanout_branches": 0,
+                "fanout_build_rounds": batch.num_reqs,
+            },
+        )
+    glue_seconds = time.perf_counter() - glue_start
     batch_size, num_positions, fan_out = candidates.shape
-    if fan_out != ASYNC_DRAFT_FAN_OUT:
+    if fan_out != runner.async_draft_fan_out:
         raise RuntimeError(
-            f"Unexpected async draft fan-out {fan_out}, expected {ASYNC_DRAFT_FAN_OUT}"
+            "Unexpected async draft fan-out "
+            f"{fan_out}, expected {runner.async_draft_fan_out}"
         )
 
     branch_ids: list[str] = []
@@ -1075,8 +1711,6 @@ def _build_fanout_branches(
     branch_request_indices: list[int] = []
     branch_accepted_counts: list[int] = []
     branch_candidate_indices: list[int] = []
-    branch_shared_prefix_blocks: list[int] = []
-    block_size = block_pool.block_tables.block_sizes[0]
     for request_index in range(batch_size):
         for accepted_count in range(num_positions):
             for candidate_index in range(fan_out):
@@ -1107,23 +1741,25 @@ def _build_fanout_branches(
                 branch_request_indices.append(request_index)
                 branch_accepted_counts.append(accepted_count)
                 branch_candidate_indices.append(candidate_index)
-                branch_shared_prefix_blocks.append(
-                    block_pool.clone_shared_prefix_blocks(
-                        glue_ids[request_index],
-                        branch_seq_lens[-1],
-                        int(position.item()),
-                    )
-                )
-
-    selected = select_branches_within_budget(
-        branch_seq_lens,
+    branch_group_costs = [
+        [
+            block_pool.clone_new_block_count(
+                glue_ids[index // (num_positions * fan_out)],
+                branch_seq_lens[index],
+                int(branch_positions[index].item()),
+                group=group,
+            )
+            for group in range(block_pool.num_groups)
+        ]
+        for index in range(len(branch_ids))
+    ]
+    selected = select_branches_with_group_budget(
+        branch_group_costs,
         branch_request_indices,
         branch_accepted_counts,
         branch_candidate_indices,
-        block_size=block_size,
         available_slots=len(block_pool.free_request_slots),
-        available_blocks=len(block_pool.free_blocks[0]),
-        shared_prefix_blocks=branch_shared_prefix_blocks,
+        available_blocks=[len(blocks) for blocks in block_pool.free_blocks],
     )
     cache_evictions += len(branch_ids) - len(selected)
     branch_slots: list[torch.Tensor] = []
@@ -1152,8 +1788,20 @@ def _build_fanout_branches(
 
     if not branch_slots:
         torch.cuda.synchronize(runner.device)
-        return time.perf_counter() - start, cache_evictions
+        return (
+            time.perf_counter() - start,
+            cache_evictions,
+            {
+                "canonical_commit_seconds": canonical_seconds,
+                "candidate_or_glue_seconds": glue_seconds,
+                "tree_or_block_build_seconds": 0.0,
+                "context_kv_projection_seconds": 0.0,
+                "fanout_branches": 0,
+                "fanout_build_rounds": batch.num_reqs,
+            },
+        )
     slots_tensor = torch.cat(branch_slots)
+    tree_start = time.perf_counter()
     with torch.cuda.nvtx.range("async_draft:tree_decode"):
         tokens, hidden_states = _decode_fanout_branches(
             runner,
@@ -1162,17 +1810,31 @@ def _build_fanout_branches(
             torch.stack([branch_positions[index] for index in selected]),
             torch.stack([branch_hidden_states[index] for index in selected]),
         )
+    completion_event = torch.cuda.Event()
+    completion_event.record(torch.cuda.current_stream(runner.device))
     for output_index, branch_index in enumerate(selected):
         branch_cache.add(
             branch_keys[branch_index],
             CachedBranch(
                 branch_id=branch_ids[branch_index],
                 tokens=tokens[output_index].clone(),
-                feedback_hidden_states=hidden_states[output_index].clone(),
+                provisional_state=hidden_states[output_index].clone(),
+                completion_event=completion_event,
             ),
         )
     torch.cuda.synchronize(runner.device)
-    return time.perf_counter() - start, cache_evictions
+    return (
+        time.perf_counter() - start,
+        cache_evictions,
+        {
+            "canonical_commit_seconds": canonical_seconds,
+            "candidate_or_glue_seconds": glue_seconds,
+            "tree_or_block_build_seconds": time.perf_counter() - tree_start,
+            "context_kv_projection_seconds": 0.0,
+            "fanout_branches": len(selected),
+            "fanout_build_rounds": batch_size,
+        },
+    )
 
 
 def _wait_for_shutdown_after_error(connection: Connection) -> None:
@@ -1203,24 +1865,35 @@ def run_async_draft_child(
 
         child_config = copy.deepcopy(vllm_config)
         assert child_config.speculative_config is not None
+        adapter = get_async_draft_adapter(child_config)
         target_max_num_reqs = child_config.scheduler_config.max_num_seqs
         target_max_num_tokens = child_config.scheduler_config.max_num_batched_tokens
-        num_speculative_tokens = child_config.speculative_config.num_speculative_tokens
-        branch_capacity = (
-            target_max_num_reqs * (num_speculative_tokens + 1) * ASYNC_DRAFT_FAN_OUT
+        verify_width = child_config.speculative_config.num_speculative_tokens
+        bank_width = adapter.proposal_bank_width()
+        branch_backbone_width = adapter.branch_backbone_width()
+        fan_out = adapter.fan_out()
+        proposal_execution_width = (
+            branch_backbone_width
+            if isinstance(adapter, DSparkAsyncDraftAdapter)
+            else verify_width
         )
-        child_config.scheduler_config.max_num_seqs = (
-            2 * target_max_num_reqs + branch_capacity
-        )
+        branch_capacity = 0
+        if adapter.uses_kv_branches:
+            branch_capacity = target_max_num_reqs * (verify_width + 1) * fan_out
+        child_config.scheduler_config.max_num_seqs = target_max_num_reqs
+        if adapter.uses_kv_branches:
+            child_config.scheduler_config.max_num_seqs = (
+                2 * target_max_num_reqs + branch_capacity
+            )
         child_config.scheduler_config.max_num_batched_tokens = max(
             target_max_num_tokens,
             branch_capacity,
         )
+        # Recompute this derived limit after increasing max_num_seqs. Keeping
+        # the Target value can violate the child drafter's slot reservation.
+        child_config.scheduler_config.max_num_scheduled_tokens = None
         if child_config.compilation_config.cudagraph_mode != CUDAGraphMode.NONE:
-            branch_capture_sizes = _branch_cudagraph_capture_sizes(
-                num_speculative_tokens,
-                target_max_num_reqs,
-            )
+            branch_capture_sizes = adapter.capture_sizes(target_max_num_reqs)
             capture_sizes = set(
                 child_config.compilation_config.cudagraph_capture_sizes or ()
             )
@@ -1232,11 +1905,19 @@ def run_async_draft_child(
                 capture_sizes
             )
         child_config.speculative_config.async_draft_device = None
+        # Construct the standalone model and attention backend at the same D
+        # used by Sync. DSpark separately grows private eager buffers to 2D+1
+        # for provisional branch construction.
+        child_config.speculative_config.num_speculative_tokens = verify_width
         child_config.scheduler_config.async_scheduling = False
         # Target-only block-count overrides are useful for forcing scheduler
         # preemption. The standalone Draft owns a separate block pool and must
         # profile its actual free memory instead of inheriting that override.
         child_config.cache_config.num_gpu_blocks_override = None
+        # ReplaySSM belongs exclusively to the Qwen3.6 Target runner. The
+        # standalone Draft has no Target GDN layers or Target recurrent state.
+        child_config.cache_config.use_replayssm = False
+        child_config.cache_config.use_replayssm_spec = False
         if child_config.model_config.enforce_eager:
             child_config.compilation_config.cudagraph_mode = CUDAGraphMode.NONE
             child_config.compilation_config.cudagraph_capture_sizes = []
@@ -1244,42 +1925,55 @@ def run_async_draft_child(
         child_config.parallel_config.distributed_executor_backend = "uni"
         child_config.instance_id = f"{vllm_config.instance_id}_async_draft"
 
+        from vllm.config import replace
         from vllm.v1.worker.gpu_worker import init_worker_distributed_environment
+        from vllm.v1.worker.workspace import init_workspace_manager
+
+        draft_model_config = child_config.speculative_config.draft_model_config
+        if isinstance(adapter, DSparkAsyncDraftAdapter):
+            runner_config = replace(
+                child_config,
+                attention_config=replace(
+                    child_config.attention_config,
+                    use_non_causal=True,
+                    backend=child_config.speculative_config.attention_backend,
+                ),
+            )
+        else:
+            runner_config = replace(
+                child_config,
+                model_config=draft_model_config,
+            )
 
         port = init_port or get_open_port()
         init_method = f"tcp://127.0.0.1:{port}"
-        with set_current_vllm_config(child_config):
+        with set_current_vllm_config(runner_config):
             init_worker_distributed_environment(
-                child_config,
+                runner_config,
                 rank=0,
                 distributed_init_method=init_method,
                 local_rank=0,
                 backend="nccl",
             )
-            runner = GPUModelRunner(child_config, device)
-            materialized_weights = _standalone_load_draft(
-                runner, child_config.model_config.model
+            init_workspace_manager(device)
+            runner = GPUModelRunner(runner_config, device)
+            runner.async_target_verify_width = verify_width
+            runner.async_branch_backbone_width = branch_backbone_width
+            runner.async_draft_fan_out = fan_out
+            materialized_weights = adapter.load_standalone_draft(runner)
+            _initialize_draft_kv_cache(
+                runner,
+                target_max_num_tokens + branch_backbone_width,
             )
-            _initialize_draft_kv_cache(runner)
             draft_cudagraph = _capture_standalone_draft(runner)
 
-        draft_hf_config = child_config.speculative_config.draft_model_config.hf_config
-        layer_ids = getattr(
-            draft_hf_config,
-            "eagle_aux_hidden_state_layer_ids",
-            None,
-        )
-        if layer_ids is None:
-            eagle_config = getattr(draft_hf_config, "eagle_config", {}) or {}
-            layer_ids = eagle_config.get("eagle_aux_hidden_state_layer_ids")
-        num_aux_hidden_states = len(layer_ids) if layer_ids else 3
-        target_hidden_size = child_config.model_config.get_hidden_size()
-        aux_hidden_splits = (target_hidden_size,) * num_aux_hidden_states
+        target_state_layout = adapter.target_state_layout()
+        conditioning_splits = target_state_layout.splits
         ring_slots = make_ring_slots(
             max_num_reqs=target_max_num_reqs,
             max_num_tokens=target_max_num_tokens,
-            num_speculative_tokens=runner.num_speculative_steps,
-            aux_hidden_size=sum(aux_hidden_splits),
+            num_speculative_tokens=verify_width,
+            conditioning_size=target_state_layout.width,
             dtype=child_config.model_config.dtype,
             device=device,
         )
@@ -1293,7 +1987,17 @@ def run_async_draft_child(
                 "status": "ready",
                 "ring_slots": ring_slots,
                 "response_event_handles": response_event_handles,
-                "aux_hidden_splits": aux_hidden_splits,
+                "adapter": type(adapter).__name__,
+                "conditioning_layout": target_state_layout.name,
+                "conditioning_splits": conditioning_splits,
+                "aux_hidden_splits": conditioning_splits,
+                "target_verify_width": verify_width,
+                "proposal_bank_width": bank_width,
+                "proposal_execution_width": proposal_execution_width,
+                "branch_backbone_width": branch_backbone_width,
+                "fan_out": fan_out,
+                "draft_kv_block_sizes": runner.block_tables.block_sizes,
+                "target_replayssm_owned_by_child": False,
                 "kv_num_blocks": runner.kv_cache_config.num_blocks,
                 "materialized_weights": materialized_weights,
                 "cudagraph": draft_cudagraph,
@@ -1305,6 +2009,7 @@ def run_async_draft_child(
         branch_cache = BranchCache()
         pending_branch_build_seconds = 0.0
         pending_cache_evictions = 0
+        pending_timing_metrics: dict[str, float | int] = {}
         last_generation = [-1] * len(ring_slots)
         while True:
             try:
@@ -1325,11 +2030,13 @@ def run_async_draft_child(
                         "metrics": {
                             "branch_build_seconds": (pending_branch_build_seconds),
                             "cache_evictions": pending_cache_evictions,
+                            **pending_timing_metrics,
                         },
                     }
                 )
                 pending_branch_build_seconds = 0.0
                 pending_cache_evictions = 0
+                pending_timing_metrics = {}
                 continue
             if command == "reset":
                 request_ids = message["request_ids"]
@@ -1341,11 +2048,13 @@ def run_async_draft_child(
                         "metrics": {
                             "branch_build_seconds": (pending_branch_build_seconds),
                             "cache_evictions": pending_cache_evictions,
+                            **pending_timing_metrics,
                         },
                     }
                 )
                 pending_branch_build_seconds = 0.0
                 pending_cache_evictions = 0
+                pending_timing_metrics = {}
                 continue
             if command != "propose":
                 raise ValueError(f"Unknown async draft command: {command!r}")
@@ -1366,18 +2075,22 @@ def run_async_draft_child(
                     feedback_hidden_states,
                     hit_indices,
                     trace_top2,
+                    dspark_round_state,
                 ) = _run_proposal(
                     runner,
                     block_pool,
                     branch_cache,
                     ring_slots,
                     batch,
-                    aux_hidden_splits,
+                    conditioning_splits,
                 )
                 metrics["branch_build_seconds"] = pending_branch_build_seconds
                 metrics["cache_evictions"] += pending_cache_evictions
+                for name, value in pending_timing_metrics.items():
+                    metrics[name] = metrics.get(name, 0) + value
                 pending_branch_build_seconds = 0.0
                 pending_cache_evictions = 0
+                pending_timing_metrics = {}
                 response_events[batch.slot].record(torch.cuda.current_stream(device))
                 connection.send(
                     asdict(
@@ -1395,6 +2108,7 @@ def run_async_draft_child(
                 (
                     pending_branch_build_seconds,
                     pending_cache_evictions,
+                    pending_timing_metrics,
                 ) = _build_fanout_branches(
                     runner,
                     block_pool,
@@ -1402,8 +2116,9 @@ def run_async_draft_child(
                     ring_slots[batch.slot],
                     batch,
                     feedback_hidden_states,
+                    dspark_round_state,
                     hit_indices,
-                    aux_hidden_splits,
+                    conditioning_splits,
                 )
             except BaseException as error:
                 response = response_error(batch.generation, batch.slot, error)

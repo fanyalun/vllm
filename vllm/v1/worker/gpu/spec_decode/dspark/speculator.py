@@ -23,15 +23,22 @@ CUDA graphs (FULL, mirroring DFlash) cover the whole draft step: the parallel
 backbone forward AND the sequential Markov sampling.
 """
 
+import os
 from typing import Any
 
 import torch
 
 from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
+from vllm.logger import init_logger
 from vllm.v1.worker.gpu.sample.gumbel import gumbel_sample
 from vllm.v1.worker.gpu.spec_decode.dflash.speculator import DFlashSpeculator
-from vllm.v1.worker.gpu.spec_decode.dspark.utils import load_dspark_model
+from vllm.v1.worker.gpu.spec_decode.dspark.utils import (
+    get_dspark_proposal_bank_width,
+    load_dspark_model,
+)
+
+logger = init_logger(__name__)
 
 
 class DSparkSpeculator(DFlashSpeculator):
@@ -39,6 +46,23 @@ class DSparkSpeculator(DFlashSpeculator):
 
     def __init__(self, vllm_config: VllmConfig, device: torch.device):
         super().__init__(vllm_config, device)
+
+        # The public proposal/verification width is D. Sync executes D directly;
+        # an async child may instantiate this speculator at its private 2D+1
+        # branch-backbone width while exposing only D tokens to the Target.
+        # The checkpoint width remains a compatibility upper bound.
+        bank_width = get_dspark_proposal_bank_width(self.draft_model_config.hf_config)
+        if bank_width < self.num_speculative_steps:
+            raise ValueError(
+                "DSpark proposal bank width must cover the configured execution "
+                f"width: bank={bank_width}, configured={self.num_speculative_steps}"
+            )
+        self.proposal_bank_width = bank_width
+        logger.info(
+            "DSpark execution width=%d, checkpoint proposal bank width=%d",
+            self.num_speculative_steps,
+            self.proposal_bank_width,
+        )
 
         # Whether to sample from the anchor position. When True, uses anchor-as-first
         # (N slots, each position predicts the next token). When False, uses 1+N
@@ -50,6 +74,13 @@ class DSparkSpeculator(DFlashSpeculator):
             self.num_query_per_req = self.num_speculative_steps
         else:
             self.num_query_per_req = 1 + self.num_speculative_steps
+        self._max_execution_width = self.num_speculative_steps
+        self._request_indices = torch.arange(
+            self.max_num_reqs, dtype=torch.int64, device=device
+        )
+        self._anchor_indices_by_query_width = {
+            self.num_query_per_req: self._request_indices * self.num_query_per_req
+        }
 
         # DSpark consumes mean-pooled target aux hidden states at the target
         # layers, combined to hidden_size via main_proj. Store that combined
@@ -66,14 +97,129 @@ class DSparkSpeculator(DFlashSpeculator):
             self.num_speculative_steps, dtype=torch.int32, device=device
         )
 
-        self._anchor_idx = (
-            torch.arange(self.max_num_reqs, dtype=torch.int64, device=device)
-            * self.num_query_per_req
-        )
+        self._anchor_idx = self._anchor_indices_by_query_width[self.num_query_per_req]
+        self._async_base_logits_only = False
 
         # Reduced-vocab probabilistic drafting only; set in load_draft_model.
         self._d2t_scatter_index: torch.Tensor | None = None
         self._draft_scatter_buf: torch.Tensor | None = None
+
+        self._trace_top2_values: torch.Tensor | None = None
+        self._trace_top2_ids: torch.Tensor | None = None
+        self._trace_base_top2_values: torch.Tensor | None = None
+        self._trace_base_top2_ids: torch.Tensor | None = None
+        if os.environ.get("REPLAYSSM_SPEC_DECODE_TRACE_LOGITS") == "1":
+            trace_shape = (self.max_num_reqs, self.num_speculative_steps, 2)
+            self._trace_top2_values = torch.empty(
+                trace_shape, dtype=torch.float32, device=device
+            )
+            self._trace_top2_ids = torch.empty(
+                trace_shape, dtype=torch.int64, device=device
+            )
+            self._trace_base_top2_values = torch.empty(
+                trace_shape, dtype=torch.float32, device=device
+            )
+            self._trace_base_top2_ids = torch.empty(
+                trace_shape, dtype=torch.int64, device=device
+            )
+
+    def set_execution_width(self, width: int) -> None:
+        """Select a DSpark execution width within the allocated maximum."""
+        if width <= 0 or width > self._max_execution_width:
+            raise ValueError(
+                "DSpark execution width must be within the allocated maximum: "
+                f"width={width}, maximum={self._max_execution_width}"
+            )
+        self.num_speculative_steps = width
+        self.num_query_per_req = width if self.sample_from_anchor else width + 1
+        self._anchor_idx = self.anchor_indices(self.max_num_reqs)
+
+    def reserve_execution_width(self, width: int) -> None:
+        """Grow private eager buffers without changing the configured width."""
+        if width <= self._max_execution_width:
+            return
+        if width > self.proposal_bank_width:
+            raise ValueError(
+                "DSpark reserved width exceeds the checkpoint proposal width: "
+                f"width={width}, checkpoint={self.proposal_bank_width}"
+            )
+        if self.draft_logits is not None:
+            raise ValueError(
+                "Dynamic-width DSpark buffers currently require greedy drafting"
+            )
+
+        self.draft_tokens = torch.zeros(
+            self.max_num_reqs,
+            width,
+            dtype=torch.int64,
+            device=self.device,
+        )
+        max_num_sampled_tokens = self.max_num_reqs * width
+        self.sample_indices = torch.zeros(
+            max_num_sampled_tokens, dtype=torch.int64, device=self.device
+        )
+        self.sample_pos = torch.zeros(
+            max_num_sampled_tokens, dtype=torch.int64, device=self.device
+        )
+        self.sample_idx_mapping = torch.zeros(
+            max_num_sampled_tokens, dtype=torch.int32, device=self.device
+        )
+        self.sample_col = torch.arange(
+            width, dtype=torch.int32, device=self.device
+        ).repeat(self.max_num_reqs)
+        self._step_cols = torch.arange(width, dtype=torch.int32, device=self.device)
+        if self._trace_top2_values is not None:
+            self._trace_top2_values = torch.empty(
+                self.max_num_reqs,
+                width,
+                2,
+                dtype=torch.float32,
+                device=self.device,
+            )
+            self._trace_top2_ids = torch.empty(
+                self.max_num_reqs,
+                width,
+                2,
+                dtype=torch.int64,
+                device=self.device,
+            )
+            self._trace_base_top2_values = torch.empty(
+                self.max_num_reqs,
+                width,
+                2,
+                dtype=torch.float32,
+                device=self.device,
+            )
+            self._trace_base_top2_ids = torch.empty(
+                self.max_num_reqs,
+                width,
+                2,
+                dtype=torch.int64,
+                device=self.device,
+            )
+        self._max_execution_width = width
+
+    def anchor_indices(
+        self,
+        num_reqs: int,
+        *,
+        execution_width: int | None = None,
+    ) -> torch.Tensor:
+        """Return anchor positions for the requested DSpark execution width."""
+        width = (
+            self.num_speculative_steps if execution_width is None else execution_width
+        )
+        if width <= 0 or width > self._max_execution_width:
+            raise ValueError(
+                "DSpark anchor width must be within the allocated maximum: "
+                f"width={width}, maximum={self._max_execution_width}"
+            )
+        query_width = width if self.sample_from_anchor else width + 1
+        indices = self._anchor_indices_by_query_width.get(query_width)
+        if indices is None:
+            indices = self._request_indices * query_width
+            self._anchor_indices_by_query_width[query_width] = indices
+        return indices[:num_reqs]
 
     def load_draft_model(
         self,
@@ -109,6 +255,18 @@ class DSparkSpeculator(DFlashSpeculator):
         base_logits = self.model.compute_draft_logits(sample_hidden)
         vocab_size = base_logits.shape[-1]
         base_logits = base_logits.view(num_reqs, n_spec, vocab_size)
+        if self._trace_base_top2_values is not None:
+            assert self._trace_base_top2_ids is not None
+            base_values, base_ids = base_logits.float().topk(2, dim=-1)
+            self._trace_base_top2_values[:num_reqs, :n_spec].copy_(base_values)
+            self._trace_base_top2_ids[:num_reqs, :n_spec].copy_(
+                self.model.map_draft_to_target(base_ids)
+            )
+        async_base_logits = getattr(self, "_async_base_logits", None)
+        if async_base_logits is not None:
+            async_base_logits[:num_reqs, :n_spec].copy_(base_logits)
+        if self._async_base_logits_only:
+            return
 
         idx_map = self.sample_idx_mapping[:num_sample].view(num_reqs, n_spec)
         sample_pos = self.sample_pos[:num_sample].view(num_reqs, n_spec)
@@ -122,6 +280,19 @@ class DSparkSpeculator(DFlashSpeculator):
             markov_embed = self.model.markov_embed(prev)
             bias = self.model.markov_bias(markov_embed)
             logits_i = base_logits[:, i] + bias
+            if self._trace_top2_values is not None:
+                assert self._trace_top2_ids is not None
+                top_values, top_ids = logits_i.float().topk(2, dim=-1)
+                self._trace_top2_values[:num_reqs, i].copy_(top_values)
+                self._trace_top2_ids[:num_reqs, i].copy_(
+                    self.model.map_draft_to_target(top_ids)
+                )
+            async_candidates = getattr(self, "_async_candidate_ids", None)
+            if async_candidates is not None:
+                top_ids = logits_i.topk(async_candidates.shape[-1] + 1, dim=-1).indices
+                async_candidates[:num_reqs, i].copy_(
+                    self.model.map_draft_to_target(top_ids[:, 1:])
+                )
             if self.draft_logits is not None:
                 # Probabilistic: sample in target vocab (a reduced draft vocab is
                 # scattered into its target columns; full vocab is already there).
@@ -149,6 +320,69 @@ class DSparkSpeculator(DFlashSpeculator):
                 )
             self.draft_tokens[:num_reqs, i] = draft_sampled_i
             prev = draft_sampled_i
+
+    def proposal_trace_metadata(self, num_reqs: int) -> list[dict[str, Any]]:
+        if self._trace_top2_values is None:
+            return super().proposal_trace_metadata(num_reqs)
+        assert self._trace_top2_ids is not None
+        width = getattr(self, "num_speculative_steps", self._trace_top2_values.shape[1])
+        values = self._trace_top2_values[:num_reqs, :width].cpu().tolist()
+        ids = self._trace_top2_ids[:num_reqs, :width].cpu().tolist()
+        execution_metadata = self.proposal_execution_trace_metadata(num_reqs)
+        return [
+            {
+                "draft_top2": [
+                    {
+                        "token_ids": step_ids,
+                        "logits": step_values,
+                        "gap": step_values[0] - step_values[1],
+                    }
+                    for step_ids, step_values in zip(request_ids, request_values)
+                ],
+                **execution_metadata[index],
+            }
+            for index, (request_ids, request_values) in enumerate(zip(ids, values))
+        ]
+
+    def proposal_execution_trace_metadata(self, num_reqs: int) -> list[dict[str, Any]]:
+        trace_base_values = getattr(self, "_trace_base_top2_values", None)
+        if trace_base_values is None:
+            return [{} for _ in range(num_reqs)]
+        assert self._trace_base_top2_ids is not None
+        width = self.num_speculative_steps
+        values = trace_base_values[:num_reqs, :width].cpu().tolist()
+        ids = self._trace_base_top2_ids[:num_reqs, :width].cpu().tolist()
+        anchors = (
+            self.input_buffers.input_ids[self.anchor_indices(num_reqs)].cpu().tolist()
+        )
+        query_width = self.num_query_per_req
+        query_ids = (
+            self.input_buffers.input_ids[: num_reqs * query_width]
+            .view(num_reqs, query_width)
+            .cpu()
+            .tolist()
+        )
+        query_positions = (
+            self.input_buffers.positions[: num_reqs * query_width]
+            .view(num_reqs, query_width)
+            .cpu()
+            .tolist()
+        )
+        return [
+            {
+                "draft_base_top2": [
+                    {
+                        "token_ids": step_ids,
+                        "logits": step_values,
+                    }
+                    for step_ids, step_values in zip(request_ids, request_values)
+                ],
+                "dspark_anchor_token": anchors[index],
+                "dspark_query_input_ids": query_ids[index],
+                "dspark_query_positions": query_positions[index],
+            }
+            for index, (request_ids, request_values) in enumerate(zip(ids, values))
+        ]
 
     def _generate_draft(
         self,

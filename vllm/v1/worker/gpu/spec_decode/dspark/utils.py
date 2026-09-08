@@ -1,12 +1,31 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from typing import Any
+
 import torch.nn as nn
 
 from vllm.config import VllmConfig, replace
 from vllm.distributed.parallel_state import get_pp_group
 from vllm.model_executor.model_loader import get_model
 from vllm.v1.worker.gpu.spec_decode.eagle.utils import _should_share
+
+
+def get_dspark_proposal_bank_width(hf_config: Any) -> int:
+    speculators_config = getattr(hf_config, "speculators_config", None) or {}
+    proposal_methods = speculators_config.get("proposal_methods") or ()
+    widths = [
+        int(method["speculative_tokens"])
+        for method in proposal_methods
+        if method.get("speculative_tokens") is not None
+    ]
+    if widths:
+        return max(widths)
+    block_size = getattr(hf_config, "block_size", None)
+    if block_size is None:
+        raise ValueError("DSpark checkpoint does not declare a proposal bank width")
+    sample_from_anchor = getattr(hf_config, "sample_from_anchor", False)
+    return int(block_size) - (0 if sample_from_anchor else 1)
 
 
 def load_dspark_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Module:

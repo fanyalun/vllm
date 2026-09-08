@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import copy
 import gc
 import os
 import time
@@ -27,17 +28,22 @@ logger = init_logger(__name__)
 
 
 class AsyncDraftSpeculator(BaseSpeculator):
-    """Proxy a standalone EAGLE3 draft worker on another local CUDA device."""
+    """Proxy a standalone draft worker on another local CUDA device."""
 
     supports_mm_inputs = False
 
     def __init__(self, vllm_config: VllmConfig, device: torch.device):
         self.vllm_config = vllm_config
+        # Model loading mutates the target config with runtime-only objects that
+        # cannot be serialized by the spawn multiprocessing context. Preserve a
+        # pristine config for the standalone Draft before Target construction.
+        self._child_vllm_config = copy.deepcopy(vllm_config)
         self.device = device
         speculative_config = vllm_config.speculative_config
         assert speculative_config is not None
         assert isinstance(speculative_config.async_draft_device, int)
         self.draft_device_id = speculative_config.async_draft_device
+        self.method = speculative_config.method
         self.num_speculative_steps = speculative_config.num_speculative_tokens
         self.max_num_reqs = vllm_config.scheduler_config.max_num_seqs
         self.max_num_tokens = vllm_config.scheduler_config.max_num_batched_tokens
@@ -61,11 +67,25 @@ class AsyncDraftSpeculator(BaseSpeculator):
             "wait_seconds": 0.0,
             "branch_build_seconds": 0.0,
             "overlap_seconds": 0.0,
+            "canonical_commit_seconds": 0.0,
+            "candidate_or_glue_seconds": 0.0,
+            "tree_or_block_build_seconds": 0.0,
+            "context_kv_projection_seconds": 0.0,
+            "dspark_current_backbone_runs": 0,
+            "dspark_current_backbone_seconds": 0.0,
+            "dspark_backbone_refreshes": 0,
+            "dspark_branch_backbone_seconds": 0.0,
+            "dspark_markov_branches": 0,
+            "fanout_branches": 0,
+            "fanout_build_rounds": 0,
+            "next_proposal_wait_seconds": 0.0,
+            "ipc_latency_seconds": 0.0,
         }
         self._step_metrics = self._metrics.copy()
         self._last_cache_hit_indices: set[int] = set()
         self._last_trace_top2: list[dict[str, Any] | None] = []
         self._active_trace_req_ids: list[str] = []
+        self._last_trace_timing: dict[str, Any] = {}
         self._last_response_ready_at: float | None = None
         self.child_metadata: dict[str, Any] = {}
         self.draft_logits = None
@@ -137,7 +157,7 @@ class AsyncDraftSpeculator(BaseSpeculator):
             name="vllm-async-draft",
             args=(
                 child_connection,
-                self.vllm_config,
+                self._child_vllm_config,
                 self.draft_device_id,
                 get_open_port(),
             ),
@@ -159,10 +179,10 @@ class AsyncDraftSpeculator(BaseSpeculator):
             for event_handle in response_event_handles
         ]
         self.child_metadata = message
-        aux_hidden_size = sum(self.child_metadata["aux_hidden_splits"])
-        self._combined_aux_hidden_states = torch.empty(
+        conditioning_size = sum(self.child_metadata["conditioning_splits"])
+        self._combined_conditioning_states = torch.empty(
             self.max_num_tokens,
-            aux_hidden_size,
+            conditioning_size,
             dtype=self.vllm_config.model_config.dtype,
             device=self.device,
         )
@@ -173,11 +193,35 @@ class AsyncDraftSpeculator(BaseSpeculator):
             device=self.device,
         )
         logger.info(
-            "Async EAGLE3 draft child ready: pid=%s physical_gpu=%s "
-            "kv_blocks=%s fan_out=3",
+            "Async %s draft child ready: pid=%s physical_gpu=%s "
+            "kv_blocks=%s block_sizes=%s fan_out=%s verify_width=%s "
+            "execution_width=%s branch_backbone_width=%s "
+            "checkpoint_native_width=%s "
+            "target_replayssm_owned_by_child=%s",
+            self.method,
             self.child_metadata.get("pid"),
             self.child_metadata.get("physical_device_id"),
             self.child_metadata.get("kv_num_blocks"),
+            self.child_metadata.get("draft_kv_block_sizes"),
+            self.child_metadata.get("fan_out"),
+            self.child_metadata.get("target_verify_width"),
+            self.child_metadata.get("proposal_execution_width"),
+            self.child_metadata.get("branch_backbone_width"),
+            self.child_metadata.get("proposal_bank_width"),
+            self.child_metadata.get("target_replayssm_owned_by_child"),
+        )
+        logger.info(
+            "Async %s standalone materialized weights: %s",
+            self.method,
+            [
+                {
+                    "name": item.get("name"),
+                    "source": item.get("source"),
+                    "shape": item.get("shape"),
+                    "sha256": item.get("sha256"),
+                }
+                for item in self.child_metadata.get("materialized_weights", [])
+            ],
         )
 
     def _recv(self, timeout: float, operation: str) -> dict[str, Any]:
@@ -236,7 +280,8 @@ class AsyncDraftSpeculator(BaseSpeculator):
         response = self._recv(self.request_timeout, command)
         if response.get("status") != "ok":
             self._raise_child_error(response, command)
-        self._record_metrics(response.get("metrics"))
+        response_metrics = response.get("metrics") or {}
+        self._record_metrics(response_metrics)
 
     def _record_metrics(self, metrics: dict[str, float | int] | None) -> None:
         metrics = metrics or {}
@@ -246,10 +291,21 @@ class AsyncDraftSpeculator(BaseSpeculator):
             "jit_fallbacks",
             "cache_evictions",
             "branch_build_seconds",
+            "canonical_commit_seconds",
+            "candidate_or_glue_seconds",
+            "tree_or_block_build_seconds",
+            "context_kv_projection_seconds",
+            "dspark_current_backbone_runs",
+            "dspark_current_backbone_seconds",
+            "dspark_backbone_refreshes",
+            "dspark_branch_backbone_seconds",
+            "dspark_markov_branches",
+            "fanout_branches",
+            "fanout_build_rounds",
         ):
             delta = metrics.get(name, 0)
-            self._metrics[name] += delta
-            self._step_metrics[name] += delta
+            self._metrics[name] = self._metrics.get(name, 0) + delta
+            self._step_metrics[name] = self._step_metrics.get(name, 0) + delta
 
     @staticmethod
     def _validate_response_identity(
@@ -294,7 +350,7 @@ class AsyncDraftSpeculator(BaseSpeculator):
         self,
         ring_slot: Any,
         input_batch: InputBatch,
-        aux_hidden_states: list[torch.Tensor] | None,
+        conditioning_states: list[torch.Tensor],
         num_sampled: torch.Tensor,
         num_rejected: torch.Tensor,
         last_sampled: torch.Tensor,
@@ -302,8 +358,8 @@ class AsyncDraftSpeculator(BaseSpeculator):
         temperature: torch.Tensor,
         seeds: torch.Tensor,
     ) -> int:
-        if not aux_hidden_states:
-            raise ValueError("Async EAGLE3 draft requires target auxiliary states")
+        if not conditioning_states:
+            raise ValueError("Async draft requires target conditioning states")
         num_reqs = input_batch.num_reqs
         num_tokens = input_batch.num_tokens
         idx_mapping = input_batch.idx_mapping
@@ -341,22 +397,29 @@ class AsyncDraftSpeculator(BaseSpeculator):
             ipc_bytes += destination.numel() * destination.element_size()
 
         hidden_offset = 0
-        for hidden_states in aux_hidden_states:
+        expected_splits = tuple(self.child_metadata["conditioning_splits"])
+        actual_splits = tuple(state.shape[-1] for state in conditioning_states)
+        if actual_splits != expected_splits:
+            raise ValueError(
+                "Async draft conditioning layout mismatch: "
+                f"copied={actual_splits}, expected={expected_splits}"
+            )
+        for hidden_states in conditioning_states:
             width = hidden_states.shape[-1]
-            local_destination = self._combined_aux_hidden_states[
+            local_destination = self._combined_conditioning_states[
                 :num_tokens, hidden_offset : hidden_offset + width
             ]
             local_destination.copy_(hidden_states[:num_tokens], non_blocking=True)
             hidden_offset += width
-        if hidden_offset != ring_slot.aux_hidden_states.shape[-1]:
+        if hidden_offset != ring_slot.conditioning_states.shape[-1]:
             raise ValueError(
-                "Async draft auxiliary hidden-state width mismatch: "
+                "Async draft conditioning-state width mismatch: "
                 f"copied={hidden_offset}, expected="
-                f"{ring_slot.aux_hidden_states.shape[-1]}"
+                f"{ring_slot.conditioning_states.shape[-1]}"
             )
-        destination = ring_slot.aux_hidden_states[:num_tokens]
+        destination = ring_slot.conditioning_states[:num_tokens]
         destination.copy_(
-            self._combined_aux_hidden_states[:num_tokens], non_blocking=True
+            self._combined_conditioning_states[:num_tokens], non_blocking=True
         )
         ipc_bytes += destination.numel() * destination.element_size()
 
@@ -386,7 +449,6 @@ class AsyncDraftSpeculator(BaseSpeculator):
         del (
             attn_metadata,
             slot_mappings,
-            last_hidden_states,
             num_tokens_across_dp,
             skip_attn_for_dummy_run,
             mm_inputs,
@@ -404,10 +466,14 @@ class AsyncDraftSpeculator(BaseSpeculator):
             overlap_budget_seconds = max(0.0, start - self._last_response_ready_at)
             self._metrics["overlap_seconds"] += overlap_budget_seconds
             self._step_metrics["overlap_seconds"] += overlap_budget_seconds
+        conditioning_states = (
+            aux_hidden_states if aux_hidden_states else [last_hidden_states]
+        )
+        ipc_start = time.perf_counter()
         ipc_bytes = self._copy_payload(
             ring_slot,
             input_batch,
-            aux_hidden_states,
+            conditioning_states,
             num_sampled,
             num_rejected,
             last_sampled,
@@ -415,6 +481,7 @@ class AsyncDraftSpeculator(BaseSpeculator):
             temperature,
             seeds,
         )
+        ipc_latency_seconds = time.perf_counter() - ipc_start
 
         request_epochs = [
             self._request_epochs.setdefault(req_id, 0) for req_id in input_batch.req_ids
@@ -425,7 +492,11 @@ class AsyncDraftSpeculator(BaseSpeculator):
             engine_instance_id=self.engine_instance_id,
             req_ids=list(input_batch.req_ids),
             request_epochs=request_epochs,
-            transient=dummy_run or is_profile,
+            transient=(
+                dummy_run
+                or is_profile
+                or all(req_id.startswith("_warmup_") for req_id in input_batch.req_ids)
+            ),
             overlap_budget_seconds=overlap_budget_seconds,
             num_reqs=input_batch.num_reqs,
             num_tokens=input_batch.num_tokens,
@@ -459,7 +530,8 @@ class AsyncDraftSpeculator(BaseSpeculator):
             ring_slot.draft_tokens[:num_reqs], non_blocking=True
         )
         elapsed = time.perf_counter() - start
-        self._record_metrics(response.get("metrics"))
+        response_metrics = response.get("metrics") or {}
+        self._record_metrics(response_metrics)
         ipc_bytes += (
             num_reqs * self.num_speculative_steps * self._draft_tokens.element_size()
         )
@@ -467,6 +539,30 @@ class AsyncDraftSpeculator(BaseSpeculator):
         self._step_metrics["ipc_bytes"] += ipc_bytes
         self._metrics["wait_seconds"] += elapsed
         self._step_metrics["wait_seconds"] += elapsed
+        self._metrics["next_proposal_wait_seconds"] += elapsed
+        self._step_metrics["next_proposal_wait_seconds"] += elapsed
+        self._metrics["ipc_latency_seconds"] += ipc_latency_seconds
+        self._step_metrics["ipc_latency_seconds"] += ipc_latency_seconds
+        previous_branch_build_seconds = float(
+            response_metrics.get("branch_build_seconds", 0.0)
+        )
+        self._last_trace_timing = {
+            "async_generation": generation,
+            "async_fan_out": self.child_metadata.get("fan_out"),
+            "async_timing_pair_valid": (
+                generation > 0 and previous_branch_build_seconds > 0.0
+            ),
+            "async_verify_window_seconds": overlap_budget_seconds,
+            "async_previous_branch_build_seconds": (previous_branch_build_seconds),
+            "async_branch_hidden_seconds": min(
+                overlap_budget_seconds, previous_branch_build_seconds
+            ),
+            "async_branch_exposed_seconds": max(
+                previous_branch_build_seconds - overlap_budget_seconds, 0.0
+            ),
+            "async_next_proposal_wait_seconds": elapsed,
+            "async_batch_num_reqs": num_reqs,
+        }
         self._last_response_ready_at = time.perf_counter()
         return self._draft_tokens[:num_reqs]
 
@@ -481,6 +577,7 @@ class AsyncDraftSpeculator(BaseSpeculator):
             {
                 "request_epoch": self._request_epochs.get(req_id, 0),
                 "cache_hit": index in self._last_cache_hit_indices,
+                **getattr(self, "_last_trace_timing", {}),
                 **(
                     trace_top2[index]
                     if index < len(trace_top2) and trace_top2[index] is not None
