@@ -1,0 +1,20 @@
+{
+  "benchmark_results/hierarchical_cycle_20260909/mtp_sync_final/MEASUREMENT_COMPLETE": "d2e0d55dd9fa123f779b0cee32e3f29481c765a3d6847ce1f537d65c386b2ea9",
+  "benchmark_results/hierarchical_cycle_20260909/mtp_sync_final/config.json": "51411959c3d6faea0cf58db39fbad6af7556c2c62aed8fcf14265bf5e8680f56",
+  "benchmark_results/hierarchical_cycle_20260909/mtp_sync_final/result.json": "f1bbb43dbc035d513d1beddbd4bbb310bc8dabfabc185b2c276f834c6b62fbe9",
+  "benchmark_results/hierarchical_cycle_20260909/mtp_async_retry/MEASUREMENT_COMPLETE": "d2e0d55dd9fa123f779b0cee32e3f29481c765a3d6847ce1f537d65c386b2ea9",
+  "benchmark_results/hierarchical_cycle_20260909/mtp_async_retry/config.json": "c2ccbacf6397e0b626989418ceec5bc80214ac3864373c38c0ae24dc4248982f",
+  "benchmark_results/hierarchical_cycle_20260909/mtp_async_retry/result.json": "1aba2e10988acc5254351d45e8870e82de085b96dc8e42245dd1ab81e2851324",
+  "benchmark_results/hierarchical_cycle_20260909/mtp_n4_retry/MEASUREMENT_COMPLETE": "d2e0d55dd9fa123f779b0cee32e3f29481c765a3d6847ce1f537d65c386b2ea9",
+  "benchmark_results/hierarchical_cycle_20260909/mtp_n4_retry/config.json": "087d467da9c445376fc604d82861fdf9b913508d1ed7ab15459993bf09a071cf",
+  "benchmark_results/hierarchical_cycle_20260909/mtp_n4_retry/result.json": "7737ee9916b6bc48dfcb025b3201be92cea3c533a2f1640af4441dc163e4cbc1",
+  "benchmark_results/hierarchical_cycle_20260909/dspark_sync/MEASUREMENT_COMPLETE": "d2e0d55dd9fa123f779b0cee32e3f29481c765a3d6847ce1f537d65c386b2ea9",
+  "benchmark_results/hierarchical_cycle_20260909/dspark_sync/config.json": "778e3cb269f18fabc7005df7e9dfaabd0c23fb649ab88dcdc965f286f4e5cdc7",
+  "benchmark_results/hierarchical_cycle_20260909/dspark_sync/result.json": "ca001c34162c8dc64aa857e585896ce20c9ba898c92adfc4f27b89c4d8c63529",
+  "benchmark_results/hierarchical_cycle_20260909/dspark_n4/MEASUREMENT_COMPLETE": "d2e0d55dd9fa123f779b0cee32e3f29481c765a3d6847ce1f537d65c386b2ea9",
+  "benchmark_results/hierarchical_cycle_20260909/dspark_n4/config.json": "e58ea297b08845b671f8a10061c32d44266483eb6528c69563fd37a100c3348c",
+  "benchmark_results/hierarchical_cycle_20260909/dspark_n4/result.json": "81c685641b8eae1328f2cf42dcb11e6ffb3f9f05490f0e68b8e9f711a34cbed6",
+  "benchmark_results/hierarchical_cycle_20260909/moe_skip_d16_legacy/MEASUREMENT_COMPLETE": "d2e0d55dd9fa123f779b0cee32e3f29481c765a3d6847ce1f537d65c386b2ea9",
+  "benchmark_results/hierarchical_cycle_20260909/moe_skip_d16_legacy/config.json": "8bf99d318c32361ca4a616dde2ed6c270849f1a442774da54a1c275196b3abed",
+  "benchmark_results/hierarchical_cycle_20260909/moe_skip_d16_legacy/result.json": "94326cdec7908317016da6b7b52bb8edf44f7a0f9c8dff546e7023fc60ba187d"
+}

@@ -1,0 +1,214 @@
+{
+  "cases": {
+    "mtp_sync_final": {
+      "requests": 8,
+      "tokens": 4096,
+      "post_warmup_jit_warnings": 0,
+      "compilation_cache_disabled": false,
+      "legacy_mm_inputs": false,
+      "raw_files": {
+        "mtp_sync_final/config.json": "51411959c3d6faea0cf58db39fbad6af7556c2c62aed8fcf14265bf5e8680f56",
+        "mtp_sync_final/result.json": "f1bbb43dbc035d513d1beddbd4bbb310bc8dabfabc185b2c276f834c6b62fbe9",
+        "mtp_sync_final/MEASUREMENT_COMPLETE": "d2e0d55dd9fa123f779b0cee32e3f29481c765a3d6847ce1f537d65c386b2ea9",
+        "mtp_sync_final/run.log": "2e6f352729fc7d0bace227e3b069efb864da61c587fb7651f22ce780a3607924"
+      },
+      "command": [
+        ".venv/bin/python",
+        "benchmarks/hierarchical/run_cycle_profile.py",
+        "--method",
+        "mtp",
+        "--output",
+        "benchmark_results/hierarchical_cycle_20260909/mtp_sync_final"
+      ],
+      "environment": {
+        "CUDA_VISIBLE_DEVICES": "0",
+        "VLLM_USE_V2_MODEL_RUNNER": "1",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONPATH": "$PWD/benchmarks/hierarchical:$PWD",
+        "PATH": "$PWD/.venv/bin:$PATH"
+      }
+    },
+    "mtp_async_retry": {
+      "requests": 12,
+      "tokens": 6144,
+      "post_warmup_jit_warnings": 0,
+      "compilation_cache_disabled": true,
+      "legacy_mm_inputs": false,
+      "raw_files": {
+        "mtp_async_retry/config.json": "c2ccbacf6397e0b626989418ceec5bc80214ac3864373c38c0ae24dc4248982f",
+        "mtp_async_retry/result.json": "1aba2e10988acc5254351d45e8870e82de085b96dc8e42245dd1ab81e2851324",
+        "mtp_async_retry/MEASUREMENT_COMPLETE": "d2e0d55dd9fa123f779b0cee32e3f29481c765a3d6847ce1f537d65c386b2ea9",
+        "mtp_async_retry/run.log": "01b2aba0e1979e4851838cfc5cba1e8672eeee082ed966d6cf2ca25977f6a006"
+      },
+      "command": [
+        ".venv/bin/python",
+        "benchmarks/hierarchical/run_cycle_profile.py",
+        "--method",
+        "mtp",
+        "--async-scheduling",
+        "--output",
+        "benchmark_results/hierarchical_cycle_20260909/mtp_async_retry"
+      ],
+      "environment": {
+        "CUDA_VISIBLE_DEVICES": "0",
+        "VLLM_USE_V2_MODEL_RUNNER": "1",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONPATH": "$PWD/benchmarks/hierarchical:$PWD",
+        "PATH": "$PWD/.venv/bin:$PATH",
+        "VLLM_DISABLE_COMPILE_CACHE": "1"
+      }
+    },
+    "mtp_n4_retry": {
+      "requests": 8,
+      "tokens": 4096,
+      "post_warmup_jit_warnings": 0,
+      "compilation_cache_disabled": false,
+      "legacy_mm_inputs": false,
+      "raw_files": {
+        "mtp_n4_retry/config.json": "087d467da9c445376fc604d82861fdf9b913508d1ed7ab15459993bf09a071cf",
+        "mtp_n4_retry/result.json": "7737ee9916b6bc48dfcb025b3201be92cea3c533a2f1640af4441dc163e4cbc1",
+        "mtp_n4_retry/MEASUREMENT_COMPLETE": "d2e0d55dd9fa123f779b0cee32e3f29481c765a3d6847ce1f537d65c386b2ea9",
+        "mtp_n4_retry/run.log": "5ab2988ff0b16887c75683ea2b6d49e227772b22436f461e193ede1e700d1d9c"
+      },
+      "command": [
+        ".venv/bin/python",
+        "benchmarks/hierarchical/run_cycle_profile.py",
+        "--method",
+        "mtp",
+        "--rounds",
+        "4",
+        "--output",
+        "benchmark_results/hierarchical_cycle_20260909/mtp_n4_retry"
+      ],
+      "environment": {
+        "CUDA_VISIBLE_DEVICES": "1",
+        "VLLM_USE_V2_MODEL_RUNNER": "1",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONPATH": "$PWD/benchmarks/hierarchical:$PWD",
+        "PATH": "$PWD/.venv/bin:$PATH"
+      }
+    },
+    "dspark_sync": {
+      "requests": 12,
+      "tokens": 6144,
+      "post_warmup_jit_warnings": 0,
+      "compilation_cache_disabled": false,
+      "legacy_mm_inputs": false,
+      "raw_files": {
+        "dspark_sync/config.json": "778e3cb269f18fabc7005df7e9dfaabd0c23fb649ab88dcdc965f286f4e5cdc7",
+        "dspark_sync/result.json": "ca001c34162c8dc64aa857e585896ce20c9ba898c92adfc4f27b89c4d8c63529",
+        "dspark_sync/MEASUREMENT_COMPLETE": "d2e0d55dd9fa123f779b0cee32e3f29481c765a3d6847ce1f537d65c386b2ea9",
+        "dspark_sync/run.log": "f4226e23796f15dad8679165982de4aceeacbec63baa967f189772e22c13d20d"
+      },
+      "command": [
+        ".venv/bin/python",
+        "benchmarks/hierarchical/run_cycle_profile.py",
+        "--method",
+        "dspark",
+        "--output",
+        "benchmark_results/hierarchical_cycle_20260909/dspark_sync"
+      ],
+      "environment": {
+        "CUDA_VISIBLE_DEVICES": "0",
+        "VLLM_USE_V2_MODEL_RUNNER": "1",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONPATH": "$PWD/benchmarks/hierarchical:$PWD",
+        "PATH": "$PWD/.venv/bin:$PATH"
+      }
+    },
+    "dspark_n4": {
+      "requests": 8,
+      "tokens": 4096,
+      "post_warmup_jit_warnings": 0,
+      "compilation_cache_disabled": false,
+      "legacy_mm_inputs": false,
+      "raw_files": {
+        "dspark_n4/config.json": "e58ea297b08845b671f8a10061c32d44266483eb6528c69563fd37a100c3348c",
+        "dspark_n4/result.json": "81c685641b8eae1328f2cf42dcb11e6ffb3f9f05490f0e68b8e9f711a34cbed6",
+        "dspark_n4/MEASUREMENT_COMPLETE": "d2e0d55dd9fa123f779b0cee32e3f29481c765a3d6847ce1f537d65c386b2ea9",
+        "dspark_n4/run.log": "a98be72df62125840cac78f0ecadb9cb44cb228662fe8483f94c72c92d2f882d"
+      },
+      "command": [
+        ".venv/bin/python",
+        "benchmarks/hierarchical/run_cycle_profile.py",
+        "--method",
+        "dspark",
+        "--rounds",
+        "4",
+        "--output",
+        "benchmark_results/hierarchical_cycle_20260909/dspark_n4"
+      ],
+      "environment": {
+        "CUDA_VISIBLE_DEVICES": "1",
+        "VLLM_USE_V2_MODEL_RUNNER": "1",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONPATH": "$PWD/benchmarks/hierarchical:$PWD",
+        "PATH": "$PWD/.venv/bin:$PATH"
+      }
+    },
+    "moe_skip_d16_legacy": {
+      "requests": 12,
+      "tokens": 6144,
+      "post_warmup_jit_warnings": 0,
+      "compilation_cache_disabled": true,
+      "legacy_mm_inputs": true,
+      "raw_files": {
+        "moe_skip_d16_legacy/config.json": "8bf99d318c32361ca4a616dde2ed6c270849f1a442774da54a1c275196b3abed",
+        "moe_skip_d16_legacy/result.json": "94326cdec7908317016da6b7b52bb8edf44f7a0f9c8dff546e7023fc60ba187d",
+        "moe_skip_d16_legacy/MEASUREMENT_COMPLETE": "d2e0d55dd9fa123f779b0cee32e3f29481c765a3d6847ce1f537d65c386b2ea9",
+        "moe_skip_d16_legacy/run.log": "7c4cb00f78b5ab9fb4edb98ea29e3084c960bb4c4dfe18389bd0210ce7944c81"
+      },
+      "command": [
+        ".venv/bin/python",
+        "benchmarks/hierarchical/run_cycle_profile.py",
+        "--method",
+        "moe_skip",
+        "--draft-length",
+        "16",
+        "--legacy-mm-inputs",
+        "--output",
+        "benchmark_results/hierarchical_cycle_20260909/moe_skip_d16_legacy"
+      ],
+      "environment": {
+        "CUDA_VISIBLE_DEVICES": "1",
+        "VLLM_USE_V2_MODEL_RUNNER": "1",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONPATH": "$PWD/benchmarks/hierarchical:$PWD",
+        "PATH": "$PWD/.venv/bin:$PATH",
+        "VLLM_DISABLE_COMPILE_CACHE": "1"
+      }
+    }
+  },
+  "runtime_source_commit": "6a66623833c6b02164ec242b844f45b0503a4875",
+  "runtime_diff": [],
+  "strict_numerical_gates": "failed previously; not repaired",
+  "measurement_status": "complete",
+  "output_requests": 60,
+  "output_tokens": 30720,
+  "excluded_attempts": {
+    "mtp_n4": {
+      "log": "benchmark_results/hierarchical_cycle_20260909/mtp_n4.log",
+      "sha256": "7c5f4fab4dd0740285b6de0704b76f5c0bc7490e41c0b797a56c3ac6800b6044"
+    },
+    "mtp_sync": {
+      "log": "benchmark_results/hierarchical_cycle_20260909/mtp_sync.log",
+      "sha256": "782c210aba68c2da334cc2ed0005bc8cb60a5012f422ff53e4673e76bfd2e28f"
+    },
+    "mtp_sync_retry": {
+      "log": "benchmark_results/hierarchical_cycle_20260909/mtp_sync_retry.log",
+      "sha256": "1d62de8961ae4fbdde7544a9cdbb6f02a5c6129edd5a122716339ae3918503b6"
+    },
+    "moe_skip_d16": {
+      "log": "benchmark_results/hierarchical_cycle_20260909/moe_skip_d16.log",
+      "sha256": "76c0ae163c9947de287fb1a7ff0dd2cb18f27b662d21f069c4cafe7de70d5af4"
+    },
+    "moe_skip_d16_retry": {
+      "log": "benchmark_results/hierarchical_cycle_20260909/moe_skip_d16_retry.log",
+      "sha256": "a693bf7bbb18b591d0445722c0f9f5208a2327f7363fa646669ead29cf0aade7"
+    },
+    "mtp_async": {
+      "log": "benchmark_results/hierarchical_cycle_20260909/mtp_async.log",
+      "sha256": "4ad0d733315bad67836c62393724b9bff2ec626515fa9beff97a5432656f2fce"
+    }
+  }
+}

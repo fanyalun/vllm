@@ -1,0 +1,12 @@
+{
+  "python": "3.12.13 | packaged by conda-forge | (main, Mar  5 2026, 16:50:00) [GCC 14.3.0]",
+  "executable": "/home/fanya/vllm/.venv/bin/python",
+  "torch": "2.13.0+cu130",
+  "cuda": "13.0",
+  "gpus": "index, name, uuid, driver_version\n0, NVIDIA A100 80GB PCIe, GPU-92c316af-729a-d2b2-87e6-f49f1ee62b4a, 580.95.05\n1, NVIDIA A100 80GB PCIe, GPU-c7954c39-6588-4e28-8636-b460b8346ef8, 580.95.05\n",
+  "benchmark_source_hashes": {
+    "benchmarks/hierarchical/cycle_worker.py": "0b40fbe8b60dee63ff007f22362e361f1a5082df765528b8a58d033c8e6ce34c",
+    "benchmarks/hierarchical/run_cycle_profile.py": "4621e0ab16f127830dd8b9d7709f3ac5537cc15d1f95696bcdf079b6d26fbf48",
+    "benchmarks/hierarchical/summarize_cycles.py": "7469657cdb20629e484ea7eee81bedb20c67d85938fe52f5364802a78c40e5ae"
+  }
+}

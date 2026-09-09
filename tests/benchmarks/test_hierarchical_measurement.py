@@ -6,7 +6,78 @@ from unittest.mock import Mock
 
 import torch
 
+from benchmarks.hierarchical.cycle_worker import CycleWorker, pair_cycles
 from benchmarks.hierarchical.measurement_worker import MeasurementWorker
+
+
+def test_cycle_pairs_proposal_with_next_target_and_excludes_tail_proposal():
+    spans = [
+        {"phase": "target_sample", "step": 0},
+        {
+            "phase": "proposal",
+            "step": 0,
+            "start_ms": 10,
+            "cpu_start_ms": 100,
+            "stream_ms": 20,
+        },
+        {
+            "phase": "target_sample",
+            "step": 1,
+            "end_ms": 45,
+            "cpu_end_ms": 136,
+            "scheduled": 12,
+            "emitted": 10,
+        },
+        {
+            "phase": "proposal",
+            "step": 1,
+            "start_ms": 46,
+            "cpu_start_ms": 137,
+            "stream_ms": 21,
+        },
+    ]
+    assert pair_cycles(spans) == [
+        {
+            "step": 1,
+            "proposal_step": 0,
+            "scheduled": 12,
+            "emitted": 10,
+            "accepted": 9,
+            "cycle_stream_ms": 35,
+            "cycle_wall_ms": 36,
+            "proposal_ms": 20,
+        }
+    ]
+
+
+def test_cycle_worker_handles_prefill_without_draft_counts(monkeypatch):
+    class Event:
+        def __init__(self, **kwargs):
+            pass
+
+        def record(self):
+            pass
+
+        def elapsed_time(self, other):
+            return 1.0
+
+    monkeypatch.setattr(torch.cuda, "Event", Event)
+    monkeypatch.setattr(torch.accelerator, "synchronize", lambda: None)
+    worker = CycleWorker()
+    worker.model_runner = SimpleNamespace(
+        execute_model=lambda: None,
+        sample=lambda hidden, batch: (None, torch.tensor([1]), None),
+        speculator=SimpleNamespace(propose=lambda: None),
+    )
+    worker.begin_cycle_measurement()
+    worker.model_runner.execute_model()
+    worker.model_runner.sample(
+        None, SimpleNamespace(num_draft_tokens_per_req=None, has_prefill=True)
+    )
+    measured = worker.collect_cycle_measurement()
+    assert measured["cycles"] == []
+    assert measured["spans"][1]["scheduled"] == 0
+    assert measured["spans"][1]["emitted"] == 1
 
 
 def test_drafting_timer_encloses_all_inner_rounds_once(monkeypatch):

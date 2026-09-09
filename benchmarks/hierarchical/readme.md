@@ -4,6 +4,12 @@ This implementation adds `method="hierarchical"` to the V2 GPU runner. It is
 an experimental implementation with failing strict model equivalence gates,
 not a validated lossless or performance release. See [results.md](results.md).
 
+The [complete-cycle performance diagnosis](cycle_profile_20260909/results.md)
+measures a proposal through its subsequent Target verification, including all
+inner rounds, and pairs the elapsed time with final accepted tokens. Use that
+metric for cycle-cost comparisons; the older proposal-only Drafting time remains
+a separate component and excludes Target verification.
+
 ## Configuration
 
 ```python

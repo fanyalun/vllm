@@ -1,0 +1,16 @@
+{
+  "pytest": {
+    "command": ".venv/bin/python -m pytest tests/benchmarks/test_hierarchical_measurement.py -q",
+    "passed": 4
+  },
+  "pre_commit": "All applicable hooks passed on changed sources and report JSON/Markdown",
+  "measurement_audit": {
+    "completed_cases": 6,
+    "requests": 60,
+    "output_tokens": 30720,
+    "profile_vs_e2e_equal_requests": 24,
+    "profile_vs_e2e_total_requests": 24
+  },
+  "runtime_changes": false,
+  "strict_numerical_equivalence": "previously failed; unchanged"
+}
