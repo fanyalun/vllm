@@ -654,6 +654,7 @@ class EngineArgs:
     spec_method: str | None = None
     spec_model: str | None = None
     spec_tokens: int | None = None
+    moe_skip_top_h: int | None = None
     diffusion_config: dict[str, Any] | None = None
 
     show_hidden_metrics_for_version: str | None = (
@@ -1666,6 +1667,9 @@ class EngineArgs:
         vllm_group.add_argument(
             "--spec-tokens", **speculative_kwargs["num_speculative_tokens"]
         )
+        vllm_group.add_argument(
+            "--moe-skip-top-h", **speculative_kwargs["moe_skip_top_h"]
+        )
         vllm_kwargs["diffusion_config"]["type"] = optional_type(json.loads)
         vllm_group.add_argument(
             "--diffusion-config", "-dc", **vllm_kwargs["diffusion_config"]
@@ -1886,6 +1890,7 @@ class EngineArgs:
             ("--spec-method", "method", self.spec_method),
             ("--spec-model", "model", self.spec_model),
             ("--spec-tokens", "num_speculative_tokens", self.spec_tokens),
+            ("--moe-skip-top-h", "moe_skip_top_h", self.moe_skip_top_h),
         ):
             if value is None:
                 continue

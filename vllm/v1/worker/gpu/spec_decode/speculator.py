@@ -47,6 +47,21 @@ def _target_feeds_hc_residual(vllm_config: VllmConfig) -> bool:
 
 class BaseSpeculator(ABC):
     @abstractmethod
+    def load_model(self, target_model: nn.Module) -> None:
+        pass
+
+    @abstractmethod
+    def set_attn(
+        self,
+        model_state: ModelState,
+        kv_cache_config: KVCacheConfig,
+        block_tables: BlockTables,
+        target_input_buffers: InputBuffers,
+        target_attn_groups: list[list[AttentionGroup]],
+    ) -> None:
+        pass
+
+    @abstractmethod
     def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
         pass
 

@@ -6,6 +6,7 @@ from collections.abc import Callable
 import torch
 
 from vllm.distributed.eplb.eplb_state import EplbLayerState
+from vllm.forward_context import get_forward_context, is_forward_context_available
 from vllm.model_executor.layers.fused_moe.router.fused_moe_router import (
     FusedMoERouter,
 )
@@ -181,6 +182,23 @@ class BaseRouter(FusedMoERouter):
         self.top_k = top_k
         self.global_num_experts = global_num_experts
         self.capture_fn: Callable[[torch.Tensor], None] | None = None
+
+    def get_routing_top_k(self) -> int:
+        routing_top_k = self.top_k
+        if is_forward_context_available():
+            routing_top_k = get_forward_context().additional_kwargs.get(
+                "routing_top_k", routing_top_k
+            )
+        if (
+            not isinstance(routing_top_k, int)
+            or isinstance(routing_top_k, bool)
+            or not 1 <= routing_top_k <= self.top_k
+        ):
+            raise ValueError(
+                f"routing_top_k must be an integer in [1, {self.top_k}], "
+                f"got {routing_top_k!r}"
+            )
+        return routing_top_k
 
     def set_capture_fn(self, capture_fn: Callable[[torch.Tensor], None] | None) -> None:
         """Set a capture callback for logical routed expert IDs."""

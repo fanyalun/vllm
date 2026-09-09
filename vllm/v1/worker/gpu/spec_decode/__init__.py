@@ -8,12 +8,22 @@ from vllm.config import VllmConfig
 def init_speculator(vllm_config: VllmConfig, device: torch.device):
     speculative_config = vllm_config.speculative_config
     assert speculative_config is not None
-    if speculative_config.method == "extract_hidden_states":
+    if speculative_config.method == "hierarchical":
+        from vllm.v1.worker.gpu.spec_decode.hierarchical.speculator import (
+            HierarchicalSpeculator,
+        )
+
+        return HierarchicalSpeculator(vllm_config, device)
+    elif speculative_config.method == "extract_hidden_states":
         from vllm.v1.worker.gpu.spec_decode.extract_hidden_states import (
             ExtractHiddenStatesSpeculator,
         )
 
         return ExtractHiddenStatesSpeculator(vllm_config, device)
+    elif speculative_config.method == "moe_skip":
+        from vllm.v1.worker.gpu.spec_decode.moe_skip import MoeSkipSpeculator
+
+        return MoeSkipSpeculator(vllm_config, device)
     elif speculative_config.method == "dflash":
         if "DFlash2DraftModel" in speculative_config.draft_model_config.architectures:
             from vllm.v1.worker.gpu.spec_decode.dflash2.speculator import (

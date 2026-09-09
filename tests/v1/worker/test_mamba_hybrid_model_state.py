@@ -14,8 +14,22 @@ from vllm.v1.attention.backends.recoverssm_metadata import (
     RecoverSSMPostprocessMetadata,
 )
 from vllm.v1.worker.gpu.model_states import mamba_hybrid
-from vllm.v1.worker.gpu.model_states.mamba_hybrid import MambaHybridModelState
+from vllm.v1.worker.gpu.model_states.mamba_hybrid import (
+    MambaHybridModelState,
+    select_moe_skip_scratch_indices,
+)
 from vllm.v1.worker.gpu.model_states.recoverssm import RecoverSSMState
+
+
+def test_moe_skip_scratch_avoids_accepted_temporal_state() -> None:
+    source = torch.tensor([3, 8, 13], dtype=torch.int32)
+    accepted_bias = torch.tensor([0, 2, 4], dtype=torch.int32)
+    scratch = torch.empty_like(source)
+
+    select_moe_skip_scratch_indices(source, accepted_bias, 4, scratch)
+
+    assert scratch.tolist() == [7, 12, 16]
+    assert torch.all(scratch != source + accepted_bias)
 
 
 def test_prepare_attn_forwards_positions(monkeypatch: pytest.MonkeyPatch) -> None:

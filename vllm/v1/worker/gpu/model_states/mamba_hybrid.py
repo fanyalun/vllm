@@ -36,6 +36,17 @@ from vllm.v1.worker.mamba_utils import (
 from vllm.v1.worker.utils import AttentionGroup
 
 
+def select_moe_skip_scratch_indices(
+    source_indices: torch.Tensor,
+    accepted_token_bias: torch.Tensor,
+    num_speculative_blocks: int,
+    out: torch.Tensor,
+) -> None:
+    """Select scratch columns without overwriting the accepted temporal state."""
+    torch.add(source_indices, num_speculative_blocks, out=out)
+    out.sub_(accepted_token_bias.eq(num_speculative_blocks).to(out.dtype))
+
+
 @dataclass
 class MambaHybridAttnMetadata(ModelSpecificAttnMetadata):
     is_prefilling: torch.Tensor
@@ -97,6 +108,16 @@ class MambaHybridModelState(DefaultModelState):
         self.recoverssm = (
             RecoverSSMState() if self.cache_config.use_kda_recoverssm else None
         )
+        self._mamba_ctx: MambaSpecDecodeGPUContext | None = None
+        self._mamba_group_ids: list[int] = []
+        self._mamba_spec: MambaSpec | None = None
+        self._mamba_state_copy_funcs: MambaStateCopyFuncsByType | None = None
+        self._moe_skip_source_idx_gpu = torch.zeros(
+            self.max_num_reqs, dtype=torch.int32, device=self.device
+        )
+        self._moe_skip_scratch_idx_gpu = torch.zeros_like(self._moe_skip_source_idx_gpu)
+        self._moe_skip_token_bias_gpu = torch.zeros_like(self._moe_skip_source_idx_gpu)
+        self._moe_skip_state_indices: torch.Tensor | None = None
         if self._align_mode:
             self._mamba_state_idx_gpu = torch.zeros(
                 self.max_num_reqs, dtype=torch.int32, device=self.device
@@ -107,10 +128,6 @@ class MambaHybridModelState(DefaultModelState):
             self._mamba_src_off_gpu = torch.zeros(
                 self.max_num_reqs, dtype=torch.int32, device=self.device
             )
-            self._mamba_ctx: MambaSpecDecodeGPUContext | None = None
-            self._mamba_group_ids: list[int] = []
-            self._mamba_spec: MambaSpec | None = None
-            self._mamba_state_copy_funcs: MambaStateCopyFuncsByType | None = None
 
     def add_request(self, req_index: int, new_req_data: NewRequestData) -> None:
         super().add_request(req_index, new_req_data)
@@ -228,6 +245,94 @@ class MambaHybridModelState(DefaultModelState):
             self._mamba_src_off_gpu,
             input_batch.idx_mapping,
         )
+
+    def prepare_moe_skip_scratch(
+        self,
+        input_batch: InputBatch,
+        block_tables: tuple[torch.Tensor, ...],
+        kv_cache_config: KVCacheConfig,
+    ) -> dict[int, torch.Tensor]:
+        """Copy canonical Mamba state into a non-canonical draft block."""
+        if self.recoverssm is not None:
+            raise ValueError("MoE-Skip does not support RecoverSSM")
+        if self.cache_config.mamba_cache_mode not in ("none", "align"):
+            raise ValueError(
+                "MoE-Skip only supports Mamba cache modes 'none' and 'align'"
+            )
+
+        num_reqs = input_batch.num_reqs
+        mamba_group_ids, mamba_spec = self._get_mamba_group_info(kv_cache_config)
+        if mamba_spec.num_speculative_blocks < 1:
+            raise ValueError("MoE-Skip requires at least one Mamba scratch block")
+        ctx = self._ensure_align_ctx(kv_cache_config, mamba_group_ids, block_tables)
+
+        if self._align_mode:
+            source_idx = self._mamba_state_idx_gpu
+        else:
+            source_idx = self._moe_skip_source_idx_gpu
+            source_idx.zero_()
+        torch.sub(
+            self.num_accepted_tokens_gpu,
+            1,
+            out=self._moe_skip_token_bias_gpu,
+        )
+        select_moe_skip_scratch_indices(
+            source_idx,
+            self._moe_skip_token_bias_gpu,
+            mamba_spec.num_speculative_blocks,
+            self._moe_skip_scratch_idx_gpu,
+        )
+        ctx.run_fused_precopy(
+            num_reqs,
+            self._moe_skip_scratch_idx_gpu,
+            source_idx,
+            self._moe_skip_token_bias_gpu,
+            input_batch.idx_mapping,
+        )
+
+        state_indices_by_group = self.moe_skip_state_index_buffers(kv_cache_config)
+        assert self._moe_skip_state_indices is not None
+        state_indices = self._moe_skip_state_indices
+        state_indices[:, num_reqs:].fill_(-1)
+        rows = torch.arange(num_reqs, dtype=torch.int64, device=self.device)
+        cols = self._moe_skip_scratch_idx_gpu[input_batch.idx_mapping].to(torch.int64)
+        for group_idx, group_id in enumerate(mamba_group_ids):
+            state_indices[group_idx, :num_reqs].copy_(
+                block_tables[group_id][rows, cols]
+            )
+        return state_indices_by_group
+
+    def moe_skip_state_index_buffers(
+        self, kv_cache_config: KVCacheConfig
+    ) -> dict[int, torch.Tensor]:
+        mamba_group_ids, _ = self._get_mamba_group_info(kv_cache_config)
+        if self._moe_skip_state_indices is None or self._moe_skip_state_indices.shape[
+            0
+        ] != len(mamba_group_ids):
+            self._moe_skip_state_indices = torch.full(
+                (len(mamba_group_ids), self.max_num_reqs),
+                -1,
+                dtype=torch.int32,
+                device=self.device,
+            )
+        return {
+            group_id: self._moe_skip_state_indices[group_idx]
+            for group_idx, group_id in enumerate(mamba_group_ids)
+        }
+
+    @staticmethod
+    def apply_moe_skip_state_indices(
+        attn_metadata: dict[str, Any],
+        attn_groups: list[list[AttentionGroup]],
+        state_indices: dict[int, torch.Tensor],
+        num_reqs: int,
+    ) -> None:
+        """Point one-token non-spec Mamba metadata at draft scratch state."""
+        for group_id, indices in state_indices.items():
+            for group in attn_groups[group_id]:
+                metadata = attn_metadata[group.layer_names[0]]
+                if hasattr(metadata, "non_spec_state_indices_tensor"):
+                    metadata.non_spec_state_indices_tensor = indices[:num_reqs]
 
     def prepare_attn(
         self,

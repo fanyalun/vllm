@@ -1,0 +1,41 @@
+{
+  "date_utc": "2026-09-09",
+  "baseline_commit": "21a22110404d98dcab5f51cd90e9acb0acc15e47",
+  "packages": {
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.1.dev20823+g21a221104.precompiled"
+  },
+  "gpu": [
+    "NVIDIA A100 80GB PCIe, 580.95.05, 81920 MiB",
+    "NVIDIA A100 80GB PCIe, 580.95.05, 81920 MiB"
+  ],
+  "cpu_tests_passed": 65,
+  "deterministic_proposal_gpu_distribution_tests_passed": 6,
+  "ruff": "passed through existing pre-commit hook environment",
+  "scope": "exploratory single repetition; not a completed performance matrix",
+  "trace_note": "Traces include the application warmup request, external request index 0.",
+  "raw_files_sha256": {
+    "ar_graph_4x256.json": "3277e04838acf21ce34c177b633f437226e605c2a3b5129e1e83d478db651368",
+    "audit.json": "3ad71b94a5925263fdfb95f7cb98b5f102356d157db14e6f1e8e4899e879fc0b",
+    "baseline_moeskip_eager_4x256.json": "11a5d705513a51e77601d2fd6ea7a0557426566b478719a0c6d2d952eb57a614",
+    "baseline_mtp_eager_4x256.json": "e976d56d6ffa51762f238472a4d07641f45adb1307af10e98df8fa02d50739f3",
+    "cells.csv": "41364e94aa13023348fad7efac4aeade8608a49904a1f634e2cc3c8b3d151a80",
+    "checked_dspark.json": "9aa75dcb7b4456732ea6eaf1691ce80245a94c746ed1b7e7acebe315a5bd6ac2",
+    "dspark_graph_4x256.json": "2815396a95b21178bde5c849eeac83f6c0513d21936abd3da5cd788f7efa8591",
+    "dspark_graph_4x256_trace.jsonl": "bc8aa5f9e29c07a42d0e4fa891dc2d2efe4e6ad34cd1a93cb04cc7791e18e5cf",
+    "dspark_graph_sampling_4x256.json": "6949e05c5393af6a44dd62ef1b8fb92c7e48139cd2f59cba0a3a404de4519550",
+    "dspark_sampling_4x256_trace.jsonl": "a319ec082a1dcaa59b9f95b65ba0362abbeef52295a1d541e988a0de004abba6",
+    "failed_gates.json": "cc665e41247aa46ccfbbe1d4eda65147a5222d3918f1c92068525d2df8ce1fe2",
+    "fp32_ar_eager_4x256.json": "a2e5ae9cb900d218cb894f1cccc84a38d3f0b35169c5e8c100c7e4d987ef43da",
+    "mtp_eager_4x256.json": "72c215a55079da9132e8339d64b1c9667449ca81ca222c6c77791e9b619aa80d",
+    "mtp_graph_4x256.json": "87b9da28d47a0003e2cf2b7321e425335edb07f4ff06772e5eb617c88894b1a2",
+    "mtp_graph_4x256_trace.jsonl": "dbdda079cc4eed8d26f19fc53ce7cb19871a7b0de0c8edfd5baa93775a6ba3df",
+    "mtp_graph_sampling_4x256.json": "e9bde5bcb6d21a1c46c3b0feafe63c6bebf3aef5940c3c1ca868ed0863a2bda8",
+    "mtp_sampling_4x256_trace.jsonl": "afc5f6c645fa977641f283c95f66d4b0e10fb483e3ea2f2528d51264288f7d43",
+    "refreshed_graph_dspark.json": "b8b5ab65b2679a38337e3e88695ed28bb7fdb007d21a673a98e93835d796cf33"
+  },
+  "pre_commit_staged": "passed",
+  "mypy_python_3_12_staged": "passed",
+  "unit_test_recheck_after_hook_fixes": 65
+}

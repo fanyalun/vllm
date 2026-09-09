@@ -1,0 +1,509 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
+import copy
+import json
+import os
+from dataclasses import fields, is_dataclass, replace
+from pathlib import Path
+
+import numpy as np
+import torch
+
+from vllm.config.compilation import CUDAGraphMode
+from vllm.forward_context import BatchDescriptor, set_forward_context
+from vllm.logger import init_logger
+from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadata
+from vllm.v1.worker.gpu.attn_utils import (
+    build_slot_mappings_by_layer,
+    init_attn_backend,
+)
+from vllm.v1.worker.gpu.input_batch import InputBuffers
+from vllm.v1.worker.gpu.model_states.mamba_hybrid import MambaHybridModelState
+from vllm.v1.worker.gpu.spec_decode.hierarchical.state import PreverifyState
+from vllm.v1.worker.gpu.spec_decode.moe_skip.speculator import MoeSkipSpeculator
+from vllm.v1.worker.gpu.spec_decode.speculator import BaseSpeculator
+from vllm.v1.worker.workspace import use_workspace_lane
+
+logger = init_logger(__name__)
+
+
+def accepted_prefix(draft: torch.Tensor, predictions: torch.Tensor) -> int:
+    """Number of consecutive greedy matches before the first rejection."""
+    matches = draft.eq(predictions[: draft.numel()])
+    return int(matches.to(torch.int32).cumprod(0).sum().item())
+
+
+def refresh_graph_metadata(destination, source):
+    """Refresh captured tensor addresses without replacing graph-owned buffers."""
+    if isinstance(destination, torch.Tensor):
+        destination.copy_(source)
+    elif is_dataclass(destination):
+        for field in fields(destination):
+            refresh_graph_metadata(
+                getattr(destination, field.name), getattr(source, field.name)
+            )
+    elif isinstance(destination, dict):
+        for key in destination:
+            refresh_graph_metadata(destination[key], source[key])
+    elif isinstance(destination, (list, tuple)):
+        for old, new in zip(destination, source, strict=True):
+            refresh_graph_metadata(old, new)
+    elif destination != source:
+        raise ValueError("Pre-verify graph metadata changed its static structure")
+
+
+class HierarchicalSpeculator(BaseSpeculator):
+    """Accelerate shared-weight MoE-Skip with a short MTP or DSpark drafter."""
+
+    supports_mm_inputs = False
+    draft_logits = None
+
+    def __init__(self, vllm_config, device):
+        from vllm.v1.worker.gpu.spec_decode import init_speculator
+
+        self.vllm_config = vllm_config
+        self.device = device
+        config = vllm_config.speculative_config
+        self.config = config
+        self.depth = config.inner_num_speculative_tokens
+        self.rounds = config.inner_num_rounds
+        self.capacity = config.num_speculative_tokens
+        scheduler = vllm_config.scheduler_config
+        if scheduler.max_num_seqs != 1:
+            raise ValueError("hierarchical currently requires max_num_seqs=1")
+        if scheduler.async_scheduling:
+            raise ValueError("hierarchical currently requires async_scheduling=False")
+        if vllm_config.cache_config.enable_prefix_caching:
+            raise ValueError("hierarchical currently requires prefix caching disabled")
+        if vllm_config.lora_config is not None:
+            raise ValueError("hierarchical does not support LoRA")
+        model_config = vllm_config.model_config
+        if model_config.enable_prompt_embeds:
+            raise ValueError("hierarchical does not support prompt embeddings")
+        mm_config = model_config.multimodal_config
+        if mm_config is not None and any(
+            mm_config.get_limit_per_prompt(modality) > 0
+            for modality in ("image", "video")
+        ):
+            raise ValueError(
+                "hierarchical requires limit_mm_per_prompt={'image': 0, 'video': 0}"
+            )
+        self.inner_config = copy.copy(vllm_config)
+        self.inner_config.speculative_config = config.make_inner_config()
+        self.small = init_speculator(self.inner_config, device)
+        self.preverify_config = copy.copy(vllm_config)
+        self.preverify_config.speculative_config = replace(
+            config,
+            method="moe_skip",
+            model=None,
+            inner_method=None,
+            dspark_draft_topk=None,
+        )
+        self.preverify = MoeSkipSpeculator(self.preverify_config, device)
+        self.buffers = InputBuffers(1, scheduler.max_num_batched_tokens, device)
+        self.draft_tokens = torch.full(
+            (1, self.capacity), -1, dtype=torch.int64, device=device
+        )
+        self.draft_lengths = torch.zeros(1, dtype=torch.int32, device=device)
+        self.last_sampled = torch.zeros((1, 1), dtype=torch.int64, device=device)
+        self.last_trace: list[dict[str, int]] = []
+        trace_dir = os.environ.get("VLLM_HIERARCHICAL_TRACE_DIR")
+        self.trace_path = Path(trace_dir) / "rounds.jsonl" if trace_dir else None
+        if self.trace_path:
+            self.trace_path.parent.mkdir(parents=True, exist_ok=True)
+        self.check_preverify = (
+            os.environ.get("VLLM_HIERARCHICAL_CHECK_PREVERIFY") == "1"
+        )
+        self.pending_req_id = None
+        self.preverify_graphs = {}
+        self.use_preverify_graphs = False
+        self.preverify_graph_replays = 0
+
+    def load_model(self, target_model):
+        self.preverify.load_model(target_model)
+        self.model = self.preverify.model
+        self.logits_model = target_model
+        self.state = PreverifyState(self.model, self.depth + 1, self.device)
+        if not self.state.layers:
+            raise ValueError("hierarchical requires Qwen GDN layers")
+        self.small.load_model(target_model)
+        self.layer_outputs: dict[int, tuple[torch.Tensor, ...]] = {}
+        self.tracing_layers = False
+        if self.check_preverify:
+            for index, layer in enumerate(self.model.model.layers):
+
+                def record_layer(module, inputs, output, index=index):
+                    if self.tracing_layers:
+                        self.layer_outputs[index] = tuple(x.clone() for x in output)
+
+                layer.register_forward_hook(record_layer)
+
+    def set_attn(
+        self,
+        model_state,
+        kv_cache_config,
+        block_tables,
+        target_input_buffers,
+        target_attn_groups,
+    ):
+        if not isinstance(model_state, MambaHybridModelState):
+            raise ValueError("hierarchical requires MambaHybridModelState")
+        if model_state.recoverssm is not None:
+            raise ValueError("hierarchical does not support RecoverSSM")
+        self.model_state = model_state
+        self.kv_cache_config = kv_cache_config
+        self.block_tables = block_tables
+        self.attn_groups, _, _ = init_attn_backend(
+            kv_cache_config, self.vllm_config, self.device
+        )
+        self.small.set_attn(
+            model_state,
+            kv_cache_config,
+            block_tables,
+            target_input_buffers,
+            target_attn_groups,
+        )
+
+    def init_cudagraph_manager(self, cudagraph_mode):
+        self.small.init_cudagraph_manager(cudagraph_mode)
+        if self.config.inner_method == "mtp":
+            from vllm.v1.worker.gpu.spec_decode.autoregressive.cudagraph_utils import (
+                SpeculatorCudaGraphManager,
+            )
+
+            self.small.prefill_cudagraph_manager = SpeculatorCudaGraphManager(
+                self.vllm_config, self.device, cudagraph_mode, self.capacity + 1
+            )
+        self.use_preverify_graphs = cudagraph_mode.has_full_cudagraphs()
+
+    def capture(self):
+        self.small.capture()
+
+    def record_verification(self, logits, input_batch, num_sampled):
+        if self.trace_path is None or self.pending_req_id not in input_batch.req_ids:
+            return
+        scheduled = int(input_batch.num_draft_tokens_per_req[0])
+        record = {
+            "request_id": self.pending_req_id,
+            "inner_method": self.config.inner_method,
+            "inner_rounds": self.last_trace,
+            "outer_proposed": int(self.draft_lengths[0].item()),
+            "outer_scheduled": scheduled,
+            "outer_accepted": int(num_sampled[0].item()) - 1,
+            "candidate_tokens": self.draft_tokens[0, :scheduled].tolist(),
+            "preverify_graph_widths": sorted(self.preverify_graphs),
+            "preverify_graph_replays": self.preverify_graph_replays,
+        }
+        with self.trace_path.open("a") as output:
+            output.write(json.dumps(record) + "\n")
+        self.pending_req_id = None
+
+    def _batch(self, template, position: int, tokens: torch.Tensor):
+        width = tokens.numel()
+        padded = width
+        buffers = self.buffers
+        buffers.input_ids[:padded].zero_()
+        buffers.positions[:padded].zero_()
+        buffers.is_padding[:padded].fill_(True)
+        buffers.input_ids[:width].copy_(tokens)
+        buffers.positions[:width].copy_(
+            torch.arange(position, position + width, device=self.device)
+        )
+        buffers.query_start_loc[:2].copy_(
+            torch.tensor([0, width], dtype=torch.int32, device=self.device)
+        )
+        buffers.seq_lens[:1].fill_(position + width)
+        buffers.is_padding[:width].zero_()
+        zeros = np.zeros(1, dtype=np.int32)
+        batch = replace(
+            template,
+            num_reqs_after_padding=1,
+            expanded_idx_mapping=template.idx_mapping.expand(width),
+            expanded_local_pos=torch.arange(
+                width, dtype=torch.int32, device=self.device
+            ),
+            num_scheduled_tokens=np.array([width], dtype=np.int32),
+            num_tokens=width,
+            num_tokens_after_padding=padded,
+            num_draft_tokens=width - 1,
+            num_draft_tokens_per_req=np.array([width - 1], dtype=np.int32),
+            query_start_loc=buffers.query_start_loc[:2],
+            query_start_loc_np=np.array([0, width], dtype=np.int32),
+            seq_lens=buffers.seq_lens[:1],
+            seq_lens_cpu_upper_bound=torch.tensor(
+                [self.vllm_config.model_config.max_model_len], dtype=torch.int32
+            ),
+            dcp_local_seq_lens=None,
+            num_computed_tokens_np=np.array([position], dtype=np.int32),
+            prefill_len_np=zeros,
+            num_computed_prefill_tokens_np=zeros,
+            is_prefilling_np=np.zeros(1, dtype=np.bool_),
+            has_prefill=False,
+            input_ids=buffers.input_ids[:padded],
+            positions=buffers.positions[:padded],
+            is_padding=buffers.is_padding[:padded],
+            logits_indices=torch.arange(width, dtype=torch.int64, device=self.device),
+            cu_num_logits=buffers.query_start_loc[:2],
+            cu_num_logits_np=np.array([0, width], dtype=np.int32),
+            has_structured_output_reqs=False,
+            prompt_lens=None,
+            max_query_len=width,
+        )
+        tables = self.block_tables.gather_block_tables(batch.idx_mapping, 1)
+        slots = self.block_tables.compute_slot_mappings(
+            batch.idx_mapping, batch.query_start_loc, batch.positions, padded
+        )
+        metadata = self.model_state.prepare_attn(
+            batch,
+            CUDAGraphMode.NONE,
+            tables,
+            slots,
+            self.attn_groups,
+            self.kv_cache_config,
+        )
+        gdn = GDNAttentionMetadata(
+            num_prefills=0,
+            num_prefill_tokens=0,
+            num_decodes=0,
+            num_decode_tokens=0,
+            num_spec_decodes=1,
+            num_spec_decode_tokens=width,
+            num_actual_tokens=width,
+            spec_query_start_loc=batch.query_start_loc,
+            spec_state_indices_tensor=self.state.state_indices[:, :width],
+            spec_sequence_masks=torch.ones(1, dtype=torch.bool, device=self.device),
+            num_accepted_tokens=self.state.num_accepted,
+        )
+        for name in self.state.layers:
+            metadata[name] = gdn
+        return (
+            batch,
+            metadata,
+            build_slot_mappings_by_layer(slots, self.kv_cache_config),
+        )
+
+    def _verify(self, batch, metadata, slots):
+        width = batch.num_tokens
+        if not self.use_preverify_graphs or self.check_preverify:
+            return self._verify_eager(batch, metadata, slots)
+        if width not in self.preverify_graphs:
+            before = self.state.snapshot()
+            for _ in range(3):
+                self._verify_eager(batch, metadata, slots)
+                self.state.restore(before)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                output = self._verify_eager(batch, metadata, slots)
+            self.state.restore(before)
+            self.preverify_graphs[width] = (graph, output, metadata, slots)
+            logger.info(
+                "Captured hierarchical pre-verifier CUDA graph: width=%d", width
+            )
+        graph, output, captured_metadata, captured_slots = self.preverify_graphs[width]
+        refresh_graph_metadata(captured_metadata, metadata)
+        refresh_graph_metadata(captured_slots, slots)
+        graph.replay()
+        self.preverify_graph_replays += 1
+        return output
+
+    def _verify_eager(self, batch, metadata, slots):
+        positions = batch.positions
+        if self.vllm_config.model_config.uses_mrope:
+            positions = positions.unsqueeze(0).expand(3, -1)
+        with (
+            self.state.activate(),
+            use_workspace_lane(0),
+            set_forward_context(
+                metadata,
+                self.vllm_config,
+                num_tokens=batch.num_tokens_after_padding,
+                cudagraph_runtime_mode=CUDAGraphMode.NONE,
+                slot_mapping=slots,
+                batch_descriptor=BatchDescriptor(
+                    num_tokens=batch.num_tokens_after_padding
+                ),
+                is_padding=batch.is_padding,
+                additional_forward_kwargs={"routing_top_k": self.config.moe_skip_top_h},
+            ),
+        ):
+            self.tracing_layers = self.check_preverify
+            try:
+                output = self.model(input_ids=batch.input_ids, positions=positions)
+            finally:
+                self.tracing_layers = False
+        if isinstance(output, tuple):
+            hidden, aux = output
+        else:
+            hidden, aux = output, None
+        logits = self.logits_model.compute_logits(hidden)
+        self.last_logits = logits
+        return logits.argmax(-1), hidden, aux
+
+    @torch.inference_mode()
+    def propose(
+        self,
+        input_batch,
+        attn_metadata,
+        slot_mappings,
+        last_hidden_states,
+        aux_hidden_states,
+        num_sampled,
+        num_rejected,
+        last_sampled,
+        next_prefill_tokens,
+        temperature,
+        seeds,
+        dp_sync=None,
+        dummy_run=False,
+        skip_attn_for_dummy_run=False,
+        mm_inputs=None,
+        is_profile=False,
+    ):
+        self.draft_tokens.fill_(-1)
+        self.draft_lengths.zero_()
+        if input_batch.req_ids and all(
+            req_id.startswith("_warmup_") for req_id in input_batch.req_ids
+        ):
+            # Runner warmup schedules the full capacity without asking for lengths.
+            self.draft_tokens.zero_()
+            self.draft_lengths.fill_(self.capacity)
+            return self.draft_tokens[: input_batch.num_reqs]
+        if dummy_run or is_profile or skip_attn_for_dummy_run:
+            self.small.propose(
+                input_batch,
+                attn_metadata,
+                slot_mappings,
+                last_hidden_states,
+                aux_hidden_states,
+                num_sampled,
+                num_rejected,
+                last_sampled,
+                next_prefill_tokens,
+                temperature,
+                seeds,
+                dp_sync=dp_sync,
+                dummy_run=dummy_run,
+                skip_attn_for_dummy_run=skip_attn_for_dummy_run,
+                mm_inputs=mm_inputs,
+                is_profile=is_profile,
+            )
+            return self.draft_tokens[: input_batch.num_reqs]
+        if input_batch.num_reqs == 0:
+            return self.draft_tokens[:0]
+        if int(num_sampled[0].item()) == 0:
+            return self.draft_tokens
+        if input_batch.has_structured_output_reqs or mm_inputs is not None:
+            raise ValueError("hierarchical supports unstructured text requests only")
+        tables = self.block_tables.gather_block_tables(input_batch.idx_mapping, 1)
+        self.state.begin(self.model_state, input_batch, tables, self.kv_cache_config)
+        position = int((input_batch.seq_lens - num_rejected)[0].item())
+        anchor = last_sampled[input_batch.idx_mapping, 0].clone()
+        batch, metadata, slots = input_batch, attn_metadata, slot_mappings
+        hidden, aux = last_hidden_states, aux_hidden_states
+        count = 0
+        self.last_trace = []
+        for round_idx in range(self.rounds):
+            width = min(
+                self.depth + 1,
+                self.vllm_config.model_config.max_model_len - position,
+            )
+            if width <= 0:
+                break
+            self.last_sampled[0, 0] = anchor[0]
+            small_tokens = self.small.propose(
+                batch,
+                metadata,
+                slots,
+                hidden,
+                aux if self.config.inner_method == "dspark" else None,
+                num_sampled,
+                num_rejected,
+                self.last_sampled,
+                next_prefill_tokens,
+                temperature,
+                seeds,
+            )[0, : width - 1].clone()
+            batch, metadata, slots = self._batch(
+                input_batch, position, torch.cat((anchor, small_tokens))
+            )
+            before = self.state.snapshot() if self.check_preverify else None
+            predictions, hidden, aux = self._verify(batch, metadata, slots)
+            accepted = accepted_prefix(small_tokens, predictions)
+            if before is not None:
+                batch_logits = self.last_logits.clone()
+                batch_layers = self.layer_outputs.copy()
+                after = self.state.snapshot()
+                tokens = batch.input_ids.clone()
+                predictions = predictions.clone()
+                hidden = hidden.clone()
+                aux = [x.clone() for x in aux] if aux else None
+                self.state.restore(before)
+                sequential = []
+                sequential_logits = []
+                sequential_layers = []
+                for offset in range(width):
+                    ref_batch, ref_metadata, ref_slots = self._batch(
+                        input_batch, position + offset, tokens[offset : offset + 1]
+                    )
+                    ref_predictions, _, _ = self._verify_eager(
+                        ref_batch, ref_metadata, ref_slots
+                    )
+                    sequential.append(ref_predictions[:1].clone())
+                    sequential_logits.append(self.last_logits[:1].clone())
+                    sequential_layers.append(self.layer_outputs.copy())
+                reference = torch.cat(sequential)
+                if not torch.equal(
+                    predictions[: accepted + 1], reference[: accepted + 1]
+                ):
+                    delta = (
+                        (batch_logits.float() - torch.cat(sequential_logits).float())
+                        .abs()
+                        .amax(-1)
+                    )
+                    layer_delta = {
+                        index: (
+                            values[0].float()
+                            - torch.cat(
+                                [row[index][0] for row in sequential_layers]
+                            ).float()
+                        )
+                        .abs()
+                        .amax(-1)
+                        .tolist()
+                        for index, values in batch_layers.items()
+                    }
+                    raise AssertionError(
+                        f"Pre-verify batch/sequence mismatch at {position}: "
+                        f"draft={small_tokens.tolist()} accepted={accepted} "
+                        f"batch={predictions.tolist()} "
+                        f"sequential={reference.tolist()} "
+                        f"max_logit_diff={delta.tolist()} layers={layer_delta}"
+                    )
+                self.state.restore(after)
+                batch, metadata, slots = self._batch(input_batch, position, tokens)
+            emitted = accepted + 1
+            self.draft_tokens[0, count : count + accepted] = small_tokens[:accepted]
+            self.draft_tokens[0, count + accepted] = predictions[accepted]
+            self.last_trace.append(
+                {
+                    "inner_round": round_idx,
+                    "proposed": width - 1,
+                    "accepted": accepted,
+                    "emitted": emitted,
+                    "offset": count,
+                }
+            )
+            count += emitted
+            anchor = predictions[accepted : accepted + 1].clone()
+            position += emitted
+            self.state.advance(accepted)
+            num_sampled = torch.tensor([emitted], dtype=torch.int32, device=self.device)
+            num_rejected = torch.tensor(
+                [width - emitted], dtype=torch.int32, device=self.device
+            )
+            if width < self.depth + 1:
+                break
+        self.draft_lengths.fill_(count)
+        self.pending_req_id = input_batch.req_ids[0]
+        return self.draft_tokens

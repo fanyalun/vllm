@@ -626,6 +626,8 @@ class VllmConfig:
             # position (no separate bonus query), so it needs exactly
             # num_speculative_tokens lookahead slots.
             return self.num_speculative_tokens
+        if speculative_config.method in ("moe_skip", "hierarchical"):
+            return self.num_speculative_tokens
         return 0
 
     @property
@@ -2578,6 +2580,8 @@ class VllmConfig:
                 "dflash",
                 "dspark",
                 "extract_hidden_states",
+                "moe_skip",
+                "hierarchical",
             ):
                 unsupported.append(f"speculative method '{speculative_config.method}'")
 
@@ -2631,8 +2635,10 @@ class VllmConfig:
 
         # DSpark is implemented only by the V2 GPU model runner.
         if self.speculative_config:
-            if self.speculative_config.method == "dspark":
-                unsupported.append("dspark speculative decoding")
+            if self.speculative_config.method in ("dspark", "hierarchical"):
+                unsupported.append(
+                    f"{self.speculative_config.method} speculative decoding"
+                )
             if self.speculative_config.enable_adaptive_verification:
                 unsupported.append("adaptive draft verification")
 

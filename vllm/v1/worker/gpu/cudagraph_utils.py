@@ -216,7 +216,9 @@ class CudaGraphManager:
         # draft tokens. The scheduler might use a smaller number so we need
         # to capture graphs for all possible values during decode.
         speculative_config = self.vllm_config.speculative_config
-        if (
+        if speculative_config and speculative_config.method == "hierarchical":
+            decode_query_lens = list(range(1, self.decode_query_len + 1))
+        elif (
             speculative_config
             and speculative_config.uses_dynamic_speculative_decoding()
         ):

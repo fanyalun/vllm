@@ -261,11 +261,15 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             if self.is_last_pp_rank:
                 self.speculator = init_speculator(self.vllm_config, self.device)
 
-            if self.speculative_config.method in (
-                "eagle3",
-                "dflash",
-                "dspark",
-                "extract_hidden_states",
+            if (
+                self.speculative_config.inner_method == "dspark"
+                or self.speculative_config.method
+                in (
+                    "eagle3",
+                    "dflash",
+                    "dspark",
+                    "extract_hidden_states",
+                )
             ):
                 # Drafting may require auxiliary hidden states from target model outputs
                 self.use_aux_hidden_state_outputs = True
@@ -396,9 +400,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             if self.use_aux_hidden_state_outputs:
                 assert self.speculative_config is not None
                 set_eagle3_aux_hidden_state_layers(self.model, self.speculative_config)
-            if isinstance(self.speculator, DraftModelSpeculator):
+            if self.speculator is not None:
                 with use_workspace_lane(self._draft_workspace_lane):
                     self.speculator.load_model(self.model)
+            if isinstance(self.speculator, DraftModelSpeculator):
+                with use_workspace_lane(self._draft_workspace_lane):
                     eplb_models_added = self.eplb.maybe_register_speculator(
                         self.speculator, self.speculative_config, load_dummy_weights
                     )
@@ -658,8 +664,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             varlen_decode=self.adaptive_verification is not None,
         )
         check_attention_cp_compatibility(self.vllm_config)
-        if isinstance(self.speculator, DraftModelSpeculator):
-            # HACK(woosuk)
+        if self.speculator is not None:
             self.speculator.set_attn(
                 self.model_state,
                 self.kv_cache_config,
@@ -1465,6 +1470,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 # Draft logits are needed for probabilistic rejection sampling.
                 self.speculator.draft_logits,
             )
+            if hasattr(self.speculator, "record_verification"):
+                self.speculator.record_verification(
+                    logits, input_batch, sampler_output.num_sampled
+                )
 
         if shard_metadata is not None:
             # Gather the sharded sampler outputs from the TP ranks into a single
@@ -1984,6 +1993,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.draft_tokens_handler.set_draft_tokens(
                 input_batch,
                 self.req_states.draft_tokens[input_batch.idx_mapping],
+                getattr(self.speculator, "draft_lengths", None),
             )
 
         # Post-step KV connector related operations.

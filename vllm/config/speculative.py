@@ -79,6 +79,8 @@ SpeculativeMethod = Literal[
     EagleModelTypes,
     NgramGPUTypes,
     DSparkModelTypes,
+    "moe_skip",
+    "hierarchical",
 ]
 RejectionSampleMethod = Literal["standard", "synthetic", "block"]
 DraftSampleMethod = Literal["greedy", "probabilistic"]
@@ -597,6 +599,36 @@ class SpeculativeConfig:
     """For Qwen3 DSpark drafting, evaluate the Markov projection only for the
     top-k base-logit candidates. Requires draft tensor parallel size 1."""
 
+    moe_skip_top_h: int | None = Field(default=None, ge=1)
+    """Number of routed experts used by each MoE-Skip draft forward.
+
+    Defaults to 4 when ``method='moe_skip'``. The target forward keeps the
+    model's configured routing top-k unchanged.
+    """
+
+    inner_method: Literal["mtp", "dspark"] | None = None
+    """Small drafter used by hierarchical speculative decoding."""
+
+    inner_num_speculative_tokens: int = Field(default=4, ge=1)
+    """Maximum small-draft tokens per pre-verification round."""
+
+    inner_num_rounds: int = Field(default=4, ge=1)
+    """Pre-verification rounds before one target verification."""
+
+    preverify_method: Literal["moe_skip"] = "moe_skip"
+    """Shared-weight intermediate verifier for hierarchical decoding."""
+
+    def make_inner_config(self) -> "SpeculativeConfig":
+        from dataclasses import replace
+
+        return replace(
+            self,
+            method=self.inner_method,
+            inner_method=None,
+            moe_skip_top_h=None,
+            num_speculative_tokens=self.inner_num_speculative_tokens,
+        )
+
     def compute_hash(self) -> str:
         """
         WARNING: Whenever a new field is added to this config,
@@ -610,6 +642,22 @@ class SpeculativeConfig:
         the final hidden states.
         """
         factors: list[Any] = []
+        if self.method == "hierarchical":
+            inner = copy.copy(self)
+            inner.method = self.inner_method
+            inner.inner_method = None
+            inner.num_speculative_tokens = self.inner_num_speculative_tokens
+            inner.moe_skip_top_h = None
+            factors.extend(
+                (
+                    self.method,
+                    self.inner_method,
+                    self.inner_num_speculative_tokens,
+                    self.inner_num_rounds,
+                    self.moe_skip_top_h,
+                    inner.compute_hash(),
+                )
+            )
         # Eagle3 and extract_hidden_states affect the computation graph because
         # they return intermediate hidden states in addition to the final hidden state.
         uses_aux_hidden_states = self.method in (
@@ -640,6 +688,11 @@ class SpeculativeConfig:
                     "index_share_for_mtp_iteration",
                     False,
                 )
+            )
+
+        if self.method == "moe_skip":
+            factors.extend(
+                (self.method, self.num_speculative_tokens, self.moe_skip_top_h)
             )
 
         hash_str = safe_hash(str(factors).encode(), usedforsecurity=False).hexdigest()
@@ -1073,6 +1126,11 @@ class SpeculativeConfig:
         return len(parts) >= 2 and all(part.isidentifier() for part in parts)
 
     def __post_init__(self):
+        if self.method == "hierarchical":
+            self._init_hierarchical()
+            return self
+        if self.inner_method is not None:
+            raise ValueError("inner_method requires method='hierarchical'")
         # Note: "method" is a new parameter that helps to extend the
         # configuration of non-model-based proposers, and the "model" parameter
         # will be used to set the draft model, eagle head, or additional weight
@@ -1097,6 +1155,9 @@ class SpeculativeConfig:
                 "method `%s` is deprecated and replaced with mtp.", self.method
             )
             self.method = "mtp"
+
+        if self.method != "moe_skip" and self.moe_skip_top_h is not None:
+            raise ValueError("moe_skip_top_h is only supported with method='moe_skip'")
 
         if self.model is None and self.num_speculative_tokens is not None:
             if self.method == "mtp":
@@ -1130,6 +1191,8 @@ class SpeculativeConfig:
                 self.model = "suffix"
             elif self.method == "extract_hidden_states":
                 self.model = "extract_hidden_states"
+            elif self.method == "moe_skip":
+                pass
             elif self.method == "custom_class":
                 # method was set explicitly, but model should already contain the
                 # custom module path. If not, this is a configuration error.
@@ -1145,6 +1208,9 @@ class SpeculativeConfig:
 
         if self.method in ("ngram", "[ngram]"):
             self.method = "ngram"
+
+        if self.method == "moe_skip":
+            self._validate_moe_skip()
 
         if self.method in ("ngram", "ngram_gpu"):
             # Set default values if not provided
@@ -1514,6 +1580,122 @@ class SpeculativeConfig:
 
         return self
 
+    def _init_hierarchical(self) -> None:
+        from dataclasses import replace
+
+        if self.inner_method is None:
+            self.inner_method = "mtp"
+        capacity = self.inner_num_rounds * (self.inner_num_speculative_tokens + 1)
+        if self.num_speculative_tokens not in (None, capacity):
+            raise ValueError(
+                "hierarchical num_speculative_tokens must equal "
+                "inner_num_rounds * (inner_num_speculative_tokens + 1)"
+            )
+        self.num_speculative_tokens = capacity
+        if self.enable_adaptive_verification or self.parallel_drafting:
+            raise ValueError("hierarchical does not support adaptive/parallel drafting")
+        if self.num_speculative_tokens_per_batch_size is not None:
+            raise ValueError("hierarchical does not support batch-dependent lengths")
+        preverify = replace(
+            self,
+            method="moe_skip",
+            model=None,
+            inner_method=None,
+            dspark_draft_topk=None,
+            num_speculative_tokens=max(2, self.inner_num_speculative_tokens),
+        )
+        if not set(self.target_model_config.architectures or ()) <= {
+            "Qwen3_5MoeForCausalLM",
+            "Qwen3_5MoeForConditionalGeneration",
+        }:
+            raise ValueError("hierarchical currently supports Qwen3.6 MoE only")
+        self.moe_skip_top_h = preverify.moe_skip_top_h
+        inner = self.make_inner_config()
+        self.model = inner.model
+        self.draft_model_config = inner.draft_model_config
+        self.draft_parallel_config = inner.draft_parallel_config
+
+    def _validate_moe_skip(self) -> None:
+        if self.model is not None:
+            raise ValueError("method='moe_skip' does not accept a draft model")
+        if self.draft_sample_method != "greedy":
+            raise ValueError("method='moe_skip' only supports greedy drafting")
+        if self.rejection_sample_method != "standard":
+            raise ValueError(
+                "method='moe_skip' only supports standard rejection sampling"
+            )
+        if self.target_model_config is None:
+            raise ValueError("target_model_config must be present for moe_skip")
+        if self.target_parallel_config is None:
+            raise ValueError("target_parallel_config must be present for moe_skip")
+
+        architectures = set(self.target_model_config.architectures or ())
+        qwen_architectures = {
+            "Qwen3_5MoeForCausalLM",
+            "Qwen3_5MoeForConditionalGeneration",
+        }
+        gemma4_architectures = {
+            "Gemma4ForCausalLM",
+            "Gemma4ForConditionalGeneration",
+        }
+        is_qwen = bool(architectures) and architectures <= qwen_architectures
+        is_gemma4 = bool(architectures) and architectures <= gemma4_architectures
+        if not (is_qwen or is_gemma4):
+            supported_architectures = qwen_architectures | gemma4_architectures
+            raise ValueError(
+                "method='moe_skip' only supports Qwen3.6 MoE and Gemma4 MoE "
+                "architectures "
+                f"{sorted(supported_architectures)}; got {sorted(architectures)}"
+            )
+        if is_qwen and self.num_speculative_tokens < 2:
+            raise ValueError(
+                "Qwen3.6 method='moe_skip' requires at least 2 speculative "
+                "tokens to reserve a GDN scratch block"
+            )
+
+        text_config = self.target_model_config.hf_text_config
+        top_k_field = "num_experts_per_tok" if is_qwen else "top_k_experts"
+        target_top_k = getattr(text_config, top_k_field, None)
+        if not isinstance(target_top_k, int) or isinstance(target_top_k, bool):
+            raise ValueError(
+                f"method='moe_skip' requires {top_k_field} in the target text "
+                "configuration"
+            )
+        if is_qwen and not getattr(text_config, "shared_expert_intermediate_size", 0):
+            raise ValueError("method='moe_skip' requires a shared expert")
+        if is_gemma4 and not getattr(text_config, "num_experts", 0):
+            raise ValueError("Gemma4 method='moe_skip' requires routed experts")
+
+        if self.moe_skip_top_h is None:
+            self.moe_skip_top_h = 4
+        if self.moe_skip_top_h > target_top_k:
+            raise ValueError(
+                "moe_skip_top_h must be no larger than the target routing top-k "
+                f"{top_k_field}={target_top_k}; got {self.moe_skip_top_h}"
+            )
+
+        parallel = self.target_parallel_config
+        unsupported_parallel = {
+            "tensor_parallel_size": parallel.tensor_parallel_size,
+            "pipeline_parallel_size": parallel.pipeline_parallel_size,
+            "data_parallel_size": parallel.data_parallel_size,
+        }
+        if any(value != 1 for value in unsupported_parallel.values()):
+            raise ValueError(
+                "method='moe_skip' currently requires TP1, PP1, and DP1; got "
+                + ", ".join(
+                    f"{name}={value}" for name, value in unsupported_parallel.items()
+                )
+            )
+        if parallel.enable_expert_parallel:
+            raise ValueError("method='moe_skip' does not support expert parallelism")
+
+        self.prompt_lookup_max = 0
+        self.prompt_lookup_min = 0
+        # Shared-weight drafts have no separate model or parallel configuration.
+        self.draft_model_config = None  # type: ignore[assignment]
+        self.draft_parallel_config = None  # type: ignore[assignment]
+
     def _validate_suffix_decoding(self):
         if not has_arctic_inference():
             raise ImportError(
@@ -1733,6 +1915,12 @@ class SpeculativeConfig:
                 f"than zero ({self.num_speculative_tokens})."
             )
 
+        if (
+            self.method not in ("moe_skip", "hierarchical")
+            and self.moe_skip_top_h is not None
+        ):
+            raise ValueError("moe_skip_top_h is only supported with method='moe_skip'")
+
         if self.rejection_sample_method == "synthetic":
             # Consolidate to per-position rates
             self.synthetic_acceptance_rates = self._resolve_synthetic_acceptance_rates(
@@ -1859,7 +2047,9 @@ class SpeculativeConfig:
         return self.method == "dflash"
 
     def use_dspark(self) -> bool:
-        return self.method == "dspark"
+        return self.method == "dspark" or (
+            self.method == "hierarchical" and self.inner_method == "dspark"
+        )
 
     def uses_dynamic_speculative_decoding(self) -> bool:
         return self.num_speculative_tokens_per_batch_size is not None
@@ -1891,6 +2081,7 @@ class SpeculativeConfig:
                 "suffix",
                 "extract_hidden_states",
                 "custom_class",
+                "moe_skip",
             )
             else self.draft_model_config.model
         )

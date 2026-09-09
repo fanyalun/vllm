@@ -1,0 +1,81 @@
+{
+  "reference": "benchmark_results/hierarchical_20260909/ar_graph_4x256.json",
+  "cells": [
+    {
+      "path": "benchmark_results/hierarchical_20260909/mtp_graph_4x256.json",
+      "failures": [
+        {
+          "reason": "greedy token mismatch",
+          "sample_index": 0,
+          "first_mismatch_zero_based": 4
+        },
+        {
+          "reason": "greedy token mismatch",
+          "sample_index": 1,
+          "first_mismatch_zero_based": 134
+        },
+        {
+          "reason": "greedy token mismatch",
+          "sample_index": 2,
+          "first_mismatch_zero_based": 187
+        },
+        {
+          "reason": "greedy token mismatch",
+          "sample_index": 3,
+          "first_mismatch_zero_based": 2
+        }
+      ]
+    },
+    {
+      "path": "benchmark_results/hierarchical_20260909/dspark_graph_4x256.json",
+      "failures": [
+        {
+          "reason": "greedy token mismatch",
+          "sample_index": 0,
+          "first_mismatch_zero_based": 4
+        },
+        {
+          "reason": "greedy token mismatch",
+          "sample_index": 1,
+          "first_mismatch_zero_based": 190
+        },
+        {
+          "reason": "greedy token mismatch",
+          "sample_index": 2,
+          "first_mismatch_zero_based": 206
+        },
+        {
+          "reason": "greedy token mismatch",
+          "sample_index": 3,
+          "first_mismatch_zero_based": 68
+        }
+      ]
+    },
+    {
+      "path": "benchmark_results/hierarchical_20260909/fp32_ar_eager_4x256.json",
+      "failures": [
+        {
+          "reason": "greedy token mismatch",
+          "sample_index": 0,
+          "first_mismatch_zero_based": 4
+        },
+        {
+          "reason": "greedy token mismatch",
+          "sample_index": 1,
+          "first_mismatch_zero_based": 18
+        },
+        {
+          "reason": "greedy token mismatch",
+          "sample_index": 2,
+          "first_mismatch_zero_based": 187
+        },
+        {
+          "reason": "greedy token mismatch",
+          "sample_index": 3,
+          "first_mismatch_zero_based": 20
+        }
+      ]
+    }
+  ],
+  "status": "failed"
+}

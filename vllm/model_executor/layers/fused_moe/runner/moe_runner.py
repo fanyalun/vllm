@@ -612,6 +612,11 @@ class MoERunner(MoERunnerInterface):
         )
 
         if self.routed_experts.quant_method.is_monolithic:
+            routing_top_k = get_forward_context().additional_kwargs.get("routing_top_k")
+            if routing_top_k is not None:
+                raise ValueError(
+                    "Call-level routing_top_k requires a modular FusedMoE backend"
+                )
             # Monolithic kernels: pass router_logits to routed_experts
             fused_out = self.routed_experts.forward_monolithic(
                 x=hidden_states,

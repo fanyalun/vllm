@@ -196,6 +196,36 @@ def test_stochastic_rejection_sample(
         )
 
 
+@pytest.mark.parametrize("num_speculative_steps", [1, 4, 20])
+@pytest.mark.parametrize("proposal", [0, 2])
+def test_deterministic_cascade_proposal_preserves_target_distribution(
+    num_speculative_steps: int, proposal: int
+):
+    """A greedy cascade uses a point mass, including outside target top-p support."""
+    device = "cuda"
+    probabilities = torch.tensor([0.8, 0.2, 0.0], device=device)
+    inputs = _build_rejection_sample_inputs(
+        probabilities.log(),
+        torch.tensor([0.0, 0.0, 0.0], device=device),
+        num_speculative_steps,
+        temperature=1.0,
+        num_trials=30000,
+    )
+    inputs["draft_logits"] = None
+    inputs["draft_sampled"].fill_(proposal)
+    sampled, counts = rejection_sample(
+        **inputs, num_speculative_steps=num_speculative_steps
+    )
+    for position in range(num_speculative_steps + 1):
+        mask = counts > position
+        if mask.any():
+            tokens = sampled[mask, position]
+            assert not tokens.eq(2).any()
+            _assert_distribution_match(tokens, probabilities, device)
+    if proposal == 2:
+        assert counts.eq(1).all()
+
+
 # The test above spreads its samples too thin to resolve a small distributional
 # bias: VOCAB_SIZE bins over 10 * VOCAB_SIZE trials is ~10 samples per bin.
 # Sixteen bins over 200K trials is ~12K per bin, which resolves a few percent.

@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import json
+from pathlib import Path
 from typing import Any
 
 import torch
 import torch.nn as nn
 
+import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
 from vllm.forward_context import BatchDescriptor, set_forward_context
@@ -17,6 +20,7 @@ from vllm.v1.worker.gpu.cudagraph_utils import BatchExecutionDescriptor
 from vllm.v1.worker.gpu.dp_utils import DPSyncState, dispatch_cg_and_sync_dp
 from vllm.v1.worker.gpu.input_batch import InputBatch, InputBuffers
 from vllm.v1.worker.gpu.model_states.interface import ModelState
+from vllm.v1.worker.gpu.sample.gumbel import gumbel_sample
 from vllm.v1.worker.gpu.spec_decode.autoregressive.cudagraph_utils import (
     SpeculatorCudaGraphManager,
 )
@@ -24,6 +28,21 @@ from vllm.v1.worker.gpu.spec_decode.speculator import DraftModelSpeculator
 from vllm.v1.worker.utils import AttentionGroup, get_uniform_decode_token_count
 
 logger = init_logger(__name__)
+
+
+def _is_internal_request(req_id: str) -> bool:
+    return req_id.startswith(("_warmup_", "_profile_"))
+
+
+def _external_request_id(req_id: str) -> str:
+    external_id, separator, suffix = req_id.rpartition("-")
+    if (
+        separator
+        and len(suffix) == 8
+        and all(char in "0123456789abcdef" for char in suffix)
+    ):
+        return external_id
+    return req_id
 
 
 class AutoRegressiveSpeculator(DraftModelSpeculator):
@@ -46,6 +65,31 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         self.prefill_cudagraph_manager: SpeculatorCudaGraphManager | None = None
         self.decode_cudagraph_manager: SpeculatorCudaGraphManager | None = None
         self.use_fused_multi_step_decode = False
+
+        self.trace_dir = (
+            Path(envs.VLLM_DRAFT_TOPK_TRACE_DIR)
+            if envs.VLLM_DRAFT_TOPK_TRACE_DIR
+            else None
+        )
+        self.trace_path: Path | None = None
+        self.pending_draft_top8: dict[str, list[list[int]]] = {}
+        self.pending_draft_top2_logits: dict[str, list[list[float]]] = {}
+        self.pending_draft_tokens: dict[str, list[int]] = {}
+        self.verify_steps: dict[str, int] = {}
+        if self.trace_dir is not None:
+            self.trace_dir.mkdir(parents=True, exist_ok=True)
+            self.trace_path = self.trace_dir / "raw_trace.jsonl"
+            self.draft_top8_tokens = torch.full(
+                (self.max_num_reqs, self.num_speculative_steps, 8),
+                -1,
+                dtype=torch.int64,
+                device=device,
+            )
+            self.draft_top2_logits = torch.empty(
+                (self.max_num_reqs, self.num_speculative_steps, 2),
+                dtype=torch.float32,
+                device=device,
+            )
 
     def load_model(self, target_model: nn.Module) -> None:
         super().load_model(target_model)
@@ -322,6 +366,7 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
 
         if self.num_speculative_steps == 1:
             # Early exit.
+            self._stash_draft_trace(input_batch, num_reqs, dummy_run, is_profile)
             return self.draft_tokens[:num_reqs, :1]
 
         # Prepare the inputs for the decode steps.
@@ -375,7 +420,163 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         )
         self.on_multi_step_decode_end(num_reqs)
 
+        self._stash_draft_trace(input_batch, num_reqs, dummy_run, is_profile)
         return self.draft_tokens[:num_reqs]
+
+    def _sample_draft(
+        self,
+        hidden_states: torch.Tensor,
+        sample_src_positions: torch.Tensor,
+        idx_mapping: torch.Tensor,
+        draft_step: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.trace_dir is None:
+            return self.sample_draft(
+                hidden_states,
+                sample_src_positions,
+                idx_mapping,
+                self.temperature,
+                self.seeds,
+                draft_step,
+                self.draft_logits,
+            )
+
+        logits = self.model.compute_logits(hidden_states)
+        top8_logits, top8_tokens = torch.topk(logits, k=8, dim=-1)
+        self.draft_top8_tokens[: hidden_states.shape[0]].index_copy_(
+            1, draft_step.view(1), top8_tokens.unsqueeze(1)
+        )
+        self.draft_top2_logits[: hidden_states.shape[0]].index_copy_(
+            1, draft_step.view(1), top8_logits[:, :2].float().unsqueeze(1)
+        )
+        if self.draft_logits is None:
+            return top8_tokens[:, 0]
+        return gumbel_sample(
+            logits,
+            idx_mapping,
+            self.temperature,
+            self.seeds,
+            sample_src_positions,
+            apply_temperature=True,
+            is_drafting=True,
+            logits_cache=self.draft_logits,
+            logits_cache_col=draft_step,
+            use_fp64=self.use_fp64_gumbel,
+        )
+
+    def _stash_draft_trace(
+        self,
+        input_batch: InputBatch,
+        num_reqs: int,
+        dummy_run: bool,
+        is_profile: bool,
+    ) -> None:
+        if self.trace_dir is None or dummy_run or is_profile:
+            return
+        draft_top8 = self.draft_top8_tokens[:num_reqs].cpu().tolist()
+        draft_top2_logits = self.draft_top2_logits[:num_reqs].cpu().tolist()
+        draft_tokens = self.draft_tokens[:num_reqs].cpu().tolist()
+        for req_id, top8, top2_logits, tokens in zip(
+            input_batch.req_ids,
+            draft_top8,
+            draft_top2_logits,
+            draft_tokens,
+            strict=True,
+        ):
+            if _is_internal_request(req_id):
+                continue
+            self.pending_draft_top8[req_id] = top8
+            self.pending_draft_top2_logits[req_id] = top2_logits
+            self.pending_draft_tokens[req_id] = tokens
+
+    def record_verification(
+        self,
+        logits: torch.Tensor,
+        input_batch: InputBatch,
+        num_sampled: torch.Tensor,
+    ) -> None:
+        if self.trace_path is None or input_batch.num_draft_tokens_per_req is None:
+            return
+
+        target_top1 = torch.argmax(logits, dim=-1).cpu().tolist()
+        target_top2_logits, target_top2_tokens = torch.topk(logits, k=2, dim=-1)
+        target_top2_logits = target_top2_logits.float().cpu().tolist()
+        target_top2_tokens = target_top2_tokens.cpu().tolist()
+        sampled_counts = num_sampled[: input_batch.num_reqs].cpu().tolist()
+        rows = []
+        for req_idx, req_id in enumerate(input_batch.req_ids):
+            if _is_internal_request(req_id):
+                continue
+            num_draft = int(input_batch.num_draft_tokens_per_req[req_idx])
+            if num_draft == 0:
+                continue
+            draft_top8 = self.pending_draft_top8.pop(req_id, None)
+            draft_top2_logits = self.pending_draft_top2_logits.pop(req_id, None)
+            draft_tokens = self.pending_draft_tokens.pop(req_id, None)
+            if draft_top8 is None or draft_top2_logits is None or draft_tokens is None:
+                raise RuntimeError(f"Missing {self.method} draft trace for {req_id!r}")
+
+            verify_step = self.verify_steps.get(req_id, 0)
+            self.verify_steps[req_id] = verify_step + 1
+            accepted = min(max(int(sampled_counts[req_idx]) - 1, 0), num_draft)
+            logits_start = int(input_batch.cu_num_logits_np[req_idx])
+            draft_pair_tokens_gpu = self.draft_top8_tokens[req_idx, :num_draft, :2]
+            target_draft_pair_logits = (
+                torch.gather(
+                    logits[logits_start : logits_start + num_draft],
+                    1,
+                    draft_pair_tokens_gpu,
+                )
+                .float()
+                .cpu()
+                .tolist()
+            )
+            for position in range(num_draft):
+                top8_tokens = draft_top8[position]
+                draft_argmax_token = top8_tokens[0]
+                draft_runner_up_token = top8_tokens[1]
+                top1_logit, top2_logit = draft_top2_logits[position]
+                target_offset = logits_start + position
+                target_top1_logit, target_top2_logit = target_top2_logits[target_offset]
+                target_draft_top1_logit, target_draft_top2_logit = (
+                    target_draft_pair_logits[position]
+                )
+                rows.append(
+                    {
+                        "method": self.method,
+                        "draft_length": self.num_speculative_steps,
+                        "request_id": _external_request_id(req_id),
+                        "engine_request_id": req_id,
+                        "verify_step": verify_step,
+                        "draft_position": position + 1,
+                        "draft_top8_token_ids": top8_tokens,
+                        "draft_argmax_ordered_top8_token_ids": top8_tokens,
+                        "draft_argmax_token_id": draft_argmax_token,
+                        "draft_runner_up_token_id": draft_runner_up_token,
+                        "draft_sampled_token_id": draft_tokens[position],
+                        "draft_top1_logit": top1_logit,
+                        "draft_top2_logit": top2_logit,
+                        "draft_top1_minus_top2": top1_logit - top2_logit,
+                        "target_top1_token_id": target_top1[target_offset],
+                        "target_top2_token_ids": target_top2_tokens[target_offset],
+                        "target_top1_logit": target_top1_logit,
+                        "target_top2_logit": target_top2_logit,
+                        "target_top1_minus_top2": (
+                            target_top1_logit - target_top2_logit
+                        ),
+                        "target_logit_for_draft_top1": (target_draft_top1_logit),
+                        "target_logit_for_draft_top2": (target_draft_top2_logit),
+                        "target_draft_top1_minus_draft_top2": (
+                            target_draft_top1_logit - target_draft_top2_logit
+                        ),
+                        "accepted_draft_tokens": accepted,
+                        "valid_mask": True,
+                    }
+                )
+        if rows:
+            with self.trace_path.open("a", encoding="utf-8") as trace_file:
+                for row in rows:
+                    trace_file.write(json.dumps(row, sort_keys=True) + "\n")
 
     @torch.inference_mode()
     def _run_model(
@@ -465,14 +666,11 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         )
 
         sample_hidden_states = last_hidden_states[last_token_indices]
-        self.draft_tokens[:num_reqs, 0] = self.sample_draft(
+        self.draft_tokens[:num_reqs, 0] = self._sample_draft(
             sample_hidden_states,
             sample_src_positions,
             idx_mapping,
-            self.temperature,
-            self.seeds,
             self.current_draft_step,
-            self.draft_logits,
         )
         if last_hidden_states is hidden_states:
             self.hidden_states[:num_reqs] = sample_hidden_states
@@ -644,14 +842,11 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         # Sample the draft tokens.
         sample_hidden_states = last_hidden_states[:num_reqs]
         sample_src_positions = self.sample_src_positions[:num_reqs]
-        draft_tokens = self.sample_draft(
+        draft_tokens = self._sample_draft(
             sample_hidden_states,
             sample_src_positions,
             idx_mapping,
-            self.temperature,
-            self.seeds,
             self.current_draft_step,
-            self.draft_logits,
         )
 
         # Update the inputs for the next step.
