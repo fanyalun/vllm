@@ -1,0 +1,29 @@
+{
+  "python": "3.12.13",
+  "platform": "Linux-5.15.0-179-generic-x86_64-with-glibc2.35",
+  "packages": {
+    "vllm": "0.1.dev20823+g21a221104.d20260906.cu129",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "transformers": "5.16.1",
+    "numpy": "2.3.5",
+    "matplotlib": "3.10.9"
+  },
+  "gpus": "0, NVIDIA A100 80GB PCIe, GPU-92c316af-729a-d2b2-87e6-f49f1ee62b4a, 580.95.05\n1, NVIDIA A100 80GB PCIe, GPU-c7954c39-6588-4e28-8636-b460b8346ef8, 580.95.05\n",
+  "topology": "\t\u001b[4mGPU0\tGPU1\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\u001b[0m\nGPU0\t X \tSYS\t0-23,48-71\t0\t\tN/A\nGPU1\tSYS\t X \t24-47,72-95\t1\t\tN/A\n\nLegend:\n\n  X    = Self\n  SYS  = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)\n  NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node\n  PHB  = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)\n  PXB  = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)\n  PIX  = Connection traversing at most a single PCIe bridge\n  NV#  = Connection traversing a bonded set of # NVLinks\n",
+  "source_and_model_config_sha256": {
+    "vllm/v1/worker/gpu/spec_decode/hierarchical/speculator.py": "e1eefae57b6112cd38a319569939b10848d7f09e90288a23011a3f831555eef1",
+    "vllm/v1/worker/gpu/spec_decode/hierarchical/state.py": "bb5334189314e6224c59da9fd309a36bb2a85b29238f759996b6057bf2f99fb8",
+    "vllm/v1/worker/gpu/model_runner.py": "8de903cf0de61e277ab995c53c155497e918c7ac708864af28aa7922509ae72c",
+    "/data1/fanya/Qwen/Qwen3.6-35B-A3B/config.json": "93a4693fa9d8392fbfccd4b3c9873f4bfdcb14fdede978b123d07d19675efe99",
+    "/data1/fanya/models/Qwen3.6-35B-A3B-speculator.dspark/config.json": "586b474cefc2996b39069d95ae220c831915499a1c62b1e70c6426804fede9e5"
+  },
+  "runtime_commit": "1d8f71a5f4b83982e273946ebce0c5b3da85d155",
+  "excluded_attempt": "acceptance pilot used max_num_batched_tokens=4096 and one warmup; stopped after 26 requests and replaced with 1024/no warmup. No pilot measurements enter summaries.",
+  "benchmark_script_sha256_at_export": {
+    "benchmarks/hierarchical/compare_previous.py": "cf974f2ba0ce113b141ac0dacb11f32ccdcc84028937fe1b0f90322b32e4f2b6",
+    "benchmarks/hierarchical/measurement_worker.py": "7e30e2610bb58af23ade390dbd99c9ca455aecacdc27595247747cccdc0f7a2d",
+    "benchmarks/hierarchical/summarize_previous.py": "404b108df30b7bd9135dd657a691df05bc7b81be5cbb6034e45ae771da54cfe2"
+  },
+  "execution_schedule": "GPU1: all E2E and timing cells, then DSpark acceptance N8/N4. GPU0: MTP acceptance N1/N2/N4/N8, then DSpark acceptance N1/N2. Each cell uses one GPU."
+}

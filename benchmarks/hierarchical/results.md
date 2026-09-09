@@ -5,6 +5,11 @@ execution path runs, but the planned lossless validation and complete performanc
 matrix are not complete. No `RUN_COMPLETE` was created. Throughput in the raw
 files is exploratory and must not be reported as a validated speedup.
 
+The separate user-requested previous-configuration measurements are recorded in
+[previous_config_20260909/results.md](previous_config_20260909/results.md).
+They compare D=4/N=1,2,4,8 with historical performance and acceptance data;
+they do not change the failed strict-equivalence status documented here.
+
 ## Implemented
 
 - Shared Target/MoE-Skip parameters, top-k 8 versus top-h 4.

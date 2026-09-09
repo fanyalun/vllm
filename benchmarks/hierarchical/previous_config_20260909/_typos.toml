@@ -1,0 +1,3 @@
+[files]
+# Preserve the exact historical prompts, including intentional spelling mistakes.
+extend-exclude = ["samples_16.jsonl", "samples_128.jsonl"]

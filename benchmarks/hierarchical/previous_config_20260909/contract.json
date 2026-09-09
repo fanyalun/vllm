@@ -1,0 +1,59 @@
+{
+  "inner_d": 4,
+  "n_values": [
+    1,
+    2,
+    4,
+    8
+  ],
+  "nominal_budgets": [
+    4,
+    8,
+    16,
+    32
+  ],
+  "inner_methods": [
+    "mtp",
+    "dspark"
+  ],
+  "phases": [
+    "e2e",
+    "timing",
+    "acceptance"
+  ],
+  "e2e_and_timing_samples": 16,
+  "acceptance_samples": 128,
+  "output_length": 512,
+  "gpu": 1,
+  "baseline_e2e": "/home/fanya/vllm/benchmark_results/moe_skip_e2e_16x512_b1_20260908_run2",
+  "source_commit": "1d8f71a5f4b83982e273946ebce0c5b3da85d155",
+  "known_strict_equivalence_gate": "failed; performance measurement explicitly requested",
+  "differences_from_previous": [
+    "multimodal input limits are zero (text-only implementation)",
+    "async scheduling explicitly disabled (required by implementation)",
+    "prefix caching disabled; historical acceptance used automatic default",
+    "acceptance records counts only; historical acceptance also traced logits"
+  ],
+  "phase_devices": {
+    "e2e": 1,
+    "timing": 1,
+    "acceptance": [
+      0,
+      1
+    ]
+  },
+  "phase_settings": {
+    "e2e": {
+      "max_num_batched_tokens": 4096,
+      "warmup_requests": 1
+    },
+    "timing": {
+      "max_num_batched_tokens": 4096,
+      "warmup_requests": 1
+    },
+    "acceptance": {
+      "max_num_batched_tokens": 1024,
+      "warmup_requests": 0
+    }
+  }
+}

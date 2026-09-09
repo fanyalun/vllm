@@ -120,3 +120,49 @@ not collect them. Three interleaved repetitions of the full six-method,
 two-temperature performance matrix remain pending the correctness gates.
 
 AI assistance was used for this implementation and its validation scripts.
+
+## Previous-configuration comparison
+
+`compare_previous.py` measures the two hierarchical inner methods at D=4 and
+N=1/2/4/8, aligning the nominal budget D*N with the previous D=4/8/16/32 runs.
+It reuses the original Qwen3.6 prompts and separates three passes:
+
+- Uninstrumented E2E: 16 requests with 512 output tokens, one full warmup,
+  max_num_batched_tokens=4096, on the original performance GPU1.
+- Full-loop drafting: the same 16-request configuration, CUDA events around
+  each complete outer `propose()`. The primary mean excludes prefill proposals
+  and includes all N inner rounds, without dividing by N.
+- Acceptance: 128 requests with 512 output tokens, no extra warmup,
+  max_num_batched_tokens=1024. Only final Target verification counts enter
+  acceptance length; every count is cross-checked against scheduler metrics.
+
+The benchmark retains the implementation's disabled async scheduling,
+multimodal inputs and prefix caching. It records these differences from the
+historical automatic defaults. This measurement does not change the failed
+strict-equivalence status above. Actual candidate counts can differ from D*N
+because inner rounds retain their recovery/bonus tokens.
+
+```bash
+.venv/bin/python benchmarks/hierarchical/compare_previous.py \
+  --run-dir benchmark_results/hierarchical_previous_config_new \
+  --phases e2e timing --cuda-device 1
+
+.venv/bin/python benchmarks/hierarchical/compare_previous.py \
+  --run-dir benchmark_results/hierarchical_previous_config_new \
+  --phases acceptance --cuda-device 0 --resume
+
+.venv/bin/python benchmarks/hierarchical/summarize_previous.py \
+  --run-dir benchmark_results/hierarchical_previous_config_new
+
+.venv/bin/python -m pytest tests/benchmarks/test_hierarchical_measurement.py -q
+```
+
+Summarization requires every cell to complete, verifies prompt hashes and
+output counts, checks that no post-warmup JIT warnings contaminate either
+timing pass, and exports CSVs, an audit, a report and PNG/PDF comparison plots.
+The historical Qwen3.6 DSpark acceptance baseline is absent from the available
+128-request summary; missing points are left empty.
+
+See the [measured comparison](previous_config_20260909/results.md) for the
+completed data, audit, baseline snapshots and PNG/PDF figure. Its completion
+scope is performance and acceptance measurement, not model-equivalence validation.

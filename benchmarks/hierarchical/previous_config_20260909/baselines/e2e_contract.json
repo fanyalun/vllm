@@ -1,0 +1,52 @@
+{
+  "models": [
+    "qwen36"
+  ],
+  "methods": {
+    "ar": [
+      0
+    ],
+    "moe_skip": [
+      4,
+      8,
+      16,
+      32
+    ],
+    "mtp": [
+      4,
+      8,
+      16,
+      32
+    ],
+    "dspark": [
+      4,
+      8
+    ]
+  },
+  "num_samples": 16,
+  "max_tokens": 512,
+  "batch_size": 1,
+  "top_h": 4,
+  "max_model_len": 1024,
+  "max_num_batched_tokens": 4096,
+  "temperature": 0,
+  "ignore_eos": true,
+  "prefix_caching": false,
+  "warmup_requests": 1,
+  "cuda_device": "1",
+  "timer": "sum of individual llm.generate wall times, prefill plus decode",
+  "datasets": {
+    "qwen36": {
+      "source": "/home/fanya/vllm/benchmark_results/moe_skip_qwen36_multicategory_128x512_20260906/dataset",
+      "path": "/home/fanya/vllm/benchmark_results/moe_skip_e2e_16x512_b1_20260908_run2/qwen36_16.jsonl",
+      "sha256": "8ec22d593b9f0d1266def5e14aa9ff8d57d415427dba2df60634c25cf9cdf9de"
+    },
+    "gemma4": {
+      "source": "/home/fanya/vllm/benchmark_results/moe_skip_gemma4_multicategory_128x512_d64_20260906/dataset",
+      "path": "/home/fanya/vllm/benchmark_results/moe_skip_e2e_16x512_b1_20260908_run2/gemma4_16.jsonl",
+      "sha256": "3c74e35549fcf771ce0674ae8e80fef56aaf5c349d1c01c3c7846012bdcd0cda"
+    }
+  },
+  "git_head": "21a22110404d98dcab5f51cd90e9acb0acc15e47",
+  "scheduling_change": "Gemma4 moved to GPU 0 in moe_skip_e2e_16x512_b1_20260908_gemma4"
+}

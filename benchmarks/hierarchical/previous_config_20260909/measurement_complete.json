@@ -1,0 +1,10 @@
+{
+  "status": "complete",
+  "scope": "performance_and_acceptance_measurement_only",
+  "strict_model_equivalence_passed": false,
+  "cells": 24,
+  "requests": 1280,
+  "output_tokens": 655360,
+  "audit_sha256": "2a3f3e0ea9204eec7013b5264079bc18fc3dfe571629d0b0bd41c32a4888add1",
+  "completed_at_utc": "2026-09-09T08:38:55.674240+00:00"
+}

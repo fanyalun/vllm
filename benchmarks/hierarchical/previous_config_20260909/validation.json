@@ -1,0 +1,14 @@
+{
+  "measurement_unit_tests": {
+    "command": ".venv/bin/python -m pytest tests/benchmarks/test_hierarchical_measurement.py -q",
+    "passed": 2
+  },
+  "source_pre_commit": "passed on the three scripts, measurement test and hierarchical readme/results docs",
+  "mypy_3_12": "passed on the three scripts and measurement test",
+  "measurement_audit": "passed",
+  "png_visually_inspected": true,
+  "pdf_render_visually_inspected": true,
+  "pdf_pages": 1,
+  "pdf_font": "embedded STIXGeneral CID TrueType",
+  "strict_model_equivalence": "failed; unchanged from implementation validation"
+}

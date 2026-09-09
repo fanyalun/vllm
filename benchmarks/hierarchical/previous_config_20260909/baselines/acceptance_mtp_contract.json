@@ -1,0 +1,35 @@
+{
+  "dataset": "/home/fanya/vllm/benchmark_results/moe_skip_qwen36_multicategory_128x512_20260906/dataset/multicategory_128.jsonl",
+  "dataset_manifest": "/home/fanya/vllm/benchmark_results/moe_skip_qwen36_multicategory_128x512_20260906/dataset/multicategory_128.manifest.json",
+  "dataset_sha256": "670ebe2d362305abc51fce9557e9dbf0b1b1f5fae68d09b916d2c9de244d4575",
+  "num_samples": 128,
+  "category_counts": {
+    "human_eval": 32,
+    "alpaca": 32,
+    "gsm8k": 32,
+    "ultra_feedback": 32
+  },
+  "max_tokens": 512,
+  "max_model_len": 1024,
+  "prompt_token_counts": {
+    "total": 8445,
+    "min": 6,
+    "max": 347
+  },
+  "model": "/data1/fanya/Qwen/Qwen3.6-35B-A3B",
+  "method": "mtp",
+  "spec_model": null,
+  "draft_lengths": [
+    4,
+    8,
+    16,
+    32
+  ],
+  "mode": "graph",
+  "tensor_parallel_size": 1,
+  "batch_size": 1,
+  "temperature": 0,
+  "ignore_eos": true,
+  "cuda_visible_devices": "0",
+  "max_num_batched_tokens": 1024
+}
