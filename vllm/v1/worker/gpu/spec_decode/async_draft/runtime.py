@@ -27,6 +27,7 @@ from vllm.platforms import current_platform
 from vllm.platforms.interface import set_assigned_physical_gpu_ids
 from vllm.utils.network_utils import get_open_port
 from vllm.v1.core.kv_cache_utils import get_kv_cache_configs
+from vllm.v1.utils import record_function_or_nullcontext
 from vllm.v1.worker.gpu.attn_utils import build_slot_mappings_by_layer
 from vllm.v1.worker.gpu.cudagraph_utils import (
     AttentionStatePair,
@@ -1049,8 +1050,9 @@ def _run_proposal(
     if batch.transient or force_jit:
         miss_indices = list(range(num_reqs))
     else:
-        accepted_counts = (ring_slot.num_sampled[:num_reqs] - 1).cpu().tolist()
-        recovery_tokens = ring_slot.last_sampled[:num_reqs].cpu().tolist()
+        with record_function_or_nullcontext("async_draft: outcome_d2h"):
+            accepted_counts = (ring_slot.num_sampled[:num_reqs] - 1).cpu().tolist()
+            recovery_tokens = ring_slot.last_sampled[:num_reqs].cpu().tolist()
         for index, (req_id, epoch, accepted, recovery) in enumerate(
             zip(
                 batch.req_ids,
@@ -1072,12 +1074,13 @@ def _run_proposal(
                 discarded = branch_cache.discard_request(req_id)
                 block_pool.release(discarded)
                 continue
-            if branch.completion_event is not None:
-                branch.completion_event.synchronize()
-            ring_slot.draft_tokens[index].copy_(branch.tokens)
-            if feedback_hidden_states is not None:
-                feedback_hidden_states[index].copy_(branch.feedback_hidden_states)
-            elif record_top2:
+            with record_function_or_nullcontext("async_draft: cache_hit"):
+                if branch.completion_event is not None:
+                    branch.completion_event.synchronize()
+                ring_slot.draft_tokens[index].copy_(branch.tokens)
+                if feedback_hidden_states is not None:
+                    feedback_hidden_states[index].copy_(branch.feedback_hidden_states)
+            if feedback_hidden_states is None and record_top2:
                 provisional = branch.provisional_state
                 if not isinstance(provisional, DSparkBranchState):
                     raise RuntimeError(
@@ -1085,8 +1088,9 @@ def _run_proposal(
                     )
                 assert trace_top2 is not None
                 trace_top2[index] = provisional.trace_top2
-            discarded = branch_cache.discard_request(req_id)
-            block_pool.release([branch.branch_id, *discarded])
+            with record_function_or_nullcontext("async_draft: hit_cleanup"):
+                discarded = branch_cache.discard_request(req_id)
+                block_pool.release([branch.branch_id, *discarded])
             hits += 1
             hit_indices.append(index)
 
@@ -1098,15 +1102,16 @@ def _run_proposal(
                 batch, ring_slot, miss_indices
             )
         jit_started = time.perf_counter()
-        miss_tokens, miss_hidden_states, jit_evictions = _execute_jit_proposal(
-            runner,
-            block_pool,
-            branch_cache,
-            miss_batch,
-            miss_slot,
-            aux_hidden_splits,
-            num_speculative_steps=branch_backbone_width if is_dspark else None,
-        )
+        with record_function_or_nullcontext("async_draft: jit_miss"):
+            miss_tokens, miss_hidden_states, jit_evictions = _execute_jit_proposal(
+                runner,
+                block_pool,
+                branch_cache,
+                miss_batch,
+                miss_slot,
+                aux_hidden_splits,
+                num_speculative_steps=branch_backbone_width if is_dspark else None,
+            )
         if is_dspark:
             dspark_current_backbone_seconds = time.perf_counter() - jit_started
         if is_dspark:

@@ -1,0 +1,26 @@
+{
+  "status": "complete",
+  "scope": "EAGLE3 D4 F3 B1 response transport optimization; no universal AR/Sync correctness claim",
+  "existing_async_tests": {
+    "passed": 92
+  },
+  "analyzer_tests": {
+    "passed": 3
+  },
+  "two_gpu_ipc_test": {
+    "passed": 1,
+    "generations": 8,
+    "ring_slots": 2
+  },
+  "ab_cells": 6,
+  "exact_outputs_and_counters": true,
+  "median_improvement_percent": 2.0976447738904946,
+  "pre_commit": "All applicable remaining hooks passed after explicit skips below",
+  "skipped_hooks": {
+    "mypy-3.10": "31 identical pre-existing HEAD errors; see mypy_comparison.json",
+    "check-torch-cuda-call": "Existing CUDA IPC implementation plus new CUDA IPC Event test; torch.Event.ipc_handle raises NotImplementedError in torch 2.11.0+cu130"
+  },
+  "gpu_after": "Both GPUs: 0 MiB used, 0 percent utilization; nvidia-smi verified after all tests and measurements",
+  "performance_gate": "candidate median > unchanged Async baseline; not Async > Sync",
+  "upstream_pr_opened": false
+}

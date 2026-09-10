@@ -1,0 +1,744 @@
+{
+  "sync_profile_clean": {
+    "critical_path": {
+      "sync": {
+        "outcome_to_proposal": {
+          "count": 334,
+          "mean_ms": 2.6269796706586823,
+          "median_ms": 2.627729,
+          "total_ms": 877.41121
+        },
+        "target_forward_span": {
+          "count": 334,
+          "mean_ms": 10.301060188622754,
+          "median_ms": 10.286216,
+          "total_ms": 3440.554103
+        },
+        "proposal_to_next_target": {
+          "count": 330,
+          "mean_ms": 0.11666535454545454,
+          "median_ms": 0.079358,
+          "total_ms": 38.499567
+        },
+        "next_target_gap_gpu_active": {
+          "count": 330,
+          "mean_ms": 0.0404207696969697,
+          "median_ms": 0.039264,
+          "total_ms": 13.338854
+        },
+        "next_target_gap_gpu_idle": {
+          "count": 330,
+          "mean_ms": 0.07624458484848486,
+          "median_ms": 0.039919,
+          "total_ms": 25.160713
+        }
+      }
+    },
+    "host_stages": {
+      "target: prepare_inputs_h2d": {
+        "count": 338,
+        "mean_ms": 0.6943373875739646,
+        "median_ms": 0.6548565,
+        "total_ms": 234.686037
+      },
+      "target: attention_metadata": {
+        "count": 338,
+        "mean_ms": 0.0912114023668639,
+        "median_ms": 0.090506,
+        "total_ms": 30.829454
+      },
+      "target: verify_forward": {
+        "count": 338,
+        "mean_ms": 0.6687101449704143,
+        "median_ms": 0.475349,
+        "total_ms": 226.024029
+      },
+      "verify: logits_and_rejection": {
+        "count": 338,
+        "mean_ms": 0.7102407011834319,
+        "median_ms": 0.697436,
+        "total_ms": 240.061357
+      },
+      "accept: state_postprocess": {
+        "count": 338,
+        "mean_ms": 0.060053852071005914,
+        "median_ms": 0.0594235,
+        "total_ms": 20.298202
+      },
+      "eagle3: propose": {
+        "count": 338,
+        "mean_ms": 4.488739914201183,
+        "median_ms": 4.4505755,
+        "total_ms": 1517.194091
+      }
+    },
+    "trace_sha256": "267d3c6fead56fcd6e83b50d64fbab00aad393d02bb32e50b4f4b92bb509dde7",
+    "limitations": [
+      "Profiled run; not an uninstrumented throughput measurement.",
+      "Host API duration includes waits; GPU work sums may overlap.",
+      "GPU operations use process and launch correlation IDs; missing graph correlations must not be interpreted as zero GPU work."
+    ]
+  },
+  "async_profile": {
+    "critical_path": {
+      "hit": {
+        "outcome_to_proposal": {
+          "count": 258,
+          "mean_ms": 1.1752300813953487,
+          "median_ms": 1.124526,
+          "total_ms": 303.209361
+        },
+        "target_forward_span": {
+          "count": 258,
+          "mean_ms": 10.266126914728682,
+          "median_ms": 10.259508,
+          "total_ms": 2648.660744
+        },
+        "proposal_to_next_target": {
+          "count": 255,
+          "mean_ms": 1.8485608470588235,
+          "median_ms": 1.826172,
+          "total_ms": 471.383016
+        },
+        "next_target_gap_gpu_active": {
+          "count": 255,
+          "mean_ms": 0.03507284705882353,
+          "median_ms": 0.034112,
+          "total_ms": 8.943576
+        },
+        "next_target_gap_gpu_idle": {
+          "count": 255,
+          "mean_ms": 1.813488,
+          "median_ms": 1.791612,
+          "total_ms": 462.43944
+        },
+        "async_draft: copy_metadata_host": {
+          "count": 258,
+          "mean_ms": 0.36753901550387597,
+          "median_ms": 0.3655165,
+          "total_ms": 94.825066
+        },
+        "async_draft: copy_conditioning_host": {
+          "count": 258,
+          "mean_ms": 0.046395352713178295,
+          "median_ms": 0.0457115,
+          "total_ms": 11.970001
+        },
+        "async_draft: payload_synchronize_host": {
+          "count": 258,
+          "mean_ms": 9.447720585271318,
+          "median_ms": 9.4586975,
+          "total_ms": 2437.511911
+        },
+        "async_draft: send_request_host": {
+          "count": 258,
+          "mean_ms": 0.1544259031007752,
+          "median_ms": 0.1332995,
+          "total_ms": 39.841883
+        },
+        "async_draft: receive_response_host": {
+          "count": 258,
+          "mean_ms": 0.582810503875969,
+          "median_ms": 0.555003,
+          "total_ms": 150.36511
+        },
+        "async_draft: outcome_d2h_host": {
+          "count": 258,
+          "mean_ms": 0.13914647286821707,
+          "median_ms": 0.137932,
+          "total_ms": 35.89979
+        },
+        "async_draft: cache_hit_host": {
+          "count": 258,
+          "mean_ms": 0.057820782945736435,
+          "median_ms": 0.057036,
+          "total_ms": 14.917762
+        },
+        "async_draft: hit_cleanup_host": {
+          "count": 258,
+          "mean_ms": 0.0898179457364341,
+          "median_ms": 0.089636,
+          "total_ms": 23.17303
+        },
+        "async_draft: response_synchronize_host": {
+          "count": 258,
+          "mean_ms": 0.0075379612403100775,
+          "median_ms": 0.0073165,
+          "total_ms": 1.944794
+        },
+        "async_draft: copy_response_host": {
+          "count": 258,
+          "mean_ms": 0.08492522480620156,
+          "median_ms": 0.084144,
+          "total_ms": 21.910708
+        },
+        "async_draft:tree_decode_host": {
+          "count": 257,
+          "mean_ms": 3.5563882101167317,
+          "median_ms": 3.554321,
+          "total_ms": 913.99177
+        },
+        "async_draft:glue_decode_host": {
+          "count": 1,
+          "mean_ms": 2.779984,
+          "median_ms": 2.779984,
+          "total_ms": 2.779984
+        }
+      },
+      "miss": {
+        "outcome_to_proposal": {
+          "count": 137,
+          "mean_ms": 4.677452051094891,
+          "median_ms": 4.579221,
+          "total_ms": 640.810931
+        },
+        "target_forward_span": {
+          "count": 137,
+          "mean_ms": 10.283649627737226,
+          "median_ms": 10.267107,
+          "total_ms": 1408.859999
+        },
+        "proposal_to_next_target": {
+          "count": 136,
+          "mean_ms": 1.8560951029411763,
+          "median_ms": 1.8278325,
+          "total_ms": 252.428934
+        },
+        "next_target_gap_gpu_active": {
+          "count": 136,
+          "mean_ms": 0.03491522058823529,
+          "median_ms": 0.034081,
+          "total_ms": 4.74847
+        },
+        "next_target_gap_gpu_idle": {
+          "count": 136,
+          "mean_ms": 1.8211798823529413,
+          "median_ms": 1.7937205,
+          "total_ms": 247.680464
+        },
+        "async_draft: copy_metadata_host": {
+          "count": 137,
+          "mean_ms": 0.3674625401459854,
+          "median_ms": 0.365815,
+          "total_ms": 50.342368
+        },
+        "async_draft: copy_conditioning_host": {
+          "count": 137,
+          "mean_ms": 0.046143248175182484,
+          "median_ms": 0.045664,
+          "total_ms": 6.321625
+        },
+        "async_draft: payload_synchronize_host": {
+          "count": 137,
+          "mean_ms": 9.473404481751826,
+          "median_ms": 9.462969,
+          "total_ms": 1297.856414
+        },
+        "async_draft:tree_decode_host": {
+          "count": 137,
+          "mean_ms": 3.5963854306569343,
+          "median_ms": 3.557429,
+          "total_ms": 492.704804
+        },
+        "async_draft: send_request_host": {
+          "count": 137,
+          "mean_ms": 0.16713306569343067,
+          "median_ms": 0.133695,
+          "total_ms": 22.89723
+        },
+        "async_draft: receive_response_host": {
+          "count": 137,
+          "mean_ms": 2.6938465401459855,
+          "median_ms": 2.611203,
+          "total_ms": 369.056976
+        },
+        "async_draft: outcome_d2h_host": {
+          "count": 137,
+          "mean_ms": 0.1410940291970803,
+          "median_ms": 0.138863,
+          "total_ms": 19.329882
+        },
+        "async_draft: jit_miss_host": {
+          "count": 137,
+          "mean_ms": 2.1189858029197084,
+          "median_ms": 2.062568,
+          "total_ms": 290.301055
+        },
+        "async_draft:glue_decode_host": {
+          "count": 137,
+          "mean_ms": 3.7159702262773724,
+          "median_ms": 3.706241,
+          "total_ms": 509.087921
+        },
+        "async_draft: response_synchronize_host": {
+          "count": 137,
+          "mean_ms": 1.3808196496350365,
+          "median_ms": 1.401064,
+          "total_ms": 189.172292
+        },
+        "async_draft: copy_response_host": {
+          "count": 137,
+          "mean_ms": 0.08619019708029196,
+          "median_ms": 0.085644,
+          "total_ms": 11.808057
+        }
+      }
+    },
+    "host_stages": {
+      "target: prepare_inputs_h2d": {
+        "count": 399,
+        "mean_ms": 0.6267251604010025,
+        "median_ms": 0.62309,
+        "total_ms": 250.063339
+      },
+      "target: attention_metadata": {
+        "count": 399,
+        "mean_ms": 0.09111330075187969,
+        "median_ms": 0.090124,
+        "total_ms": 36.354207
+      },
+      "target: verify_forward": {
+        "count": 399,
+        "mean_ms": 0.6576983884711779,
+        "median_ms": 0.480652,
+        "total_ms": 262.421657
+      },
+      "verify: logits_and_rejection": {
+        "count": 399,
+        "mean_ms": 0.6871059849624059,
+        "median_ms": 0.68001,
+        "total_ms": 274.155288
+      },
+      "accept: state_postprocess": {
+        "count": 399,
+        "mean_ms": 0.05821782957393484,
+        "median_ms": 0.057479,
+        "total_ms": 23.228914
+      },
+      "eagle3: propose": {
+        "count": 399,
+        "mean_ms": 12.370776278195489,
+        "median_ms": 11.226662,
+        "total_ms": 4935.939735
+      },
+      "async_draft: copy_metadata": {
+        "count": 399,
+        "mean_ms": 0.3673624912280702,
+        "median_ms": 0.365574,
+        "total_ms": 146.577634
+      },
+      "async_draft: copy_conditioning": {
+        "count": 399,
+        "mean_ms": 0.04628638345864662,
+        "median_ms": 0.045688,
+        "total_ms": 18.468267
+      },
+      "async_draft: payload_synchronize": {
+        "count": 399,
+        "mean_ms": 9.363076406015038,
+        "median_ms": 9.459626,
+        "total_ms": 3735.867486
+      },
+      "async_draft: send_request": {
+        "count": 399,
+        "mean_ms": 0.15886922305764412,
+        "median_ms": 0.133542,
+        "total_ms": 63.38882
+      },
+      "async_draft: receive_response": {
+        "count": 399,
+        "mean_ms": 1.3528586290726818,
+        "median_ms": 0.561351,
+        "total_ms": 539.790593
+      },
+      "async_draft: outcome_d2h": {
+        "count": 399,
+        "mean_ms": 0.14118375438596492,
+        "median_ms": 0.138176,
+        "total_ms": 56.332318
+      },
+      "async_draft: jit_miss": {
+        "count": 141,
+        "mean_ms": 2.182437560283688,
+        "median_ms": 2.062812,
+        "total_ms": 307.723696
+      },
+      "async_draft:glue_decode": {
+        "count": 399,
+        "mean_ms": 3.103068275689223,
+        "median_ms": 2.771992,
+        "total_ms": 1238.124242
+      },
+      "async_draft: response_synchronize": {
+        "count": 399,
+        "mean_ms": 0.4898857694235589,
+        "median_ms": 0.007509,
+        "total_ms": 195.464422
+      },
+      "async_draft: copy_response": {
+        "count": 399,
+        "mean_ms": 0.08535233834586466,
+        "median_ms": 0.084643,
+        "total_ms": 34.055583
+      },
+      "async_draft:tree_decode": {
+        "count": 399,
+        "mean_ms": 3.570478411027569,
+        "median_ms": 3.555079,
+        "total_ms": 1424.620886
+      },
+      "async_draft: cache_hit": {
+        "count": 258,
+        "mean_ms": 0.057820782945736435,
+        "median_ms": 0.057036,
+        "total_ms": 14.917762
+      },
+      "async_draft: hit_cleanup": {
+        "count": 258,
+        "mean_ms": 0.0898179457364341,
+        "median_ms": 0.089636,
+        "total_ms": 23.17303
+      },
+      "async_draft:canonical_commit": {
+        "count": 258,
+        "mean_ms": 1.3388397054263566,
+        "median_ms": 1.3123585,
+        "total_ms": 345.420644
+      }
+    },
+    "trace_sha256": "71acda359462f5ac7ce6668ad4a8e9c5bf7dd997be8713f7f1f4b88644947bb9",
+    "limitations": [
+      "Profiled run; not an uninstrumented throughput measurement.",
+      "Host API duration includes waits; GPU work sums may overlap.",
+      "GPU operations use process and launch correlation IDs; missing graph correlations must not be interpreted as zero GPU work."
+    ]
+  },
+  "stream_wait_profile": {
+    "critical_path": {
+      "hit": {
+        "outcome_to_proposal": {
+          "count": 258,
+          "mean_ms": 1.2568994031007752,
+          "median_ms": 1.231461,
+          "total_ms": 324.280046
+        },
+        "target_forward_span": {
+          "count": 258,
+          "mean_ms": 10.255830104651162,
+          "median_ms": 10.243194,
+          "total_ms": 2646.004167
+        },
+        "proposal_to_next_target": {
+          "count": 255,
+          "mean_ms": 1.8319508666666666,
+          "median_ms": 1.796118,
+          "total_ms": 467.147471
+        },
+        "next_target_gap_gpu_active": {
+          "count": 255,
+          "mean_ms": 0.03477682745098039,
+          "median_ms": 0.033824,
+          "total_ms": 8.868091
+        },
+        "next_target_gap_gpu_idle": {
+          "count": 255,
+          "mean_ms": 1.7971740392156863,
+          "median_ms": 1.762806,
+          "total_ms": 458.27938
+        },
+        "async_draft: copy_metadata_host": {
+          "count": 258,
+          "mean_ms": 0.3657849147286822,
+          "median_ms": 0.364299,
+          "total_ms": 94.372508
+        },
+        "async_draft: copy_conditioning_host": {
+          "count": 258,
+          "mean_ms": 0.04599287984496124,
+          "median_ms": 0.045579,
+          "total_ms": 11.866163
+        },
+        "async_draft: payload_synchronize_host": {
+          "count": 258,
+          "mean_ms": 9.398801023255814,
+          "median_ms": 9.4106605,
+          "total_ms": 2424.890664
+        },
+        "async_draft:tree_decode_host": {
+          "count": 257,
+          "mean_ms": 3.5220641361867706,
+          "median_ms": 3.516399,
+          "total_ms": 905.170483
+        },
+        "async_draft: send_request_host": {
+          "count": 258,
+          "mean_ms": 0.14962007364341084,
+          "median_ms": 0.133615,
+          "total_ms": 38.601979
+        },
+        "async_draft: receive_response_host": {
+          "count": 258,
+          "mean_ms": 0.5577931124031008,
+          "median_ms": 0.5489125,
+          "total_ms": 143.910623
+        },
+        "async_draft: outcome_d2h_host": {
+          "count": 258,
+          "mean_ms": 0.13865858527131783,
+          "median_ms": 0.137973,
+          "total_ms": 35.773915
+        },
+        "async_draft: cache_hit_host": {
+          "count": 258,
+          "mean_ms": 0.05804417054263566,
+          "median_ms": 0.057714,
+          "total_ms": 14.975396
+        },
+        "async_draft: hit_cleanup_host": {
+          "count": 258,
+          "mean_ms": 0.09036449612403101,
+          "median_ms": 0.090472,
+          "total_ms": 23.31404
+        },
+        "async_draft: response_stream_wait_host": {
+          "count": 258,
+          "mean_ms": 0.037335945736434104,
+          "median_ms": 0.0370575,
+          "total_ms": 9.632674
+        },
+        "async_draft: copy_response_host": {
+          "count": 258,
+          "mean_ms": 0.0821807054263566,
+          "median_ms": 0.0815475,
+          "total_ms": 21.202622
+        }
+      },
+      "miss": {
+        "outcome_to_proposal": {
+          "count": 137,
+          "mean_ms": 4.810190802919708,
+          "median_ms": 4.744076,
+          "total_ms": 658.99614
+        },
+        "target_forward_span": {
+          "count": 137,
+          "mean_ms": 10.271069912408759,
+          "median_ms": 10.253818,
+          "total_ms": 1407.136578
+        },
+        "proposal_to_next_target": {
+          "count": 136,
+          "mean_ms": 0.364356375,
+          "median_ms": 0.340969,
+          "total_ms": 49.552467
+        },
+        "next_target_gap_gpu_active": {
+          "count": 136,
+          "mean_ms": 0.036983845588235295,
+          "median_ms": 0.036065,
+          "total_ms": 5.029803
+        },
+        "next_target_gap_gpu_idle": {
+          "count": 136,
+          "mean_ms": 0.3273725294117647,
+          "median_ms": 0.3048725,
+          "total_ms": 44.522664
+        },
+        "async_draft: copy_metadata_host": {
+          "count": 137,
+          "mean_ms": 0.36560288321167883,
+          "median_ms": 0.364531,
+          "total_ms": 50.087595
+        },
+        "async_draft: copy_conditioning_host": {
+          "count": 137,
+          "mean_ms": 0.0460281897810219,
+          "median_ms": 0.04574,
+          "total_ms": 6.305862
+        },
+        "async_draft: payload_synchronize_host": {
+          "count": 137,
+          "mean_ms": 9.41086488321168,
+          "median_ms": 9.42015,
+          "total_ms": 1289.288489
+        },
+        "async_draft:tree_decode_host": {
+          "count": 137,
+          "mean_ms": 3.5266973430656936,
+          "median_ms": 3.518483,
+          "total_ms": 483.157536
+        },
+        "async_draft: send_request_host": {
+          "count": 137,
+          "mean_ms": 0.15767274452554747,
+          "median_ms": 0.134144,
+          "total_ms": 21.601166
+        },
+        "async_draft: receive_response_host": {
+          "count": 137,
+          "mean_ms": 2.6427510729927004,
+          "median_ms": 2.59052,
+          "total_ms": 362.056897
+        },
+        "async_draft: outcome_d2h_host": {
+          "count": 137,
+          "mean_ms": 0.13944752554744524,
+          "median_ms": 0.138576,
+          "total_ms": 19.104311
+        },
+        "async_draft: jit_miss_host": {
+          "count": 137,
+          "mean_ms": 2.0893042554744525,
+          "median_ms": 2.051448,
+          "total_ms": 286.234683
+        },
+        "async_draft:glue_decode_host": {
+          "count": 138,
+          "mean_ms": 3.6946226014492756,
+          "median_ms": 3.6997685,
+          "total_ms": 509.857919
+        },
+        "async_draft: response_stream_wait_host": {
+          "count": 137,
+          "mean_ms": 0.03841178102189781,
+          "median_ms": 0.037502,
+          "total_ms": 5.262414
+        },
+        "async_draft: copy_response_host": {
+          "count": 137,
+          "mean_ms": 0.08248397810218978,
+          "median_ms": 0.082204,
+          "total_ms": 11.300305
+        }
+      }
+    },
+    "host_stages": {
+      "target: prepare_inputs_h2d": {
+        "count": 399,
+        "mean_ms": 0.6508603884711779,
+        "median_ms": 0.642339,
+        "total_ms": 259.693295
+      },
+      "target: attention_metadata": {
+        "count": 399,
+        "mean_ms": 0.09341146616541353,
+        "median_ms": 0.092753,
+        "total_ms": 37.271175
+      },
+      "target: verify_forward": {
+        "count": 399,
+        "mean_ms": 0.6698457568922306,
+        "median_ms": 0.491508,
+        "total_ms": 267.268457
+      },
+      "verify: logits_and_rejection": {
+        "count": 399,
+        "mean_ms": 0.716717275689223,
+        "median_ms": 0.700431,
+        "total_ms": 285.970193
+      },
+      "accept: state_postprocess": {
+        "count": 399,
+        "mean_ms": 0.059613852130325815,
+        "median_ms": 0.058921,
+        "total_ms": 23.785927
+      },
+      "eagle3: propose": {
+        "count": 399,
+        "mean_ms": 11.81637231829574,
+        "median_ms": 11.21447,
+        "total_ms": 4714.732555
+      },
+      "async_draft: copy_metadata": {
+        "count": 399,
+        "mean_ms": 0.3655852456140351,
+        "median_ms": 0.364342,
+        "total_ms": 145.868513
+      },
+      "async_draft: copy_conditioning": {
+        "count": 399,
+        "mean_ms": 0.04599742857142857,
+        "median_ms": 0.045615,
+        "total_ms": 18.352974
+      },
+      "async_draft: payload_synchronize": {
+        "count": 399,
+        "mean_ms": 9.309965122807018,
+        "median_ms": 9.414572,
+        "total_ms": 3714.676084
+      },
+      "async_draft: send_request": {
+        "count": 399,
+        "mean_ms": 0.15229703258145366,
+        "median_ms": 0.133816,
+        "total_ms": 60.766516
+      },
+      "async_draft: receive_response": {
+        "count": 399,
+        "mean_ms": 1.3093856591478696,
+        "median_ms": 0.557089,
+        "total_ms": 522.444878
+      },
+      "async_draft: outcome_d2h": {
+        "count": 399,
+        "mean_ms": 0.1390754335839599,
+        "median_ms": 0.138167,
+        "total_ms": 55.491098
+      },
+      "async_draft: jit_miss": {
+        "count": 141,
+        "mean_ms": 2.1331570354609926,
+        "median_ms": 2.052006,
+        "total_ms": 300.775142
+      },
+      "async_draft:glue_decode": {
+        "count": 399,
+        "mean_ms": 3.0713030927318297,
+        "median_ms": 2.73085,
+        "total_ms": 1225.449934
+      },
+      "async_draft: response_stream_wait": {
+        "count": 399,
+        "mean_ms": 0.03778055137844612,
+        "median_ms": 0.037259,
+        "total_ms": 15.07444
+      },
+      "async_draft: copy_response": {
+        "count": 399,
+        "mean_ms": 0.08241083458646617,
+        "median_ms": 0.081708,
+        "total_ms": 32.881923
+      },
+      "async_draft:tree_decode": {
+        "count": 399,
+        "mean_ms": 3.523762649122807,
+        "median_ms": 3.516822,
+        "total_ms": 1405.981297
+      },
+      "async_draft: cache_hit": {
+        "count": 258,
+        "mean_ms": 0.05804417054263566,
+        "median_ms": 0.057714,
+        "total_ms": 14.975396
+      },
+      "async_draft: hit_cleanup": {
+        "count": 258,
+        "mean_ms": 0.09036449612403101,
+        "median_ms": 0.090472,
+        "total_ms": 23.31404
+      },
+      "async_draft:canonical_commit": {
+        "count": 258,
+        "mean_ms": 1.335665054263566,
+        "median_ms": 1.310663,
+        "total_ms": 344.601584
+      }
+    },
+    "trace_sha256": "3eedbaedc832bd94ae24140897d57236e49f1be9707ce9ecfef7f6f36b034200",
+    "limitations": [
+      "Profiled run; not an uninstrumented throughput measurement.",
+      "Host API duration includes waits; GPU work sums may overlap.",
+      "GPU operations use process and launch correlation IDs; missing graph correlations must not be interpreted as zero GPU work."
+    ]
+  }
+}

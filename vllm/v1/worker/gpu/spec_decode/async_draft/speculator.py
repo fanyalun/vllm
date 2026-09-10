@@ -16,6 +16,7 @@ from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
 from vllm.logger import init_logger
 from vllm.utils.network_utils import get_open_port
+from vllm.v1.utils import record_function_or_nullcontext
 from vllm.v1.worker.gpu.cudagraph_utils import (
     AttentionStatePair,
     BatchExecutionDescriptor,
@@ -406,9 +407,10 @@ class AsyncDraftSpeculator(BaseSpeculator):
             ),
             (ring_slot.seeds[:num_reqs], seeds[idx_mapping]),
         )
-        for destination, source in copies:
-            destination.copy_(source, non_blocking=True)
-            ipc_bytes += destination.numel() * destination.element_size()
+        with record_function_or_nullcontext("async_draft: copy_metadata"):
+            for destination, source in copies:
+                destination.copy_(source, non_blocking=True)
+                ipc_bytes += destination.numel() * destination.element_size()
 
         hidden_offset = 0
         expected_splits = tuple(self.child_metadata["conditioning_splits"])
@@ -432,13 +434,27 @@ class AsyncDraftSpeculator(BaseSpeculator):
                 f"{ring_slot.conditioning_states.shape[-1]}"
             )
         destination = ring_slot.conditioning_states[:num_tokens]
-        destination.copy_(
-            self._combined_conditioning_states[:num_tokens], non_blocking=True
-        )
+        with record_function_or_nullcontext("async_draft: copy_conditioning"):
+            destination.copy_(
+                self._combined_conditioning_states[:num_tokens], non_blocking=True
+            )
         ipc_bytes += destination.numel() * destination.element_size()
 
-        torch.cuda.synchronize(ring_slot.input_ids.device)
+        with record_function_or_nullcontext("async_draft: payload_synchronize"):
+            torch.cuda.synchronize(ring_slot.input_ids.device)
         return ipc_bytes
+
+    def _copy_response(self, ring_slot: Any, slot_index: int, num_reqs: int) -> None:
+        # The child records the event before sending the response header.
+        # Wait on the source stream; the peer copy orders the Target consumer.
+        with record_function_or_nullcontext("async_draft: response_stream_wait"):
+            self._response_events[slot_index].wait(
+                torch.cuda.current_stream(ring_slot.draft_tokens.device)
+            )
+        with record_function_or_nullcontext("async_draft: copy_response"):
+            self._draft_tokens[:num_reqs].copy_(
+                ring_slot.draft_tokens[:num_reqs], non_blocking=True
+            )
 
     @torch.inference_mode()
     def propose(
@@ -539,8 +555,10 @@ class AsyncDraftSpeculator(BaseSpeculator):
             ),
             is_prefilling_np=input_batch.is_prefilling_np.copy(),
         )
-        self._connection.send({"command": "propose", "batch": asdict(batch)})
-        response = self._recv(self.request_timeout, "propose")
+        with record_function_or_nullcontext("async_draft: send_request"):
+            self._connection.send({"command": "propose", "batch": asdict(batch)})
+        with record_function_or_nullcontext("async_draft: receive_response"):
+            response = self._recv(self.request_timeout, "propose")
         if response.get("status") != "ok":
             del ring_slot
             self._raise_child_error(response, "propose")
@@ -550,10 +568,7 @@ class AsyncDraftSpeculator(BaseSpeculator):
         self._active_trace_req_ids = list(input_batch.req_ids)
 
         num_reqs = input_batch.num_reqs
-        self._response_events[slot_index].synchronize()
-        self._draft_tokens[:num_reqs].copy_(
-            ring_slot.draft_tokens[:num_reqs], non_blocking=True
-        )
+        self._copy_response(ring_slot, slot_index, num_reqs)
         elapsed = time.perf_counter() - start
         response_metrics = response.get("metrics") or {}
         self._record_metrics(response_metrics)

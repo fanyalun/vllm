@@ -1,0 +1,128 @@
+{
+  "scope": "Local response-transport A/B; not an AR/Sync correctness matrix",
+  "expected_cells": 6,
+  "completed_cells": 6,
+  "rows": [
+    {
+      "variant": "baseline",
+      "repeat": 1,
+      "cell": "baseline_async_r1/cells/performance_async_cache_graph_b1",
+      "tok_s": 182.02863115708806,
+      "seconds": 22.501954631879926,
+      "rounds": 1558.0,
+      "accepted": 2547.0,
+      "hits": 1037.0,
+      "misses": 537.0,
+      "output_sha256": "e5660dcda73cbc3b1817780179e9f8efaf86d329554e8035d1d8e8060cfb2147",
+      "prompt_sha256": "6a9a2cb7708697574f90f3646a53726f07d7c186ea1f07c5ce516d689f6f7ed7",
+      "shutdown": {
+        "exit_code": 0,
+        "forced_kill": false,
+        "shutdown_seconds": 5.6220557279884815
+      },
+      "ms_per_verify": 14.442846361925499
+    },
+    {
+      "variant": "baseline",
+      "repeat": 2,
+      "cell": "baseline_async_r2/cells/performance_async_cache_graph_b1",
+      "tok_s": 182.95016850510297,
+      "seconds": 22.38861015252769,
+      "rounds": 1558.0,
+      "accepted": 2547.0,
+      "hits": 1037.0,
+      "misses": 537.0,
+      "output_sha256": "e5660dcda73cbc3b1817780179e9f8efaf86d329554e8035d1d8e8060cfb2147",
+      "prompt_sha256": "6a9a2cb7708697574f90f3646a53726f07d7c186ea1f07c5ce516d689f6f7ed7",
+      "shutdown": {
+        "exit_code": 0,
+        "forced_kill": false,
+        "shutdown_seconds": 3.820396801456809
+      },
+      "ms_per_verify": 14.370096375178235
+    },
+    {
+      "variant": "baseline",
+      "repeat": 3,
+      "cell": "baseline_async_r3/cells/performance_async_cache_graph_b1",
+      "tok_s": 182.6008503600117,
+      "seconds": 22.431439897045493,
+      "rounds": 1558.0,
+      "accepted": 2547.0,
+      "hits": 1037.0,
+      "misses": 537.0,
+      "output_sha256": "e5660dcda73cbc3b1817780179e9f8efaf86d329554e8035d1d8e8060cfb2147",
+      "prompt_sha256": "6a9a2cb7708697574f90f3646a53726f07d7c186ea1f07c5ce516d689f6f7ed7",
+      "shutdown": {
+        "exit_code": 0,
+        "forced_kill": false,
+        "shutdown_seconds": 4.320651927962899
+      },
+      "ms_per_verify": 14.397586583469508
+    },
+    {
+      "variant": "stream_wait",
+      "repeat": 1,
+      "cell": "stream_wait_async_r1/cells/performance_async_cache_graph_b1",
+      "tok_s": 186.49366751059677,
+      "seconds": 21.9632122348994,
+      "rounds": 1558.0,
+      "accepted": 2547.0,
+      "hits": 1037.0,
+      "misses": 537.0,
+      "output_sha256": "e5660dcda73cbc3b1817780179e9f8efaf86d329554e8035d1d8e8060cfb2147",
+      "prompt_sha256": "6a9a2cb7708697574f90f3646a53726f07d7c186ea1f07c5ce516d689f6f7ed7",
+      "shutdown": {
+        "exit_code": 0,
+        "forced_kill": false,
+        "shutdown_seconds": 4.320678871124983
+      },
+      "ms_per_verify": 14.097055349742876
+    },
+    {
+      "variant": "stream_wait",
+      "repeat": 2,
+      "cell": "stream_wait_async_r2/cells/performance_async_cache_graph_b1",
+      "tok_s": 186.21335376080745,
+      "seconds": 21.996274258941412,
+      "rounds": 1558.0,
+      "accepted": 2547.0,
+      "hits": 1037.0,
+      "misses": 537.0,
+      "output_sha256": "e5660dcda73cbc3b1817780179e9f8efaf86d329554e8035d1d8e8060cfb2147",
+      "prompt_sha256": "6a9a2cb7708697574f90f3646a53726f07d7c186ea1f07c5ce516d689f6f7ed7",
+      "shutdown": {
+        "exit_code": 0,
+        "forced_kill": false,
+        "shutdown_seconds": 4.8708774875849485
+      },
+      "ms_per_verify": 14.118276161066374
+    },
+    {
+      "variant": "stream_wait",
+      "repeat": 3,
+      "cell": "stream_wait_async_r3/cells/performance_async_cache_graph_b1",
+      "tok_s": 186.43116755466806,
+      "seconds": 21.970575273036957,
+      "rounds": 1558.0,
+      "accepted": 2547.0,
+      "hits": 1037.0,
+      "misses": 537.0,
+      "output_sha256": "e5660dcda73cbc3b1817780179e9f8efaf86d329554e8035d1d8e8060cfb2147",
+      "prompt_sha256": "6a9a2cb7708697574f90f3646a53726f07d7c186ea1f07c5ce516d689f6f7ed7",
+      "shutdown": {
+        "exit_code": 0,
+        "forced_kill": false,
+        "shutdown_seconds": 4.921293389052153
+      },
+      "ms_per_verify": 14.101781304901769
+    }
+  ],
+  "exact_same_outputs_all_cells": true,
+  "exact_same_counters_all_cells": true,
+  "same_prompts_all_cells": true,
+  "measurement_complete": true,
+  "baseline_median_tok_s": 182.6008503600117,
+  "stream_wait_median_tok_s": 186.43116755466806,
+  "median_improvement_percent": 2.0976447738904946
+}
