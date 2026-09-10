@@ -151,7 +151,7 @@ def main():
     (args.output / "input_hashes.json").write_text(json.dumps(hashes, indent=2) + "\n")
     flat = [{k: v for k, v in s.items() if not isinstance(v, dict)} for s in summaries]
     with (args.output / "diagnosis.csv").open("w") as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(flat[0]))
+        writer = csv.DictWriter(stream, fieldnames=list(flat[0]), lineterminator="\n")
         writer.writeheader()
         writer.writerows(flat)
 

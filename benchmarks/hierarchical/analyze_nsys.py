@@ -75,7 +75,9 @@ def main():
     (args.output / "nsys_phases.json").write_text(json.dumps(phases, indent=2) + "\n")
     for name, rows in (("nsys_kernels.csv", kernels), ("nsys_api.csv", api)):
         with (args.output / name).open("w") as stream:
-            writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+            writer = csv.DictWriter(
+                stream, fieldnames=list(rows[0]), lineterminator="\n"
+            )
             writer.writeheader()
             writer.writerows(rows)
 
