@@ -77,6 +77,13 @@ def main() -> None:
             "warmup_requests": 1,
             "prompt_source": str(prompt_source),
             "scope": "diagnostic; profiled timing is not benchmark throughput",
+            "experimental_environment": {
+                name: os.environ.get(name, default)
+                for name, default in (
+                    ("ASYNC_DRAFT_TARGET_CANDIDATES", "0"),
+                    ("ASYNC_DRAFT_EXPORT_METRICS", "1"),
+                )
+            },
         },
     )
     original_command = module.server_command

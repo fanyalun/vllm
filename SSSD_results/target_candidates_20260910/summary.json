@@ -1,0 +1,189 @@
+{
+  "scope": "Four-prompt transport experiment; not a full validation matrix",
+  "all_output_tokens_equal": true,
+  "standard_speculative_counters_equal": true,
+  "rows": [
+    {
+      "name": "local_r1",
+      "final_comparison": false,
+      "tok_s": 182.86539848531646,
+      "tokens_per_gpu_second": 91.43269924265823,
+      "seconds": 5.599747182801366,
+      "ms_per_verify": 14.140775714144862,
+      "verify_rounds": 396.0,
+      "accepted_tokens": 634.0,
+      "cache_hits": 259.0,
+      "cache_misses": 141.0,
+      "local_hits": 0,
+      "async_metrics_exported": true,
+      "output_sha256": "63b98a2cce033965aa577b9ceccec1e8f531f00602d47a4cb93df1d2ff9f913a",
+      "prompt_sha256": "7529c1b2050a5c1db6500125d620d5ea751d9f51a3ee792647f0460d870918a5",
+      "shutdown": {
+        "exit_code": 0,
+        "forced_kill": false,
+        "shutdown_seconds": 4.420726779848337
+      },
+      "ipc_shutdown_warning": true
+    },
+    {
+      "name": "baseline_r1",
+      "final_comparison": false,
+      "tok_s": 183.11323060604875,
+      "tokens_per_gpu_second": 91.55661530302437,
+      "seconds": 5.592168280854821,
+      "ms_per_verify": 14.12163707286571,
+      "verify_rounds": 396.0,
+      "accepted_tokens": 634.0,
+      "cache_hits": 259.0,
+      "cache_misses": 141.0,
+      "local_hits": 0.0,
+      "async_metrics_exported": true,
+      "output_sha256": "63b98a2cce033965aa577b9ceccec1e8f531f00602d47a4cb93df1d2ff9f913a",
+      "prompt_sha256": "7529c1b2050a5c1db6500125d620d5ea751d9f51a3ee792647f0460d870918a5",
+      "shutdown": {
+        "exit_code": 0,
+        "forced_kill": false,
+        "shutdown_seconds": 4.320046950131655
+      },
+      "ipc_shutdown_warning": false
+    },
+    {
+      "name": "local_r2",
+      "final_comparison": false,
+      "tok_s": 183.1422505890861,
+      "tokens_per_gpu_second": 91.57112529454305,
+      "seconds": 5.591282168403268,
+      "ms_per_verify": 14.119399415159767,
+      "verify_rounds": 396.0,
+      "accepted_tokens": 634.0,
+      "cache_hits": 259.0,
+      "cache_misses": 141.0,
+      "local_hits": 259.0,
+      "async_metrics_exported": true,
+      "output_sha256": "63b98a2cce033965aa577b9ceccec1e8f531f00602d47a4cb93df1d2ff9f913a",
+      "prompt_sha256": "7529c1b2050a5c1db6500125d620d5ea751d9f51a3ee792647f0460d870918a5",
+      "shutdown": {
+        "exit_code": 0,
+        "forced_kill": false,
+        "shutdown_seconds": 3.9705493450164795
+      },
+      "ipc_shutdown_warning": true
+    },
+    {
+      "name": "metrics_off_r1",
+      "final_comparison": false,
+      "tok_s": 182.95925377535298,
+      "tokens_per_gpu_second": 91.47962688767649,
+      "seconds": 5.596874598413706,
+      "ms_per_verify": 14.133521713165923,
+      "verify_rounds": 396.0,
+      "accepted_tokens": 634.0,
+      "cache_hits": 0.0,
+      "cache_misses": 0.0,
+      "local_hits": 0.0,
+      "async_metrics_exported": false,
+      "output_sha256": "63b98a2cce033965aa577b9ceccec1e8f531f00602d47a4cb93df1d2ff9f913a",
+      "prompt_sha256": "7529c1b2050a5c1db6500125d620d5ea751d9f51a3ee792647f0460d870918a5",
+      "shutdown": {
+        "exit_code": 0,
+        "forced_kill": false,
+        "shutdown_seconds": 4.521026158705354
+      },
+      "ipc_shutdown_warning": true
+    },
+    {
+      "name": "local_r3",
+      "final_comparison": false,
+      "tok_s": 183.1364860968749,
+      "tokens_per_gpu_second": 91.56824304843745,
+      "seconds": 5.591458162292838,
+      "ms_per_verify": 14.119843844173833,
+      "verify_rounds": 396.0,
+      "accepted_tokens": 634.0,
+      "cache_hits": 259.0,
+      "cache_misses": 141.0,
+      "local_hits": 259.0,
+      "async_metrics_exported": true,
+      "output_sha256": "63b98a2cce033965aa577b9ceccec1e8f531f00602d47a4cb93df1d2ff9f913a",
+      "prompt_sha256": "7529c1b2050a5c1db6500125d620d5ea751d9f51a3ee792647f0460d870918a5",
+      "shutdown": {
+        "exit_code": 0,
+        "forced_kill": false,
+        "shutdown_seconds": 4.871026132255793
+      },
+      "ipc_shutdown_warning": true
+    },
+    {
+      "name": "baseline_r2",
+      "final_comparison": true,
+      "tok_s": 181.27027219282922,
+      "tokens_per_gpu_second": 90.63513609641461,
+      "seconds": 5.649023348465562,
+      "ms_per_verify": 14.265210475923137,
+      "verify_rounds": 396.0,
+      "accepted_tokens": 634.0,
+      "cache_hits": 259.0,
+      "cache_misses": 141.0,
+      "local_hits": 0.0,
+      "async_metrics_exported": true,
+      "output_sha256": "63b98a2cce033965aa577b9ceccec1e8f531f00602d47a4cb93df1d2ff9f913a",
+      "prompt_sha256": "7529c1b2050a5c1db6500125d620d5ea751d9f51a3ee792647f0460d870918a5",
+      "shutdown": {
+        "exit_code": 0,
+        "forced_kill": false,
+        "shutdown_seconds": 4.2702895775437355
+      },
+      "ipc_shutdown_warning": false
+    },
+    {
+      "name": "metrics_off_r2",
+      "final_comparison": true,
+      "tok_s": 179.98081060733261,
+      "tokens_per_gpu_second": 89.99040530366631,
+      "seconds": 5.68949543312192,
+      "ms_per_verify": 14.367412709903837,
+      "verify_rounds": 396.0,
+      "accepted_tokens": 634.0,
+      "cache_hits": 0.0,
+      "cache_misses": 0.0,
+      "local_hits": 0.0,
+      "async_metrics_exported": false,
+      "output_sha256": "63b98a2cce033965aa577b9ceccec1e8f531f00602d47a4cb93df1d2ff9f913a",
+      "prompt_sha256": "7529c1b2050a5c1db6500125d620d5ea751d9f51a3ee792647f0460d870918a5",
+      "shutdown": {
+        "exit_code": 0,
+        "forced_kill": false,
+        "shutdown_seconds": 4.871417170390487
+      },
+      "ipc_shutdown_warning": false
+    },
+    {
+      "name": "local_r4",
+      "final_comparison": true,
+      "tok_s": 181.86512785507617,
+      "tokens_per_gpu_second": 90.93256392753808,
+      "seconds": 5.630546174943447,
+      "ms_per_verify": 14.218550946826886,
+      "verify_rounds": 396.0,
+      "accepted_tokens": 634.0,
+      "cache_hits": 259.0,
+      "cache_misses": 141.0,
+      "local_hits": 259.0,
+      "async_metrics_exported": true,
+      "output_sha256": "63b98a2cce033965aa577b9ceccec1e8f531f00602d47a4cb93df1d2ff9f913a",
+      "prompt_sha256": "7529c1b2050a5c1db6500125d620d5ea751d9f51a3ee792647f0460d870918a5",
+      "shutdown": {
+        "exit_code": 0,
+        "forced_kill": false,
+        "shutdown_seconds": 4.370747547596693
+      },
+      "ipc_shutdown_warning": false
+    }
+  ],
+  "limitations": [
+    "Early cells include instrumentation and shutdown fixes; use final_comparison rows for the final implementation.",
+    "One final repeat per variant cannot establish sub-percent differences.",
+    "Disabling Async metric export retains internal counters, clocks and all protocol synchronization.",
+    "Target-local selection still reads the outcome on the CPU and retains the payload barrier."
+  ]
+}

@@ -2099,13 +2099,32 @@ def run_async_draft_child(
         pending_cache_evictions = 0
         pending_timing_metrics: dict[str, float | int] = {}
         last_generation = [-1] * len(ring_slots)
+        target_candidates = None
+        candidate_connection = None
         while True:
             try:
                 message = connection.recv()
             except EOFError:
                 break
             command = message.get("command")
+            if command == "target_candidates":
+                if target_candidates is not None:
+                    raise ValueError("Target candidate buffers already configured")
+                if child_config.speculative_config.method != "eagle3":
+                    raise ValueError("Target candidate publication requires EAGLE3")
+                target_candidates = torch.empty(
+                    message["shape"], dtype=torch.int64, device=message["device"]
+                )
+                candidate_connection = message["connection"]
+                connection.send({"status": "ok", "tokens": target_candidates})
+                continue
             if command == "shutdown":
+                if target_candidates is not None:
+                    assert candidate_connection is not None
+                    torch.cuda.synchronize(target_candidates.device)
+                    target_candidates = None
+                    candidate_connection.close()
+                    gc.collect()
                 connection.send({"status": "shutdown"})
                 break
             if command == "release":
@@ -2208,6 +2227,30 @@ def run_async_draft_child(
                     hit_indices,
                     conditioning_splits,
                 )
+                if target_candidates is not None:
+                    assert candidate_connection is not None
+                    entries = list(branch_cache.entries.items())
+                    if len(entries) > target_candidates.shape[1]:
+                        raise ValueError(
+                            "Target candidate publication exceeds capacity"
+                        )
+                    if entries:
+                        tokens = torch.stack([branch.tokens for _, branch in entries])
+                        target_candidates[batch.slot, : len(entries)].copy_(tokens)
+                        # Publish only after the Target device copy completes.
+                        torch.cuda.current_stream(
+                            target_candidates.device
+                        ).synchronize()
+                        pending_timing_metrics["ipc_bytes"] = (
+                            tokens.numel() * tokens.element_size()
+                        )
+                    candidate_connection.send(
+                        {
+                            "generation": batch.generation,
+                            "slot": batch.slot,
+                            "keys": [key for key, _ in entries],
+                        }
+                    )
             except BaseException as error:
                 response = response_error(batch.generation, batch.slot, error)
                 response["traceback"] = traceback.format_exc()

@@ -59,6 +59,27 @@ class AsyncDraftSpeculator(BaseSpeculator):
         self._request_epochs: dict[str, int] = {}
         self._active_requests: set[str] = set()
         self._preempted_requests: set[str] = set()
+        self._local_candidates_enabled = (
+            os.environ.get("ASYNC_DRAFT_TARGET_CANDIDATES", "0") == "1"
+        )
+        if self._local_candidates_enabled and (
+            self.method != "eagle3" or self.max_num_reqs != 1
+        ):
+            raise ValueError(
+                "Target candidate experiment requires EAGLE3 max_num_seqs=1"
+            )
+        if (
+            self._local_candidates_enabled
+            and os.environ.get("REPLAYSSM_SPEC_DECODE_TRACE_LOGITS", "0") == "1"
+        ):
+            raise ValueError(
+                "Target candidate experiment does not support logits tracing"
+            )
+        self._candidate_connection = None
+        self._candidate_tokens = None
+        self._candidate_header = None
+        self._pending_local_response = None
+        self._export_metrics = os.environ.get("ASYNC_DRAFT_EXPORT_METRICS", "1") == "1"
         self._metrics = {
             "cache_hits": 0,
             "cache_misses": 0,
@@ -202,6 +223,28 @@ class AsyncDraftSpeculator(BaseSpeculator):
             dtype=torch.int64,
             device=self.device,
         )
+        if self._local_candidates_enabled:
+            assert self._ring_slots is not None
+            candidate_reader, candidate_writer = context.Pipe(duplex=False)
+            capacity = (self.num_speculative_steps + 1) * message["fan_out"]
+            self._candidate_connection = candidate_reader
+            parent_connection.send(
+                {
+                    "command": "target_candidates",
+                    "shape": (
+                        len(self._ring_slots),
+                        capacity,
+                        self.num_speculative_steps,
+                    ),
+                    "device": self.device,
+                    "connection": candidate_writer,
+                }
+            )
+            response = self._recv(self.request_timeout, "target candidate setup")
+            candidate_writer.close()
+            if response.get("status") != "ok":
+                self._raise_child_error(response, "target candidate setup")
+            self._candidate_tokens = response.pop("tokens")
         logger.info(
             "Async %s draft child ready: pid=%s physical_gpu=%s "
             "kv_blocks=%s block_sizes=%s fan_out=%s verify_width=%s "
@@ -286,6 +329,8 @@ class AsyncDraftSpeculator(BaseSpeculator):
         ids = list(request_ids)
         if not ids or self._connection is None:
             return
+        self._finish_local_response()
+        self._candidate_header = None
         self._connection.send({"command": command, "request_ids": ids})
         response = self._recv(self.request_timeout, command)
         if response.get("status") != "ok":
@@ -293,9 +338,57 @@ class AsyncDraftSpeculator(BaseSpeculator):
         response_metrics = response.get("metrics") or {}
         self._record_metrics(response_metrics)
 
+    def _finish_local_response(self) -> None:
+        pending = self._pending_local_response
+        if pending is None:
+            return
+        self._pending_local_response = None
+        response = self._recv(self.request_timeout, "local candidate acknowledgement")
+        if response.get("status") != "ok":
+            self._raise_child_error(response, "local candidate acknowledgement")
+        self._validate_response_identity(response, *pending)
+        if response.get("cache_hit_indices") != [0]:
+            raise RuntimeError("Published Target candidate was not a Draft cache hit")
+        metrics = dict(response.get("metrics") or {})
+        if metrics.pop("cache_hits", 0) != 1:
+            raise RuntimeError("Invalid local candidate acknowledgement counters")
+        self._record_metrics(metrics)
+
+    def _find_local_candidate(self, batch: AsyncDraftBatch, ring_slot: Any):
+        connection = self._candidate_connection
+        if connection is None:
+            return None
+        while connection.poll():
+            self._candidate_header = connection.recv()
+        header = self._candidate_header
+        if (
+            header is None
+            or header["generation"] != batch.generation - 1
+            or batch.transient
+            or bool(batch.is_prefilling_np[0])
+            or os.environ.get("ASYNC_DRAFT_FORCE_JIT", "0") == "1"
+        ):
+            return None
+        with record_function_or_nullcontext("async_draft: local_outcome_d2h"):
+            accepted = int(ring_slot.num_sampled[0].item()) - 1
+            recovery = int(ring_slot.last_sampled[0].item())
+        key = (
+            batch.engine_instance_id,
+            batch.req_ids[0],
+            batch.request_epochs[0],
+            accepted,
+            recovery,
+        )
+        try:
+            index = header["keys"].index(key)
+        except ValueError:
+            return None
+        return self._candidate_tokens[header["slot"], index]
+
     def _record_metrics(self, metrics: dict[str, float | int] | None) -> None:
         metrics = metrics or {}
         for name in (
+            "ipc_bytes",
             "cache_hits",
             "cache_misses",
             "jit_fallbacks",
@@ -485,11 +578,12 @@ class AsyncDraftSpeculator(BaseSpeculator):
         if self._ring_slots is None or self._connection is None:
             raise RuntimeError("Async draft child has not been initialized")
 
+        start = time.perf_counter()
+        self._finish_local_response()
         generation = self._generation
         self._generation += 1
         slot_index = generation % len(self._ring_slots)
         ring_slot = self._ring_slots[slot_index]
-        start = time.perf_counter()
         overlap_budget_seconds = 0.0
         if self._last_response_ready_at is not None:
             overlap_budget_seconds = max(0.0, start - self._last_response_ready_at)
@@ -555,8 +649,30 @@ class AsyncDraftSpeculator(BaseSpeculator):
             ),
             is_prefilling_np=input_batch.is_prefilling_np.copy(),
         )
+        local_candidate = self._find_local_candidate(batch, ring_slot)
         with record_function_or_nullcontext("async_draft: send_request"):
             self._connection.send({"command": "propose", "batch": asdict(batch)})
+        if local_candidate is not None:
+            with record_function_or_nullcontext("async_draft: local_candidate"):
+                self._draft_tokens[0].copy_(local_candidate)
+            self._pending_local_response = (generation, slot_index)
+            self._last_cache_hit_indices = {0}
+            self._last_trace_top2 = []
+            self._active_trace_req_ids = list(batch.req_ids)
+            elapsed = time.perf_counter() - start
+            for metrics in (self._metrics, self._step_metrics):
+                metrics["cache_hits"] += 1
+                metrics["target_local_hits"] = metrics.get("target_local_hits", 0) + 1
+                metrics["ipc_bytes"] += ipc_bytes
+                metrics["wait_seconds"] += elapsed
+                metrics["next_proposal_wait_seconds"] += elapsed
+                metrics["ipc_latency_seconds"] += ipc_latency_seconds
+            self._last_trace_timing = {
+                "async_generation": generation,
+                "async_target_local_hit": True,
+            }
+            self._last_response_ready_at = time.perf_counter()
+            return self._draft_tokens[:1]
         with record_function_or_nullcontext("async_draft: receive_response"):
             response = self._recv(self.request_timeout, "propose")
         if response.get("status") != "ok":
@@ -568,7 +684,13 @@ class AsyncDraftSpeculator(BaseSpeculator):
         self._active_trace_req_ids = list(input_batch.req_ids)
 
         num_reqs = input_batch.num_reqs
-        self._copy_response(ring_slot, slot_index, num_reqs)
+        response_scope = (
+            "async_draft: remote_hit"
+            if len(self._last_cache_hit_indices) == num_reqs
+            else "async_draft: remote_miss"
+        )
+        with record_function_or_nullcontext(response_scope):
+            self._copy_response(ring_slot, slot_index, num_reqs)
         elapsed = time.perf_counter() - start
         response_metrics = response.get("metrics") or {}
         self._record_metrics(response_metrics)
@@ -610,7 +732,7 @@ class AsyncDraftSpeculator(BaseSpeculator):
     def take_metrics(self) -> dict[str, float | int]:
         metrics = self._step_metrics
         self._step_metrics = {name: 0 for name in metrics}
-        return metrics
+        return metrics if self._export_metrics else {}
 
     def proposal_trace_metadata(self, num_reqs: int) -> list[dict[str, Any]]:
         trace_top2 = getattr(self, "_last_trace_top2", [])
@@ -635,6 +757,7 @@ class AsyncDraftSpeculator(BaseSpeculator):
         self._process = None
         self._ring_slots = None
         self._response_events = []
+        self._candidate_tokens = None
         gc.collect()
         if connection is not None and process is not None and process.is_alive():
             try:
@@ -656,3 +779,6 @@ class AsyncDraftSpeculator(BaseSpeculator):
                 process.join(timeout=10.0)
             if not process.is_alive():
                 process.close()
+        if self._candidate_connection is not None:
+            self._candidate_connection.close()
+            self._candidate_connection = None

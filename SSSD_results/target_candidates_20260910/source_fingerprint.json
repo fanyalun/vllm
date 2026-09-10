@@ -1,0 +1,10 @@
+{
+  "base_commit": "a37344635bcbd6f1fe621979ab7de5edc1d0aa08",
+  "files": {
+    "vllm/v1/worker/gpu/spec_decode/async_draft/speculator.py": "418cf439fda3a0414a7cfc6663d926b6411e2ef816feef046102084e5e6f7f7c",
+    "vllm/v1/worker/gpu/spec_decode/async_draft/runtime.py": "e3c8e2416d38e1187858f4e45713770e41e64ca5fcd37c6142e8477dd5a77721",
+    "vllm/v1/metrics/loggers.py": "05871ba9612d98b0f76d84e8dabfc4fcbcad3e6dea429e26b3a13b7c9c98f865",
+    "benchmarks/replayssm/profile_async_draft.py": "7ee6d772ce4f0e9e44754375fbd761a8dc4d5e2e6a0a7f2cdce0369bcbe3ce59",
+    "benchmarks/replayssm/analyze_async_draft_profile.py": "89a13fc198f1358004a11cfbf8730a4a402c5972199ab52dd41c086fb898e6f9"
+  }
+}

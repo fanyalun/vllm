@@ -60,3 +60,29 @@ def test_partial_capture_is_not_a_valid_critical_path():
 
 def test_gpu_idle_excludes_overlapping_activity_only_once():
     assert interval_coverage([(0, 20), (15, 40), (60, 90)], 10, 80) == 50
+
+
+@pytest.mark.parametrize(
+    "marker,expected",
+    [("local_candidate", "local_hit"), ("remote_miss", "miss")],
+)
+def test_deferred_child_hit_does_not_override_current_parent_outcome(marker, expected):
+    def row(stage, start, end):
+        return dict(
+            stage=stage,
+            host_start_ns=start,
+            host_end_ns=end,
+            gpu_start_ns=start,
+            gpu_end_ns=end,
+            graph_launches=1,
+        )
+
+    timeline = [
+        row("target: verify_forward", 0, 10),
+        row("accept: state_postprocess", 10, 20),
+        row("eagle3: propose", 20, 40),
+        row("async_draft: send_request", 21, 22),
+        row("async_draft: cache_hit", 22, 23),
+        row(f"async_draft: {marker}", 24, 25),
+    ]
+    assert set(critical_path(timeline)) == {expected}

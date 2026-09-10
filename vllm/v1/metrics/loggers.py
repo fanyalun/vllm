@@ -456,6 +456,10 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             and speculative_config.async_draft_device is not None
         ):
             async_draft_counter_specs = {
+                "target_local_hits": (
+                    "vllm:async_draft_target_local_hits",
+                    "Number of proposals selected from Target device candidates.",
+                ),
                 "cache_hits": (
                     "vllm:async_draft_cache_hits",
                     "Number of asynchronous draft outcome-cache hits.",

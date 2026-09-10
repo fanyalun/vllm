@@ -128,8 +128,14 @@ def critical_path(timeline: list[dict], target_activity=()) -> dict:
             continue
         start, end = proposal["host_start_ns"], proposal["host_end_ns"]
         children = [r for r in timeline if start <= r["host_start_ns"] < end]
-        hit = any(r["stage"] == "async_draft: cache_hit" for r in children)
-        kind = ("hit" if hit else "miss") if async_run else "sync"
+        stages = {r["stage"] for r in children}
+        if "async_draft: local_candidate" in stages:
+            kind = "local_hit"
+        elif "async_draft: remote_miss" in stages:
+            kind = "miss"
+        else:
+            hit = bool(stages & {"async_draft: cache_hit", "async_draft: remote_hit"})
+            kind = ("hit" if hit else "miss") if async_run else "sync"
         if proposal["gpu_end_ns"] is None or outcome["gpu_end_ns"] is None:
             raise ValueError("Missing GPU correlation for a decode proposal")
         grouped[kind]["outcome_to_proposal"].append(

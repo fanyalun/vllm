@@ -1,0 +1,21 @@
+{
+  "tests": {
+    "command": ".venv/bin/python -m pytest tests/v1/spec_decode/test_async_draft.py tests/v1/spec_decode/test_async_draft_target_candidates.py tests/v1/spec_decode/test_async_draft_response.py tests/benchmarks/test_analyze_async_draft_profile.py -q",
+    "passed": 113,
+    "seconds": 28.67
+  },
+  "targeted_mypy": {
+    "arguments": "--follow-imports skip; speculator.py and runtime.py",
+    "existing_errors": 2,
+    "same_as_HEAD_shadow_files": true
+  },
+  "precommit_skips": {
+    "mypy-3.10": "Targeted mypy compared against HEAD; two unchanged pre-existing annotations. Full hook not claimed clean.",
+    "check-torch-cuda-call": "CUDA IPC/stream operations require CUDA-specific APIs; existing integration also uses these calls."
+  },
+  "gpu_shutdown": {
+    "gpu_0_memory_mib": 0,
+    "gpu_1_memory_mib": 0
+  },
+  "scope": "Small EAGLE3 B1 transport experiment; not a full supported-feature matrix"
+}
