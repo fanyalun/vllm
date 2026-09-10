@@ -1,0 +1,15 @@
+{
+  "cases": 6,
+  "measured_graph_replays": 960,
+  "instrumentation_output_controls": "6/6 passed",
+  "partition_sum_check": "passed",
+  "measurement_boundary": "backbone + lm_head + argmax; metadata and state restore excluded",
+  "limitations": [
+    "Private preverify metadata for top-8 and top-4; not native Target execute_model latency.",
+    "Eager operators captured into CUDA Graph; no torch.compile fusion.",
+    "Stage times are CUDA event intervals, not kernel-only activity.",
+    "Stage percentages use instrumented total; uninstrumented total is separately reported.",
+    "Three fixed prefixes; replays measure local variability, not workload confidence intervals.",
+    "Instrumentation on/off output control does not certify hierarchical decoder correctness."
+  ]
+}

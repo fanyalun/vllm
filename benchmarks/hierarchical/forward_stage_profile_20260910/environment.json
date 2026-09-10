@@ -1,0 +1,25 @@
+{
+  "python": "3.12.13 | packaged by conda-forge | (main, Mar  5 2026, 16:50:00) [GCC 14.3.0]",
+  "executable": "/home/fanya/vllm/.venv/bin/python",
+  "source_commit": "77b7bb264c9593499b9d3d5a7c945905f540d7d4",
+  "packages": {
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "transformers": "5.16.1",
+    "numpy": "2.3.5",
+    "matplotlib": "3.10.9"
+  },
+  "gpu": "2 x NVIDIA A100 80GB PCIe; driver 580.95.05; 81920 MiB each; buses 00000000:65:00.0 and 00000000:B1:00.0",
+  "source_sha256": {
+    "benchmarks/hierarchical/forward_stage_worker.py": "3b6b31cbc7ed2f3b8dca326e97ed2e662b776d3d26566bcf81257204856ac7a4",
+    "benchmarks/hierarchical/run_forward_stages.py": "5a598a1dcc538b9aca84d3c406037e33c144ecb0433876a5fcb36d69df5fcf69",
+    "benchmarks/hierarchical/summarize_forward_stages.py": "8a80269831d441c10f058c2825b12892f2bf3636c98a4cf6b0120b7dc7705873",
+    "benchmarks/hierarchical/analyze_forward_kernels.py": "842b20a70b2ee05f6061ea1ac85eab3cf73ac15801266a537d6068eed9a0d08f",
+    "benchmarks/hierarchical/report_compiled_forward.py": "044ab155016e88d385599d893236b2e00b3594d7093778aa83b8a55ecd7e6566",
+    "vllm/v1/worker/gpu/spec_decode/hierarchical/speculator.py": "16c9fefd040f93b1f44a541f8c392eb41d722beffc1d63c505b7bf03090a3017",
+    "vllm/v1/worker/gpu/spec_decode/hierarchical/state.py": "e075ead897bb5c5700ed15fedb6fd671618b10e80a1c5e313e2026a7fff00da3",
+    "vllm/model_executor/layers/fused_moe/fused_moe.py": "7072eb06237be9d33dcb0ef7101410f886a6363c98cbee70a014c68b70f639cb",
+    "vllm/model_executor/models/gemma4.py": "e3fd9b3a3ce4656f6996dbe4f305c759c5ad0a9e91ad6c1bbf1e303b94a52164",
+    "vllm/model_executor/models/qwen3_next.py": "4a27cf7b065c2097688421e6ea849704cef946f347978fb426abbc72b77f00b2"
+  }
+}

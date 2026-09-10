@@ -1,0 +1,82 @@
+[
+  {
+    "model": "qwen36",
+    "width": 4,
+    "top_h": 8,
+    "kernels": 1033,
+    "trace_span_ms": 10.2609560546875,
+    "event_mean_ms": 10.379622920354207,
+    "unattributed_kernel_ms": 0.19642300000000001,
+    "method": "Unique names and ordered name subsequences; asserted Gemma dense block; named RMS fusion; unmatched kernels remain other"
+  },
+  {
+    "model": "qwen36",
+    "width": 4,
+    "top_h": 4,
+    "kernels": 1033,
+    "trace_span_ms": 7.986666015625,
+    "event_mean_ms": 8.128744506835938,
+    "unattributed_kernel_ms": 0.19503399999999999,
+    "method": "Unique names and ordered name subsequences; asserted Gemma dense block; named RMS fusion; unmatched kernels remain other"
+  },
+  {
+    "model": "qwen36",
+    "width": 5,
+    "top_h": 8,
+    "kernels": 1033,
+    "trace_span_ms": 11.4681552734375,
+    "event_mean_ms": 11.671000560124716,
+    "unattributed_kernel_ms": 0.197219,
+    "method": "Unique names and ordered name subsequences; asserted Gemma dense block; named RMS fusion; unmatched kernels remain other"
+  },
+  {
+    "model": "qwen36",
+    "width": 5,
+    "top_h": 4,
+    "kernels": 1033,
+    "trace_span_ms": 8.437869140625,
+    "event_mean_ms": 8.706744035085043,
+    "unattributed_kernel_ms": 0.195679,
+    "method": "Unique names and ordered name subsequences; asserted Gemma dense block; named RMS fusion; unmatched kernels remain other"
+  },
+  {
+    "model": "gemma4",
+    "width": 4,
+    "top_h": 8,
+    "kernels": 606,
+    "trace_span_ms": 12.3618857421875,
+    "event_mean_ms": 12.288799937566122,
+    "unattributed_kernel_ms": 0.282084,
+    "method": "Unique names and ordered name subsequences; asserted Gemma dense block; named RMS fusion; unmatched kernels remain other"
+  },
+  {
+    "model": "gemma4",
+    "width": 4,
+    "top_h": 4,
+    "kernels": 606,
+    "trace_span_ms": 8.9128232421875,
+    "event_mean_ms": 8.892274634043376,
+    "unattributed_kernel_ms": 0.278948,
+    "method": "Unique names and ordered name subsequences; asserted Gemma dense block; named RMS fusion; unmatched kernels remain other"
+  },
+  {
+    "model": "gemma4",
+    "width": 5,
+    "top_h": 8,
+    "kernels": 636,
+    "trace_span_ms": 11.128837890625,
+    "event_mean_ms": 11.072803688049316,
+    "unattributed_kernel_ms": 0.27363299999999996,
+    "method": "Unique names and ordered name subsequences; asserted Gemma dense block; named RMS fusion; unmatched kernels remain other"
+  },
+  {
+    "model": "gemma4",
+    "width": 5,
+    "top_h": 4,
+    "kernels": 606,
+    "trace_span_ms": 9.6929609375,
+    "event_mean_ms": 9.674853881200155,
+    "unattributed_kernel_ms": 0.27305599999999997,
+    "method": "Unique names and ordered name subsequences; asserted Gemma dense block; named RMS fusion; unmatched kernels remain other"
+  }
+]

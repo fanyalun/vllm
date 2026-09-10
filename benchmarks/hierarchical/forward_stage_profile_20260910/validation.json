@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "compiled_controls": 6,
+  "uncompiled_controls": 6,
+  "measured_replays": 1440,
+  "pytest": "8 passed",
+  "pre_commit": "all applicable hooks passed on 6 source/test files",
+  "scope": "measurement only, not lossless hierarchical correctness",
+  "trace_attribution": "approximate compiled attribution; exact reference name/order checks; shared overlap counted once"
+}

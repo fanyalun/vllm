@@ -4,11 +4,59 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
 import torch
 
 from benchmarks.hierarchical.analyze_failure import round_survival
+from benchmarks.hierarchical.analyze_forward_kernels import map_graph
 from benchmarks.hierarchical.cycle_worker import CycleWorker, pair_cycles
 from benchmarks.hierarchical.measurement_worker import MeasurementWorker
+from benchmarks.hierarchical.summarize_forward_stages import partition
+
+
+def test_stage_partition_counts_shared_routed_overlap_once():
+    row = {
+        "total_ms": 10,
+        "spans": [
+            {"phase": "moe_envelope", "start_ms": 1, "end_ms": 9},
+            {"phase": "shared", "start_ms": 2, "end_ms": 6},
+            {"phase": "routed", "start_ms": 4, "end_ms": 8},
+        ],
+    }
+    result = partition(row)
+    assert result == {
+        "other": 2,
+        "moe_other": 2,
+        "shared": 2,
+        "shared_overlap": 2,
+        "routed": 2,
+    }
+
+
+def test_attention_stage_includes_nested_normalization_without_double_counting():
+    row = {
+        "total_ms": 5,
+        "spans": [
+            {"phase": "attention", "start_ms": 1, "end_ms": 4},
+            {"phase": "norm", "start_ms": 2, "end_ms": 3},
+        ],
+    }
+    assert partition(row) == {"other": 2, "attention": 3}
+
+
+def test_reference_kernel_mapping_rejects_changed_kernel_sequence():
+    reference = [{"name": "routed_gemm", "phase": "routed"}]
+    graph = [
+        {
+            "cat": "kernel",
+            "name": "unknown_gemm",
+            "ts": 1,
+            "dur": 1,
+            "args": {"stream": 1},
+        }
+    ]
+    with pytest.raises(AssertionError):
+        map_graph(reference, graph)
 
 
 def test_outer_rejection_distinguishes_partial_and_fully_wasted_inner_rounds():
