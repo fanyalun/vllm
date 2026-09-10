@@ -1,0 +1,14 @@
+{
+  "benchmark_results/hierarchical_gemma4_d16_20260910/mtp_d16/MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+  "benchmark_results/hierarchical_gemma4_d16_20260910/mtp_d16/config.json": "2284990798f6ca9f28a42ddc6a6bb92ea490cb3559ff32422acb81981b57ef0b",
+  "benchmark_results/hierarchical_gemma4_d16_20260910/mtp_d16/result.json": "4eea459f3e7460c31ce8a8ef4ab27db46ec83573354de2dd114d80a061c920d1",
+  "benchmark_results/hierarchical_gemma4_d16_20260910/moe_skip_d16/MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+  "benchmark_results/hierarchical_gemma4_d16_20260910/moe_skip_d16/config.json": "6e97a1429649e4f6e8bd1f88238a803590b4e7c51e37dc265c7d2273bb5e4d9b",
+  "benchmark_results/hierarchical_gemma4_d16_20260910/moe_skip_d16/result.json": "5385c5fe7bdee848522a99d34ef1d4cf43ee2defac1fcdf39ecef23d773f4ddb",
+  "benchmark_results/hierarchical_gemma4_d16_20260910/mtp_n4/MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+  "benchmark_results/hierarchical_gemma4_d16_20260910/mtp_n4/config.json": "2871a3404400cb2767c3382a9039c1d64bcf8876f8542c6af1de60bb3e1968fd",
+  "benchmark_results/hierarchical_gemma4_d16_20260910/mtp_n4/result.json": "4915560baae5692b10b511491ae2799eecefa33e1b96aa7e800cf130b7531af9",
+  "benchmark_results/hierarchical_gemma4_d16_20260910/dspark_n4/MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+  "benchmark_results/hierarchical_gemma4_d16_20260910/dspark_n4/config.json": "ddd70441003ffd42ac283b54a7e67a4f7453d55c38fd4b344c0c96a45da46d13",
+  "benchmark_results/hierarchical_gemma4_d16_20260910/dspark_n4/result.json": "babf0e9d6095a308a115bd798231498af7d126d87e1a3d857eb9a9d0997964e9"
+}

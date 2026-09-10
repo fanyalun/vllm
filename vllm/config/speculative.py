@@ -1607,8 +1607,10 @@ class SpeculativeConfig:
         if not set(self.target_model_config.architectures or ()) <= {
             "Qwen3_5MoeForCausalLM",
             "Qwen3_5MoeForConditionalGeneration",
+            "Gemma4ForCausalLM",
+            "Gemma4ForConditionalGeneration",
         }:
-            raise ValueError("hierarchical currently supports Qwen3.6 MoE only")
+            raise ValueError("hierarchical supports Qwen3.6 MoE and Gemma4 MoE only")
         self.moe_skip_top_h = preverify.moe_skip_top_h
         inner = self.make_inner_config()
         self.model = inner.model

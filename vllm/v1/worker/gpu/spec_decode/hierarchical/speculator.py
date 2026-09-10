@@ -19,6 +19,7 @@ from vllm.v1.worker.gpu.attn_utils import (
     init_attn_backend,
 )
 from vllm.v1.worker.gpu.input_batch import InputBuffers
+from vllm.v1.worker.gpu.model_states.default import DefaultModelState
 from vllm.v1.worker.gpu.model_states.mamba_hybrid import MambaHybridModelState
 from vllm.v1.worker.gpu.spec_decode.hierarchical.state import PreverifyState
 from vllm.v1.worker.gpu.spec_decode.moe_skip.speculator import MoeSkipSpeculator
@@ -125,7 +126,7 @@ class HierarchicalSpeculator(BaseSpeculator):
         self.model = self.preverify.model
         self.logits_model = target_model
         self.state = PreverifyState(self.model, self.depth + 1, self.device)
-        if not self.state.layers:
+        if self.preverify.model_family == "qwen3_6" and not self.state.layers:
             raise ValueError("hierarchical requires Qwen GDN layers")
         self.small.load_model(target_model)
         self.layer_outputs: dict[int, tuple[torch.Tensor, ...]] = {}
@@ -147,9 +148,17 @@ class HierarchicalSpeculator(BaseSpeculator):
         target_input_buffers,
         target_attn_groups,
     ):
-        if not isinstance(model_state, MambaHybridModelState):
-            raise ValueError("hierarchical requires MambaHybridModelState")
-        if model_state.recoverssm is not None:
+        expected_state = (
+            MambaHybridModelState
+            if self.preverify.model_family == "qwen3_6"
+            else DefaultModelState
+        )
+        if not isinstance(model_state, expected_state):
+            raise ValueError(f"hierarchical requires {expected_state.__name__}")
+        if (
+            isinstance(model_state, MambaHybridModelState)
+            and model_state.recoverssm is not None
+        ):
             raise ValueError("hierarchical does not support RecoverSSM")
         self.model_state = model_state
         self.kv_cache_config = kv_cache_config
@@ -262,6 +271,15 @@ class HierarchicalSpeculator(BaseSpeculator):
             self.attn_groups,
             self.kv_cache_config,
         )
+        if self.state.layers:
+            self._set_gdn_metadata(batch, width, metadata)
+        return (
+            batch,
+            metadata,
+            build_slot_mappings_by_layer(slots, self.kv_cache_config),
+        )
+
+    def _set_gdn_metadata(self, batch, width, metadata):
         gdn = GDNAttentionMetadata(
             num_prefills=0,
             num_prefill_tokens=0,
@@ -277,11 +295,6 @@ class HierarchicalSpeculator(BaseSpeculator):
         )
         for name in self.state.layers:
             metadata[name] = gdn
-        return (
-            batch,
-            metadata,
-            build_slot_mappings_by_layer(slots, self.kv_cache_config),
-        )
 
     def _verify(self, batch, metadata, slots):
         width = batch.num_tokens

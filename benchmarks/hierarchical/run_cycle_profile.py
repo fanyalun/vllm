@@ -22,11 +22,23 @@ def main():
     parser.add_argument("--legacy-mm-inputs", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--samples", type=int, default=4)
+    parser.add_argument("--model", default="/data1/fanya/Qwen/Qwen3.6-35B-A3B")
+    parser.add_argument("--draft-model")
+    parser.add_argument("--dataset", type=Path)
+    parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument(
+        "--phases",
+        nargs="+",
+        choices=["e2e", "profile", "e2e_after"],
+        default=["e2e", "profile", "e2e_after"],
+    )
     args = parser.parse_args()
     from vllm import LLM, SamplingParams
 
     root = Path(__file__).resolve().parents[2]
-    dataset = root / "benchmarks/hierarchical/previous_config_20260909/samples_16.jsonl"
+    dataset = args.dataset or (
+        root / "benchmarks/hierarchical/previous_config_20260909/samples_16.jsonl"
+    )
     samples = [json.loads(line) for line in dataset.read_text().splitlines()][
         : args.samples
     ]
@@ -47,10 +59,12 @@ def main():
         }
     if args.method == "dspark":
         spec["model"] = "/data1/fanya/models/Qwen3.6-35B-A3B-speculator.dspark"
+    if args.draft_model:
+        spec["model"] = args.draft_model
     if args.method == "moe_skip":
         spec["moe_skip_top_h"] = 4
     config = dict(
-        model="/data1/fanya/Qwen/Qwen3.6-35B-A3B",
+        model=args.model,
         tensor_parallel_size=1,
         enforce_eager=False,
         max_model_len=1024,
@@ -78,7 +92,7 @@ def main():
         {
             "llm": config,
             "samples": samples,
-            "max_tokens": 512,
+            "max_tokens": args.max_tokens,
             "cuda_visible_devices": os.environ["CUDA_VISIBLE_DEVICES"],
             "source_commit": subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], text=True
@@ -87,11 +101,13 @@ def main():
         },
     )
     llm = LLM(**config)
-    sampling = SamplingParams(temperature=0, max_tokens=512, ignore_eos=True)
+    sampling = SamplingParams(
+        temperature=0, max_tokens=args.max_tokens, ignore_eos=True
+    )
     llm.generate([samples[0]["prompt"]], sampling, use_tqdm=False)
     print("WARMUP_COMPLETE", flush=True)
     results = []
-    for phase in ("e2e", "profile", "e2e_after"):
+    for phase in args.phases:
         for sample in samples:
             assert (
                 hashlib.sha256(sample["prompt"].encode()).hexdigest()
@@ -103,7 +119,7 @@ def main():
             output = llm.generate([sample["prompt"]], sampling, use_tqdm=False)[0]
             elapsed = time.perf_counter() - start
             tokens = list(output.outputs[0].token_ids)
-            assert len(tokens) == 512
+            assert len(tokens) == args.max_tokens
             assert len(output.prompt_token_ids) == sample["prompt_token_count"]
             measured = (
                 llm.collective_rpc("collect_cycle_measurement")[0]
@@ -124,7 +140,7 @@ def main():
                 f"COMPLETE {phase} {sample['sample_index']} {elapsed:.3f}s", flush=True
             )
     (args.output / "MEASUREMENT_COMPLETE").write_text(
-        "Measured both passes; not a correctness gate.\n"
+        "Measured requested passes; not a correctness gate.\n"
     )
 
 

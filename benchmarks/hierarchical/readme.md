@@ -10,6 +10,10 @@ inner rounds, and pairs the elapsed time with final accepted tokens. Use that
 metric for cycle-cost comparisons; the older proposal-only Drafting time remains
 a separate component and excludes Target verification.
 
+The [Gemma4 D=4/N=4 comparison](gemma4_d16_20260910/results.md) includes fresh
+D=16 MTP/MoE-Skip controls, timing decomposition, and the failed MTP and bounded
+passing DSpark sequential-oracle results.
+
 ## Configuration
 
 ```python
@@ -40,7 +44,10 @@ For DSpark, set `inner_method="dspark"` and `model` inside the speculative
 configuration to the DSpark checkpoint. The pre-verifier always reuses the
 Target model instance and parameters; there is no second MoE checkpoint load.
 
-Supported scope: Qwen3.6 MoE, TP1/PP1/DP1, one active text request, standard
+For Gemma4 MTP, also set the speculative `model` to the Gemma4 assistant
+checkpoint. Gemma4 DSpark uses its own DSpark checkpoint in the same field.
+
+Supported scope: Qwen3.6 MoE and Gemma4 MoE, TP1/PP1/DP1, one active text request, standard
 rejection sampling, greedy small drafter, no prefix caching, LoRA, structured
 outputs, RecoverSSM, expert parallelism, or asynchronous scheduling. Target
 sampling can be greedy or stochastic. Unsupported combinations fail closed.
@@ -64,6 +71,10 @@ the accepted Target convolution history and recurrent state are copied into
 private row one. Inner acceptance advances both states to the same position.
 Private GDN cache bindings are scoped to pre-verifier execution and restored
 even when a forward raises. Target state remains authoritative.
+
+Gemma4 uses the default attention state and has no GDN convolution/recurrent
+state to copy. Its pre-verifier uses the same reserved attention suffix ownership
+described below; the Target and pre-verifier still share one parameter set.
 
 Attention uses the request's reserved, uncommitted suffix slots. This first
 implementation relies on B=1, disabled prefix sharing, causal attention, and

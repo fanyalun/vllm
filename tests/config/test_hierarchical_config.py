@@ -10,7 +10,7 @@ import pytest
 from vllm.config import ModelConfig, ParallelConfig, SpeculativeConfig
 
 
-def make_config(monkeypatch, **kwargs):
+def make_config(monkeypatch, family="qwen", **kwargs):
     draft = SimpleNamespace(
         verify_with_parallel_config=Mock(),
         compute_hash=lambda: "draft",
@@ -32,6 +32,9 @@ def make_config(monkeypatch, **kwargs):
             shared_expert_intermediate_size=512,
         ),
     )
+    if family == "gemma4":
+        target.architectures = ["Gemma4ForConditionalGeneration"]
+        target.hf_text_config = SimpleNamespace(top_k_experts=8, num_experts=128)
     return SpeculativeConfig(
         method="hierarchical",
         target_model_config=cast(ModelConfig, target),
@@ -46,6 +49,12 @@ def test_capacity_includes_each_preverify_recovery_or_bonus(monkeypatch):
     assert config.inner_method == "mtp"
     assert config.moe_skip_top_h == 4
     assert make_config(monkeypatch, inner_num_rounds=2).num_speculative_tokens == 10
+
+
+def test_gemma4_uses_shared_moe_preverification_with_full_outer_capacity(monkeypatch):
+    config = make_config(monkeypatch, family="gemma4")
+    assert config.num_speculative_tokens == 20
+    assert config.moe_skip_top_h == 4
 
 
 def test_graph_hash_distinguishes_inner_method_depth_rounds_and_top_h(monkeypatch):

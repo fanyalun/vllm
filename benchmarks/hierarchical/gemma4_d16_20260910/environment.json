@@ -1,0 +1,12 @@
+{
+  "python": "3.12.13 | packaged by conda-forge | (main, Mar  5 2026, 16:50:00) [GCC 14.3.0]",
+  "executable": "/home/fanya/vllm/.venv/bin/python",
+  "torch": "2.13.0+cu130",
+  "cuda": "13.0",
+  "gpus": "index, name, uuid, driver_version\n0, NVIDIA A100 80GB PCIe, GPU-92c316af-729a-d2b2-87e6-f49f1ee62b4a, 580.95.05\n1, NVIDIA A100 80GB PCIe, GPU-c7954c39-6588-4e28-8636-b460b8346ef8, 580.95.05\n",
+  "model_config_hashes": {
+    "gemma-4-26B-A4B-it": "ed0c1eb3633de771906e9ba004a44cc5635bcc06ee2062077c3d2e88a50707d3",
+    "gemma-4-26B-A4B-it-assistant": "f393dd4bbdbb1de9bfade9de224493de4e728ba020f9078db8de93cc66a551b2",
+    "gemma4-26b-a4b-dspark": "a6d5250b5c1978642154993547cdc2ecbf069e1cbe1f99b2d79cb982e45f8ee2"
+  }
+}

@@ -12,7 +12,7 @@ from vllm.model_executor.layers.mamba.mamba_utils import is_conv_state_dim_first
 
 
 class PreverifyState:
-    """Private GDN candidates, scoped to one target-anchored proposal."""
+    """Private GDN candidates; attention-only models need no recurrent copies."""
 
     def __init__(self, model, width: int, device: torch.device):
         self.width = width
@@ -41,6 +41,8 @@ class PreverifyState:
         destination.copy_(source.index_select(axis, positions))
 
     def begin(self, model_state, input_batch, block_tables, kv_cache_config):
+        if not self.layers:
+            return
         req_idx = input_batch.idx_mapping
         bias = (model_state.num_accepted_tokens_gpu[req_idx] - 1).to(torch.int64)
         source = (

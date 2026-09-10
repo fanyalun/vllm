@@ -1,0 +1,247 @@
+{
+  "source_base_commit": "24e34a4f0482fe1095bb13e9360e5f7ae425c98e",
+  "performance_status": "complete",
+  "strict_numerical_equivalence": "not certified; MTP sequential oracle failed",
+  "cases": {
+    "mtp_d16": {
+      "command": [
+        ".venv/bin/python",
+        "benchmarks/hierarchical/run_cycle_profile.py",
+        "--model",
+        "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+        "--dataset",
+        "benchmark_results/moe_skip_e2e_16x512_b1_20260908_gemma4/gemma4_16.jsonl",
+        "--method",
+        "mtp",
+        "--output",
+        "benchmark_results/hierarchical_gemma4_d16_20260910/mtp_d16",
+        "--draft-model",
+        "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it-assistant",
+        "--draft-length",
+        "16",
+        "--legacy-mm-inputs",
+        "--async-scheduling"
+      ],
+      "environment": {
+        "CUDA_VISIBLE_DEVICES": "0",
+        "VLLM_USE_V2_MODEL_RUNNER": "1",
+        "VLLM_DISABLE_COMPILE_CACHE": "1",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONPATH": "$PWD/benchmarks/hierarchical:$PWD",
+        "PATH": "$PWD/.venv/bin:$PATH"
+      },
+      "files": {
+        "mtp_d16/result.json": "4eea459f3e7460c31ce8a8ef4ab27db46ec83573354de2dd114d80a061c920d1",
+        "mtp_d16/config.json": "2284990798f6ca9f28a42ddc6a6bb92ea490cb3559ff32422acb81981b57ef0b",
+        "mtp_d16/MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+        "mtp_d16/run.log": "f924dc1bc47536a9eeb05fee36049f7323cb71ec187fe0746e0063307b99407d"
+      },
+      "requests": 12,
+      "output_tokens": 6144,
+      "post_warmup_jit_warnings": 0,
+      "status": "measured"
+    },
+    "moe_skip_d16": {
+      "command": [
+        ".venv/bin/python",
+        "benchmarks/hierarchical/run_cycle_profile.py",
+        "--model",
+        "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+        "--dataset",
+        "benchmark_results/moe_skip_e2e_16x512_b1_20260908_gemma4/gemma4_16.jsonl",
+        "--method",
+        "moe_skip",
+        "--output",
+        "benchmark_results/hierarchical_gemma4_d16_20260910/moe_skip_d16",
+        "--draft-length",
+        "16",
+        "--legacy-mm-inputs"
+      ],
+      "environment": {
+        "CUDA_VISIBLE_DEVICES": "1",
+        "VLLM_USE_V2_MODEL_RUNNER": "1",
+        "VLLM_DISABLE_COMPILE_CACHE": "1",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONPATH": "$PWD/benchmarks/hierarchical:$PWD",
+        "PATH": "$PWD/.venv/bin:$PATH"
+      },
+      "files": {
+        "moe_skip_d16/result.json": "5385c5fe7bdee848522a99d34ef1d4cf43ee2defac1fcdf39ecef23d773f4ddb",
+        "moe_skip_d16/config.json": "6e97a1429649e4f6e8bd1f88238a803590b4e7c51e37dc265c7d2273bb5e4d9b",
+        "moe_skip_d16/MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+        "moe_skip_d16/run.log": "1fcd1c93f01d9fc7d0966c1b7dfca12679c87c2eb37f22ddbdda2c05ff87ca6f"
+      },
+      "requests": 12,
+      "output_tokens": 6144,
+      "post_warmup_jit_warnings": 0,
+      "status": "measured"
+    },
+    "mtp_n4": {
+      "command": [
+        ".venv/bin/python",
+        "benchmarks/hierarchical/run_cycle_profile.py",
+        "--model",
+        "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+        "--dataset",
+        "benchmark_results/moe_skip_e2e_16x512_b1_20260908_gemma4/gemma4_16.jsonl",
+        "--method",
+        "mtp",
+        "--output",
+        "benchmark_results/hierarchical_gemma4_d16_20260910/mtp_n4",
+        "--draft-model",
+        "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it-assistant",
+        "--rounds",
+        "4"
+      ],
+      "environment": {
+        "CUDA_VISIBLE_DEVICES": "0",
+        "VLLM_USE_V2_MODEL_RUNNER": "1",
+        "VLLM_DISABLE_COMPILE_CACHE": "1",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONPATH": "$PWD/benchmarks/hierarchical:$PWD",
+        "PATH": "$PWD/.venv/bin:$PATH"
+      },
+      "files": {
+        "mtp_n4/result.json": "4915560baae5692b10b511491ae2799eecefa33e1b96aa7e800cf130b7531af9",
+        "mtp_n4/config.json": "2871a3404400cb2767c3382a9039c1d64bcf8876f8542c6af1de60bb3e1968fd",
+        "mtp_n4/MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+        "mtp_n4/run.log": "7bf517150d633c01aea54334f78b1bb8d842fa19d08fab7be4bc284a564d14cd"
+      },
+      "requests": 12,
+      "output_tokens": 6144,
+      "post_warmup_jit_warnings": 0,
+      "status": "measured"
+    },
+    "dspark_n4": {
+      "command": [
+        ".venv/bin/python",
+        "benchmarks/hierarchical/run_cycle_profile.py",
+        "--model",
+        "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+        "--dataset",
+        "benchmark_results/moe_skip_e2e_16x512_b1_20260908_gemma4/gemma4_16.jsonl",
+        "--method",
+        "dspark",
+        "--output",
+        "benchmark_results/hierarchical_gemma4_d16_20260910/dspark_n4",
+        "--draft-model",
+        "/home/fanya/data1/fanya/models/gemma4-26b-a4b-dspark",
+        "--rounds",
+        "4"
+      ],
+      "environment": {
+        "CUDA_VISIBLE_DEVICES": "1",
+        "VLLM_USE_V2_MODEL_RUNNER": "1",
+        "VLLM_DISABLE_COMPILE_CACHE": "1",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONPATH": "$PWD/benchmarks/hierarchical:$PWD",
+        "PATH": "$PWD/.venv/bin:$PATH"
+      },
+      "files": {
+        "dspark_n4/result.json": "babf0e9d6095a308a115bd798231498af7d126d87e1a3d857eb9a9d0997964e9",
+        "dspark_n4/config.json": "ddd70441003ffd42ac283b54a7e67a4f7453d55c38fd4b344c0c96a45da46d13",
+        "dspark_n4/MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+        "dspark_n4/run.log": "c3285951ab95f1e379c8ec2e116a4b737abb8e442c206520fb0e18531245ee52"
+      },
+      "requests": 12,
+      "output_tokens": 6144,
+      "post_warmup_jit_warnings": 0,
+      "status": "measured"
+    },
+    "check_mtp": {
+      "command": [
+        ".venv/bin/python",
+        "benchmarks/hierarchical/run_cycle_profile.py",
+        "--model",
+        "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+        "--dataset",
+        "benchmark_results/moe_skip_e2e_16x512_b1_20260908_gemma4/gemma4_16.jsonl",
+        "--method",
+        "mtp",
+        "--output",
+        "benchmark_results/hierarchical_gemma4_d16_20260910/check_mtp",
+        "--draft-model",
+        "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it-assistant",
+        "--rounds",
+        "4",
+        "--max-tokens",
+        "64",
+        "--samples",
+        "1",
+        "--phases",
+        "e2e"
+      ],
+      "environment": {
+        "CUDA_VISIBLE_DEVICES": "0",
+        "VLLM_USE_V2_MODEL_RUNNER": "1",
+        "VLLM_DISABLE_COMPILE_CACHE": "1",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONPATH": "$PWD/benchmarks/hierarchical:$PWD",
+        "PATH": "$PWD/.venv/bin:$PATH",
+        "VLLM_HIERARCHICAL_CHECK_PREVERIFY": "1"
+      },
+      "files": {
+        "check_mtp/config.json": "8836fa75d5253bf6444ed3dfcdbf0fb079f1f3dcd83eae3d470e3349c6576499",
+        "check_mtp/run.log": "6ed1603c1f8194f923ce2edcbe71c9c5206b2314133f9f51f25cc763110b70e5"
+      },
+      "status": "failed during warmup",
+      "failure": "Pre-verify batch/sequence mismatch at 149: draft=[107, 140, 236865, 1191] accepted=4 batch=[107, 140, 236865, 1191, 1202] sequential=[107, 140, 236865, 1191, 659] max_logit_diff=[2.21875, 2.3125, 0.671875, 4.66015625, 7.1328125] layers={}",
+      "completed_requests": 0
+    },
+    "check_dspark": {
+      "command": [
+        ".venv/bin/python",
+        "benchmarks/hierarchical/run_cycle_profile.py",
+        "--model",
+        "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+        "--dataset",
+        "benchmark_results/moe_skip_e2e_16x512_b1_20260908_gemma4/gemma4_16.jsonl",
+        "--method",
+        "dspark",
+        "--output",
+        "benchmark_results/hierarchical_gemma4_d16_20260910/check_dspark",
+        "--draft-model",
+        "/home/fanya/data1/fanya/models/gemma4-26b-a4b-dspark",
+        "--rounds",
+        "4",
+        "--max-tokens",
+        "64",
+        "--samples",
+        "1",
+        "--phases",
+        "e2e"
+      ],
+      "environment": {
+        "CUDA_VISIBLE_DEVICES": "1",
+        "VLLM_USE_V2_MODEL_RUNNER": "1",
+        "VLLM_DISABLE_COMPILE_CACHE": "1",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONPATH": "$PWD/benchmarks/hierarchical:$PWD",
+        "PATH": "$PWD/.venv/bin:$PATH",
+        "VLLM_HIERARCHICAL_CHECK_PREVERIFY": "1"
+      },
+      "files": {
+        "check_dspark/result.json": "900f01c53e89c959c60e04766d53d1af501a2ba81cb97715ff8249589984d16b",
+        "check_dspark/config.json": "e1c676588e14fd08b6761787399985e8769902ad6feca5576cef9d5e485fff5f",
+        "check_dspark/MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+        "check_dspark/run.log": "e18cf42f13e115c1a8083c0d892f8ea03f2b6447493ef1989b9d1e3c7c1a7889"
+      },
+      "status": "bounded sequential oracle passed",
+      "completed_requests": 1,
+      "output_tokens": 64
+    }
+  },
+  "measured_performance_requests": 48,
+  "measured_performance_output_tokens": 24576,
+  "source_note": "Gemma4 performance path unchanged during the runs. The Qwen-only RecoverSSM guard and a state docstring were finalized after hierarchical workers loaded; the earlier versions are included in raw evidence.",
+  "final_source_hashes": {
+    "vllm/config/speculative.py": "68c071b593c8dac20e799fa360aec905395f67d77957742cafff6542aaa80f92",
+    "vllm/v1/worker/gpu/spec_decode/hierarchical/speculator.py": "2f534d0df05d63c261b3c58ec2ad97d7d70962d542cbbb6a3918cd31c6e85180",
+    "vllm/v1/worker/gpu/spec_decode/hierarchical/state.py": "e075ead897bb5c5700ed15fedb6fd671618b10e80a1c5e313e2026a7fff00da3",
+    "benchmarks/hierarchical/run_cycle_profile.py": "ad2c5ddf009655e948bc94c320f280d55bff9a757ae33b53e69f3c578f37446f"
+  },
+  "hierarchical_worker_source_hashes": {
+    "vllm/v1/worker/gpu/spec_decode/hierarchical/speculator.py": "207cbfd370cbc43085333d2b08cbc2d1b863293d64e51f76b1aa6950fdd15a0c",
+    "vllm/v1/worker/gpu/spec_decode/hierarchical/state.py": "0c0c2ce2ddb71820a0fe307b19440413bfbd96125ea98eada599b8f746e3611e"
+  }
+}

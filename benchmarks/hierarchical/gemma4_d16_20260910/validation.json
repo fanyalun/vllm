@@ -1,0 +1,19 @@
+{
+  "pytest": {
+    "passed": 45,
+    "command": ".venv/bin/python -m pytest tests/config/test_hierarchical_config.py tests/v1/worker/gpu/spec_decode/test_hierarchical.py tests/benchmarks/test_hierarchical_measurement.py -q"
+  },
+  "pre_commit": "all applicable checks passed",
+  "mypy_3_12": "passed",
+  "measurement": {
+    "cells": 4,
+    "requests": 48,
+    "output_tokens": 24576,
+    "post_warmup_inference_jit_warnings": 0
+  },
+  "sequential_oracle": {
+    "mtp": "failed in warmup at position 149",
+    "dspark": "passed one 64-token prompt plus warmup"
+  },
+  "strict_numerical_equivalence": "not certified"
+}

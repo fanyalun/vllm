@@ -120,6 +120,14 @@ def test_private_candidates_never_use_gdn_null_block(monkeypatch):
     assert all(cache.shape[0] == 6 for cache in state.caches["layer"])
 
 
+def test_attention_only_preverify_does_not_access_recurrent_state():
+    state = PreverifyState(SimpleNamespace(modules=lambda: []), 5, torch.device("cpu"))
+    state.begin(None, None, None, None)
+    state.advance(3)
+    with state.activate():
+        assert state.snapshot() == {}
+
+
 @pytest.mark.parametrize("accepted", range(5))
 def test_inner_verification_stops_at_first_mismatch(accepted):
     draft = torch.tensor([1, 2, 3, 4])

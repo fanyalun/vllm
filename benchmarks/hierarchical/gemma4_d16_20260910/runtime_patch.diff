@@ -1,0 +1,108 @@
+diff --git a/vllm/config/speculative.py b/vllm/config/speculative.py
+index 9c7a449b43..1adbea35d0 100644
+--- a/vllm/config/speculative.py
++++ b/vllm/config/speculative.py
+@@ -1607,8 +1607,10 @@ class SpeculativeConfig:
+         if not set(self.target_model_config.architectures or ()) <= {
+             "Qwen3_5MoeForCausalLM",
+             "Qwen3_5MoeForConditionalGeneration",
++            "Gemma4ForCausalLM",
++            "Gemma4ForConditionalGeneration",
+         }:
+-            raise ValueError("hierarchical currently supports Qwen3.6 MoE only")
++            raise ValueError("hierarchical supports Qwen3.6 MoE and Gemma4 MoE only")
+         self.moe_skip_top_h = preverify.moe_skip_top_h
+         inner = self.make_inner_config()
+         self.model = inner.model
+diff --git a/vllm/v1/worker/gpu/spec_decode/hierarchical/speculator.py b/vllm/v1/worker/gpu/spec_decode/hierarchical/speculator.py
+index 37c34764a7..68e8554f02 100644
+--- a/vllm/v1/worker/gpu/spec_decode/hierarchical/speculator.py
++++ b/vllm/v1/worker/gpu/spec_decode/hierarchical/speculator.py
+@@ -19,6 +19,7 @@ from vllm.v1.worker.gpu.attn_utils import (
+     init_attn_backend,
+ )
+ from vllm.v1.worker.gpu.input_batch import InputBuffers
++from vllm.v1.worker.gpu.model_states.default import DefaultModelState
+ from vllm.v1.worker.gpu.model_states.mamba_hybrid import MambaHybridModelState
+ from vllm.v1.worker.gpu.spec_decode.hierarchical.state import PreverifyState
+ from vllm.v1.worker.gpu.spec_decode.moe_skip.speculator import MoeSkipSpeculator
+@@ -125,7 +126,7 @@ class HierarchicalSpeculator(BaseSpeculator):
+         self.model = self.preverify.model
+         self.logits_model = target_model
+         self.state = PreverifyState(self.model, self.depth + 1, self.device)
+-        if not self.state.layers:
++        if self.preverify.model_family == "qwen3_6" and not self.state.layers:
+             raise ValueError("hierarchical requires Qwen GDN layers")
+         self.small.load_model(target_model)
+         self.layer_outputs: dict[int, tuple[torch.Tensor, ...]] = {}
+@@ -147,9 +148,17 @@ class HierarchicalSpeculator(BaseSpeculator):
+         target_input_buffers,
+         target_attn_groups,
+     ):
+-        if not isinstance(model_state, MambaHybridModelState):
+-            raise ValueError("hierarchical requires MambaHybridModelState")
+-        if model_state.recoverssm is not None:
++        expected_state = (
++            MambaHybridModelState
++            if self.preverify.model_family == "qwen3_6"
++            else DefaultModelState
++        )
++        if not isinstance(model_state, expected_state):
++            raise ValueError(f"hierarchical requires {expected_state.__name__}")
++        if (
++            isinstance(model_state, MambaHybridModelState)
++            and model_state.recoverssm is not None
++        ):
+             raise ValueError("hierarchical does not support RecoverSSM")
+         self.model_state = model_state
+         self.kv_cache_config = kv_cache_config
+@@ -262,6 +271,15 @@ class HierarchicalSpeculator(BaseSpeculator):
+             self.attn_groups,
+             self.kv_cache_config,
+         )
++        if self.state.layers:
++            self._set_gdn_metadata(batch, width, metadata)
++        return (
++            batch,
++            metadata,
++            build_slot_mappings_by_layer(slots, self.kv_cache_config),
++        )
++
++    def _set_gdn_metadata(self, batch, width, metadata):
+         gdn = GDNAttentionMetadata(
+             num_prefills=0,
+             num_prefill_tokens=0,
+@@ -277,11 +295,6 @@ class HierarchicalSpeculator(BaseSpeculator):
+         )
+         for name in self.state.layers:
+             metadata[name] = gdn
+-        return (
+-            batch,
+-            metadata,
+-            build_slot_mappings_by_layer(slots, self.kv_cache_config),
+-        )
+ 
+     def _verify(self, batch, metadata, slots):
+         width = batch.num_tokens
+diff --git a/vllm/v1/worker/gpu/spec_decode/hierarchical/state.py b/vllm/v1/worker/gpu/spec_decode/hierarchical/state.py
+index ef371691af..077ac907b3 100644
+--- a/vllm/v1/worker/gpu/spec_decode/hierarchical/state.py
++++ b/vllm/v1/worker/gpu/spec_decode/hierarchical/state.py
+@@ -12,7 +12,7 @@ from vllm.model_executor.layers.mamba.mamba_utils import is_conv_state_dim_first
+ 
+ 
+ class PreverifyState:
+-    """Private GDN candidates, scoped to one target-anchored proposal."""
++    """Private GDN candidates; attention-only models need no recurrent copies."""
+ 
+     def __init__(self, model, width: int, device: torch.device):
+         self.width = width
+@@ -41,6 +41,8 @@ class PreverifyState:
+         destination.copy_(source.index_select(axis, positions))
+ 
+     def begin(self, model_state, input_batch, block_tables, kv_cache_config):
++        if not self.layers:
++            return
+         req_idx = input_batch.idx_mapping
+         bias = (model_state.num_accepted_tokens_gpu[req_idx] - 1).to(torch.int64)
+         source = (
