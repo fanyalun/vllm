@@ -15,7 +15,10 @@ def main():
     parser.add_argument("--model", choices=["qwen36", "gemma4"], required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--compiled-totals", action="store_true")
+    parser.add_argument("--gdn-comparison", action="store_true")
     args = parser.parse_args()
+    if args.gdn_comparison and (args.model != "qwen36" or args.compiled_totals):
+        parser.error("GDN comparison requires Qwen and eager graph diagnostics")
     from vllm import LLM, SamplingParams
 
     model = {
@@ -32,6 +35,8 @@ def main():
     )
     if args.model == "gemma4":
         spec["model"] = "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it-assistant"
+    if args.gdn_comparison:
+        spec["preverify_gdn_mode"] = "ssm_mean"
     config = dict(
         model=model,
         tensor_parallel_size=1,
@@ -49,6 +54,8 @@ def main():
         worker_extension_cls="forward_stage_worker.ForwardStageWorker",
     )
     args.output.mkdir(parents=True, exist_ok=True)
+    if args.gdn_comparison:
+        config["worker_extension_cls"] = "gdn_mean_stage_worker.GdnMeanStageWorker"
     os.environ["FORWARD_STAGE_OUTPUT"] = str(args.output.resolve())
     os.environ["FORWARD_STAGE_COMPILED"] = "1" if args.compiled_totals else "0"
 
@@ -72,7 +79,11 @@ def main():
                 if k.startswith(("VLLM_", "CUDA_", "HF_"))
             },
             "contract": (
-                "Same model instance, fixed candidate IDs and private GDN prefix "
+                "Same five-token input and initial state; exact top-8/top-4, "
+                "SSM-mean top-4, input-mean top-4; 20 paired eager graph replays. "
+                "Includes logits and argmax; excludes state restore and metadata."
+                if args.gdn_comparison
+                else "Same model instance, fixed candidate IDs and private GDN prefix "
                 "state; widths 4 and 5; 20 paired graph replays after 3 excluded "
                 "replays. Total includes backbone, logits and argmax; excludes "
                 "metadata/state restore and proposal generation."

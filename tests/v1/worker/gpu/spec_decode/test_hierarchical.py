@@ -132,9 +132,11 @@ def test_scheduler_receives_only_materialized_candidates():
     handler.copy_event.synchronize.assert_called_once()
 
 
-def test_private_candidates_never_use_gdn_null_block(monkeypatch):
+@pytest.mark.parametrize("mode", ["none", "ssm_mean", "input_mean"])
+def test_private_candidates_allocate_required_state_slots(monkeypatch, mode):
     class Layer:
         prefix = "layer"
+        conv_kernel_size = 4
 
         def get_state_shape(self):
             return ((8, 2), (2, 2))
@@ -147,10 +149,12 @@ def test_private_candidates_never_use_gdn_null_block(monkeypatch):
         Layer,
     )
     state = PreverifyState(
-        SimpleNamespace(modules=lambda: [Layer()]), 5, torch.device("cpu")
+        SimpleNamespace(modules=lambda: [Layer()]), 5, torch.device("cpu"), mode
     )
-    assert state.state_indices.tolist() == [[1, 2, 3, 4, 5]]
-    assert all(cache.shape[0] == 6 for cache in state.caches["layer"])
+    expected = [[1, 2, 3, 4, 5]] if mode == "none" else [[0] * 5]
+    assert state.state_indices.tolist() == expected
+    slots = 6 if mode == "none" else 1
+    assert all(cache.shape[0] == slots for cache in state.caches["layer"])
 
 
 def test_attention_only_preverify_does_not_access_recurrent_state():
@@ -159,6 +163,24 @@ def test_attention_only_preverify_does_not_access_recurrent_state():
     state.advance(3)
     with state.activate():
         assert state.snapshot() == {}
+
+
+@pytest.mark.parametrize("mode", ["ssm_mean", "input_mean"])
+@pytest.mark.parametrize("accepted", range(5))
+def test_approximate_state_survives_inner_rejection(monkeypatch, mode, accepted):
+    monkeypatch.setattr(
+        "vllm.v1.worker.gpu.spec_decode.hierarchical.state.is_conv_state_dim_first",
+        lambda: False,
+    )
+    state = object.__new__(PreverifyState)
+    state.mode = mode
+    conv = torch.arange(16).view(1, 8, 2).float()
+    temporal = torch.tensor([[[42.0]]])
+    state.caches = {"layer": (conv, temporal)}
+    state.advance(accepted)
+    assert temporal.item() == 42
+    offset = accepted if mode == "ssm_mean" else 0
+    torch.testing.assert_close(conv[0, :3, 0], torch.arange(offset, offset + 3) * 2.0)
 
 
 @pytest.mark.parametrize("accepted", range(5))
@@ -209,14 +231,17 @@ def test_preverify_restores_target_cache_bindings_after_forward_failure():
 
 @pytest.mark.parametrize("accepted", [1, 3, 5])
 @pytest.mark.parametrize("dim_first", [False, True])
+@pytest.mark.parametrize("mode", ["none", "ssm_mean", "input_mean"])
 def test_outer_reset_copies_only_target_accepted_state(
-    monkeypatch, accepted, dim_first
+    monkeypatch, accepted, dim_first, mode
 ):
     monkeypatch.setattr(
         "vllm.v1.worker.gpu.spec_decode.hierarchical.state.is_conv_state_dim_first",
         lambda: dim_first,
     )
     state = object.__new__(PreverifyState)
+    state.mode = mode
+    slot = 1 if mode == "none" else 0
     conv = torch.arange(160).view(10, 8, 2).float()
     if dim_first:
         conv = conv.transpose(1, 2).contiguous()
@@ -238,14 +263,14 @@ def test_outer_reset_copies_only_target_accepted_state(
     )
     state.begin(model_state, batch, (table,), cache_config)
     private_conv, private_temporal = state.caches["layer"]
-    history = private_conv[1].transpose(0, 1) if dim_first else private_conv[1]
+    history = private_conv[slot].transpose(0, 1) if dim_first else private_conv[slot]
     expected = canonical[0][2].transpose(0, 1) if dim_first else canonical[0][2]
     torch.testing.assert_close(history[:3], expected[accepted - 1 : accepted + 2])
-    assert private_temporal[1].item() == table[0, accepted].item()
+    assert private_temporal[slot].item() == table[0, accepted].item()
     with state.activate():
         state.layers["layer"].kv_cache[1].fill_(-1)
     state.begin(model_state, batch, (table,), cache_config)
-    assert private_temporal[1].item() == table[0, accepted].item()
+    assert private_temporal[slot].item() == table[0, accepted].item()
     torch.testing.assert_close(conv, canonical[0])
     torch.testing.assert_close(temporal, canonical[1])
 

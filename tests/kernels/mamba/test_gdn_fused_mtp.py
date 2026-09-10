@@ -56,6 +56,74 @@ PREFIX = "model.layers.0.linear_attn"
 EPS = 1e-6
 
 
+@pytest.mark.parametrize("tokens", [1, 2, 3, 4, 5])
+@pytest.mark.parametrize("extreme", [False, True])
+@torch.inference_mode()
+def test_mean_state_update_matches_one_pooled_write_and_token_queries(tokens, extreme):
+    from vllm.model_executor.layers.mamba.gdn.mean_update import mean_state_update
+
+    torch.manual_seed(42)
+    h, hv, dim = 2, 4, 128
+    q, k = [
+        torch.randn(tokens, h, dim, device="cuda", dtype=torch.bfloat16)
+        for _ in range(2)
+    ]
+    v = torch.randn(tokens, hv, dim, device="cuda", dtype=torch.bfloat16)
+    a, b = [
+        torch.randn(tokens, hv, device="cuda", dtype=torch.bfloat16) for _ in range(2)
+    ]
+    if extreme:
+        a[:, ::2] = 80
+        a[:, 1::2] = -80
+        k.zero_()
+    a_log = torch.randn(hv, device="cuda")
+    dt = torch.randn(hv, device="cuda")
+    pool = torch.randn(3, hv, dim, dim, device="cuda") * 0.05
+    state = pool[1:2]
+    canaries = pool[[0, 2]].clone()
+    reference = state.clone()
+    for _ in range(2):
+        if tokens == 1:
+            from vllm.third_party.flash_linear_attention.ops import (
+                fused_recurrent_gated_delta_rule,
+            )
+
+            single_output, single_state = fused_recurrent_gated_delta_rule(
+                q=q.unsqueeze(0),
+                k=k.unsqueeze(0),
+                v=v.unsqueeze(0),
+                g=(
+                    -a_log.exp() * torch.nn.functional.softplus(a.float() + dt)
+                ).unsqueeze(0),
+                beta=b.float().sigmoid().unsqueeze(0),
+                initial_state=state.clone(),
+                inplace_final_state=False,
+                cu_seqlens=torch.tensor([0, 1], device="cuda", dtype=torch.int32),
+                use_qk_l2norm_in_kernel=True,
+            )
+        key = k.float().mean(0)
+        key *= (key.square().sum(-1, keepdim=True) + 1e-6).rsqrt()
+        key = key.repeat_interleave(hv // h, 0)
+        decay = (
+            -a_log.exp() * torch.nn.functional.softplus(a.float().mean(0) + dt)
+        ).exp()
+        reference *= decay[None, :, None, None]
+        delta = v.float().mean(0) - (reference[0] * key[:, None, :]).sum(-1)
+        delta *= b.float().mean(0).sigmoid()[:, None]
+        reference += delta[None, :, :, None] * key[None, :, None, :]
+        query = q.float()
+        query *= (query.square().sum(-1, keepdim=True) + 1e-6).rsqrt() * dim**-0.5
+        query = query.repeat_interleave(hv // h, 1)
+        expected = torch.einsum("hvk,thk->thv", reference[0], query)
+        actual = mean_state_update(q, k, v, a, b, a_log, dt, state)
+        torch.testing.assert_close(state, reference, rtol=2e-4, atol=2e-5)
+        torch.testing.assert_close(actual.float(), expected, rtol=0.01, atol=0.002)
+        torch.testing.assert_close(pool[[0, 2]], canaries, rtol=0, atol=0)
+        if tokens == 1:
+            torch.testing.assert_close(state, single_state, rtol=2e-4, atol=2e-5)
+            torch.testing.assert_close(actual, single_output[0], rtol=0.01, atol=0.002)
+
+
 class _TestGatedNorm:
     def __init__(self, weight: torch.Tensor, activation: str) -> None:
         self.weight = weight
@@ -207,6 +275,9 @@ def test_fused_forward_uses_packed_entrypoint() -> None:
     )
     layer.forward_cuda = types.MethodType(
         QwenGatedDeltaNetAttention.forward_cuda, layer
+    )
+    layer._forward_cuda_exact = types.MethodType(
+        QwenGatedDeltaNetAttention._forward_cuda_exact, layer
     )
 
     def packed_op(

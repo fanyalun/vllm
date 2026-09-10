@@ -14,14 +14,18 @@ from pathlib import Path
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--method", choices=["mtp", "dspark", "moe_skip"], required=True
+        "--method", choices=["ar", "mtp", "dspark", "moe_skip"], required=True
     )
     parser.add_argument("--rounds", type=int, default=0)
+    parser.add_argument(
+        "--gdn-mode", choices=["none", "ssm_mean", "input_mean"], default="none"
+    )
     parser.add_argument("--draft-length", type=int, default=4)
     parser.add_argument("--async-scheduling", action="store_true")
     parser.add_argument("--legacy-mm-inputs", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--samples", type=int, default=4)
+    parser.add_argument("--warmup-all", action="store_true")
     parser.add_argument("--model", default="/data1/fanya/Qwen/Qwen3.6-35B-A3B")
     parser.add_argument("--draft-model")
     parser.add_argument("--dataset", type=Path)
@@ -34,6 +38,10 @@ def main():
         default=["e2e", "profile", "e2e_after"],
     )
     args = parser.parse_args()
+    if args.gdn_mode != "none" and not args.rounds:
+        parser.error("--gdn-mode requires hierarchical --rounds")
+    if args.method == "ar" and (args.rounds or "profile" in args.phases):
+        parser.error("AR control requires no --rounds and uninstrumented phases")
     from vllm import LLM, SamplingParams
 
     root = Path(__file__).resolve().parents[2]
@@ -57,6 +65,7 @@ def main():
             "inner_num_rounds": args.rounds,
             "moe_skip_top_h": 4,
             "draft_sample_method": "greedy",
+            "preverify_gdn_mode": args.gdn_mode,
         }
     if args.method == "dspark":
         spec["model"] = "/data1/fanya/models/Qwen3.6-35B-A3B-speculator.dspark"
@@ -75,7 +84,7 @@ def main():
         enable_prefix_caching=False,
         async_scheduling=args.async_scheduling,
         limit_mm_per_prompt={"image": 0, "video": 0},
-        speculative_config=spec,
+        speculative_config=None if args.method == "ar" else spec,
         disable_log_stats=True,
         seed=0,
         worker_extension_cls=args.worker_extension,
@@ -94,10 +103,23 @@ def main():
             "llm": config,
             "samples": samples,
             "max_tokens": args.max_tokens,
+            "warmup_all": args.warmup_all,
             "cuda_visible_devices": os.environ["CUDA_VISIBLE_DEVICES"],
             "source_commit": subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], text=True
             ).strip(),
+            "runtime_diff_sha256": hashlib.sha256(
+                subprocess.check_output(["git", "diff", "HEAD", "--", "vllm"])
+            ).hexdigest(),
+            "mean_kernel_sha256": (
+                hashlib.sha256(
+                    (
+                        root / "vllm/model_executor/layers/mamba/gdn/mean_update.py"
+                    ).read_bytes()
+                ).hexdigest()
+                if args.gdn_mode != "none"
+                else None
+            ),
             "dataset_sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(),
         },
     )
@@ -105,7 +127,8 @@ def main():
     sampling = SamplingParams(
         temperature=0, max_tokens=args.max_tokens, ignore_eos=True
     )
-    llm.generate([samples[0]["prompt"]], sampling, use_tqdm=False)
+    for sample in samples if args.warmup_all else samples[:1]:
+        llm.generate([sample["prompt"]], sampling, use_tqdm=False)
     print("WARMUP_COMPLETE", flush=True)
     results = []
     for phase in args.phases:

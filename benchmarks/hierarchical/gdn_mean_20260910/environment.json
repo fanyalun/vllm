@@ -1,0 +1,19 @@
+{
+  "python": "3.12.13 | packaged by conda-forge | (main, Mar  5 2026, 16:50:00) [GCC 14.3.0]",
+  "torch": "2.13.0+cu130",
+  "cuda": "13.0",
+  "platform": "Linux-5.15.0-179-generic-x86_64-with-glibc2.35",
+  "base_commit": "7eb92c659836616ab2e72692c521a52c2abc02f3",
+  "branch": "feature/qwen3.6-three-stage-spec-decode",
+  "gpu": "index, name, uuid, driver_version, memory.total [MiB]\n0, NVIDIA A100 80GB PCIe, GPU-92c316af-729a-d2b2-87e6-f49f1ee62b4a, 580.95.05, 81920 MiB\n1, NVIDIA A100 80GB PCIe, GPU-c7954c39-6588-4e28-8636-b460b8346ef8, 580.95.05, 81920 MiB\n",
+  "topology": "\t\u001b[4mGPU0\tGPU1\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\u001b[0m\nGPU0\t X \tSYS\t0-23,48-71\t0\t\tN/A\nGPU1\tSYS\t X \t24-47,72-95\t1\t\tN/A\n\nLegend:\n\n  X    = Self\n  SYS  = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)\n  NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node\n  PHB  = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)\n  PXB  = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)\n  PIX  = Connection traversing at most a single PCIe bridge\n  NV#  = Connection traversing a bonded set of # NVLinks\n",
+  "model": "/data1/fanya/Qwen/Qwen3.6-35B-A3B",
+  "dtype": "bfloat16",
+  "ssm_dtype": "float32",
+  "new_dependencies_installed": false,
+  "cpp_cuda_build_performed": false,
+  "mtp_matrix_gpu": 1,
+  "dspark_matrix_gpu": 0,
+  "stage_gpu": 1,
+  "ar_gpu": 0
+}

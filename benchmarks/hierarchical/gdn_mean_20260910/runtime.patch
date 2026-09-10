@@ -1,0 +1,344 @@
+diff --git a/vllm/config/compilation.py b/vllm/config/compilation.py
+index 9989c4d2a0..f7199efa6f 100644
+--- a/vllm/config/compilation.py
++++ b/vllm/config/compilation.py
+@@ -776,0 +777 @@ class CompilationConfig:
++        "vllm::qwen_gdn_mean_forward",
+diff --git a/vllm/config/speculative.py b/vllm/config/speculative.py
+index 1adbea35d0..25a97c1339 100644
+--- a/vllm/config/speculative.py
++++ b/vllm/config/speculative.py
+@@ -620,0 +621,7 @@ class SpeculativeConfig:
++    preverify_gdn_mode: Literal["none", "ssm_mean", "input_mean"] = "none"
++    """Experimental Qwen preverify mean update, reset from Target each cycle.
++
++    ssm_mean pools recurrent writes; input_mean pools the entire GDN input.
++    Both keep one private SSM state and retain it after inner rejection.
++    """
++
+@@ -628,0 +636 @@ class SpeculativeConfig:
++            preverify_gdn_mode="none",
+@@ -657,0 +666 @@ class SpeculativeConfig:
++                    self.preverify_gdn_mode,
+@@ -1133,0 +1143,2 @@ class SpeculativeConfig:
++        if self.preverify_gdn_mode != "none":
++            raise ValueError("preverify_gdn_mode requires method='hierarchical'")
+@@ -1605,0 +1617 @@ class SpeculativeConfig:
++            preverify_gdn_mode="none",
+@@ -1614,0 +1627,9 @@ class SpeculativeConfig:
++        if self.preverify_gdn_mode != "none":
++            architectures = set(self.target_model_config.architectures or ())
++            if not architectures or not architectures <= {
++                "Qwen3_5MoeForCausalLM",
++                "Qwen3_5MoeForConditionalGeneration",
++            }:
++                raise ValueError("Mean GDN preverify requires Qwen3.6 MoE")
++            if self.inner_num_speculative_tokens != 4:
++                raise ValueError("Mean GDN preverify currently requires inner D=4")
+diff --git a/vllm/model_executor/layers/mamba/gdn/mean_update.py b/vllm/model_executor/layers/mamba/gdn/mean_update.py
+new file mode 100644
+index 0000000000..58362aaebd
+--- /dev/null
++++ b/vllm/model_executor/layers/mamba/gdn/mean_update.py
+@@ -0,0 +1,113 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""Single-state mean update for the experimental Qwen pre-verifier."""
++
++import torch
++
++from vllm.triton_utils import tl, triton
++
++
++@triton.jit
++def _mean_update(
++    Q,
++    K,
++    V,
++    A,
++    B,
++    A_LOG,
++    DT,
++    STATE,
++    OUT,
++    T: tl.constexpr,
++    H: tl.constexpr,
++    HV: tl.constexpr,
++    DK: tl.constexpr,
++    DV: tl.constexpr,
++    QS: tl.constexpr,
++    KS: tl.constexpr,
++    VS: tl.constexpr,
++    AS: tl.constexpr,
++    BS: tl.constexpr,
++    BT: tl.constexpr,
++    BK: tl.constexpr,
++    BV: tl.constexpr,
++):
++    head = tl.program_id(0)
++    value_tile = tl.program_id(1)
++    key_head = head // (HV // H)
++    ts = tl.arange(0, BT)
++    ks = tl.arange(0, BK)
++    vs = value_tile * BV + tl.arange(0, BV)
++    keys = tl.load(
++        K + ts[:, None] * KS + key_head * DK + ks[None, :],
++        (ts[:, None] < T) & (ks[None, :] < DK),
++        0,
++    ).to(tl.float32)
++    key = tl.sum(keys, 0) / T
++    key *= tl.rsqrt(tl.sum(key * key, 0) + 1e-6)
++    values = tl.load(
++        V + ts[:, None] * VS + head * DV + vs[None, :],
++        (ts[:, None] < T) & (vs[None, :] < DV),
++        0,
++    ).to(tl.float32)
++    value = tl.sum(values, 0) / T
++    a = tl.sum(tl.load(A + ts * AS + head, ts < T, 0).to(tl.float32), 0) / T
++    b = tl.sum(tl.load(B + ts * BS + head, ts < T, 0).to(tl.float32), 0) / T
++    x = a + tl.load(DT + head).to(tl.float32)
++    softplus = tl.maximum(x, 0) + tl.log(1 + tl.exp(-tl.abs(x)))
++    decay = tl.exp(-tl.exp(tl.load(A_LOG + head)) * softplus)
++    beta = tl.sigmoid(b)
++    offsets = head * DV * DK + vs[:, None] * DK + ks[None, :]
++    mask = (vs[:, None] < DV) & (ks[None, :] < DK)
++    state = tl.load(STATE + offsets, mask, 0).to(tl.float32) * decay
++    delta = (value - tl.sum(state * key[None, :], 1)) * beta
++    state += delta[:, None] * key[None, :]
++    for t in range(T):
++        query = tl.load(Q + t * QS + key_head * DK + ks, ks < DK, 0).to(tl.float32)
++        query *= tl.rsqrt(tl.sum(query * query, 0) + 1e-6) * DK**-0.5
++        output = tl.sum(state * query[None, :], 1)
++        tl.store(OUT + (t * HV + head) * DV + vs, output, vs < DV)
++    tl.store(STATE + offsets, state, mask)
++
++
++def mean_state_update(q, k, v, a, b, a_log, dt_bias, state):
++    """Update one private state once, then read it with each token's query.
++
++    Keys/values and pre-activation gate inputs are averaged over actual tokens.
++    The mean key is normalized after pooling. Query normalization remains per token.
++    """
++    tokens, heads, key_dim = q.shape
++    value_heads, value_dim = v.shape[1:]
++    if not 1 <= tokens <= 5 or value_heads % heads:
++        raise ValueError("Mean GDN requires 1..5 tokens and integral value/key heads")
++    if state.shape != (1, value_heads, value_dim, key_dim):
++        raise ValueError("Mean GDN requires exactly one private recurrent state")
++    if not state.is_contiguous() or state.dtype != torch.float32:
++        raise ValueError("Mean GDN requires contiguous FP32 recurrent state")
++    out = torch.empty(v.shape, dtype=v.dtype, device=v.device)
++    _mean_update[(value_heads, triton.cdiv(value_dim, 32))](
++        q,
++        k,
++        v,
++        a,
++        b,
++        a_log,
++        dt_bias,
++        state,
++        out,
++        tokens,
++        heads,
++        value_heads,
++        key_dim,
++        value_dim,
++        q.stride(0),
++        k.stride(0),
++        v.stride(0),
++        a.stride(0),
++        b.stride(0),
++        triton.next_power_of_2(tokens),
++        triton.next_power_of_2(key_dim),
++        32,
++        num_warps=4,
++    )
++    return out
+diff --git a/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py b/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py
+index 108a73223e..8fae17b06c 100644
+--- a/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py
++++ b/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py
+@@ -31,0 +32 @@ from vllm.model_executor.layers.mamba.gdn.base import GatedDeltaNetAttention
++from vllm.model_executor.layers.mamba.gdn.mean_update import mean_state_update
+@@ -485,0 +487,4 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
++        spec_config = vllm_config.speculative_config
++        self.enable_mean_preverify = (
++            spec_config is not None and spec_config.preverify_gdn_mode != "none"
++        )
+@@ -898,0 +904,9 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
++        if getattr(self, "enable_mean_preverify", False):
++            output = torch.empty_like(hidden_states)
++            torch.ops.vllm.qwen_gdn_mean_forward(
++                hidden_states, output, _encode_layer_name(self.prefix)
++            )
++            return output
++        return self._forward_cuda_exact(hidden_states)
++
++    def _forward_cuda_exact(self, hidden_states: torch.Tensor) -> torch.Tensor:
+@@ -1911,0 +1926,79 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
++def qwen_gdn_mean_forward(
++    hidden_states: torch.Tensor, output: torch.Tensor, layer_name: LayerNameType
++) -> None:
++    context = get_forward_context()
++    mode = context.additional_kwargs.get("preverify_gdn_mode")
++    layer = context.no_compile_layers[_resolve_layer_name(layer_name)]
++    if mode in (None, "none"):
++        output.copy_(layer._forward_cuda_exact(hidden_states))
++        return
++    metadata = context.attn_metadata[layer.prefix]
++    assert isinstance(metadata, GDNAttentionMetadata)
++    assert metadata.spec_state_indices_tensor is not None
++    if mode not in ("ssm_mean", "input_mean") or layer.gqa_interleaved_layout:
++        raise ValueError("Mean GDN requires Qwen3.5 layout and explicit preverify mode")
++    conv, state = layer.kv_cache
++    if state.shape[0] != 1 or conv.shape[0] != 1 or metadata.num_spec_decodes != 1:
++        raise ValueError("Mean GDN requires private single-request state")
++    tokens = hidden_states.shape[0]
++    if tokens != metadata.num_actual_tokens or not 1 <= tokens <= 5:
++        raise ValueError("Mean GDN requires 1..5 actual, unpadded query tokens")
++    if mode == "input_mean":
++        hidden_states = (
++            hidden_states.float().mean(0, keepdim=True).to(hidden_states.dtype)
++        )
++    qkvz, _ = layer.in_proj_qkvz(hidden_states)
++    ba, _ = layer.in_proj_ba(hidden_states)
++    qkv_size = layer.key_dim * 2 + layer.value_dim
++    qkv, z = qkvz.split([qkv_size, layer.value_dim], dim=-1)
++    b, a = layer.split_ba(ba)
++    conv = conv if is_conv_state_dim_first() else conv.transpose(-1, -2)
++    convolved = (
++        causal_conv1d_update(
++            qkv.transpose(0, 1).unsqueeze(0),
++            conv,
++            layer.conv1d.weight.view(layer.conv_dim, layer.conv_kernel_size),
++            layer.conv1d.bias,
++            layer.activation,
++            conv_state_indices=metadata.spec_state_indices_tensor[:, 0],
++            num_accepted_tokens=metadata.num_accepted_tokens
++            if mode == "ssm_mean"
++            else None,
++            null_block_id=-1,
++            validate_data=False,
++        )
++        .squeeze(0)
++        .transpose(0, 1)
++    )
++    q, k, v = convolved.split([layer.key_dim, layer.key_dim, layer.value_dim], -1)
++    n = hidden_states.shape[0]
++    core = mean_state_update(
++        q.reshape(n, layer.num_k_heads, layer.head_k_dim),
++        k.reshape(n, layer.num_k_heads, layer.head_k_dim),
++        v.reshape(n, layer.num_v_heads, layer.head_v_dim),
++        a,
++        b,
++        layer.A_log,
++        layer.dt_bias,
++        state,
++    )
++    projected = layer._output_projection(
++        core, z.reshape(n, layer.num_v_heads, layer.head_v_dim)
++    )
++    output.copy_(projected.expand(tokens, -1))
++
++
++def qwen_gdn_mean_forward_fake(
++    hidden_states: torch.Tensor, output: torch.Tensor, layer_name: LayerNameType
++) -> None:
++    return
++
++
++direct_register_custom_op(
++    op_name="qwen_gdn_mean_forward",
++    op_func=qwen_gdn_mean_forward,
++    mutates_args=["output"],
++    fake_impl=qwen_gdn_mean_forward_fake,
++)
++
++
+diff --git a/vllm/v1/worker/gpu/spec_decode/hierarchical/speculator.py b/vllm/v1/worker/gpu/spec_decode/hierarchical/speculator.py
+index caa409c561..dba849b046 100644
+--- a/vllm/v1/worker/gpu/spec_decode/hierarchical/speculator.py
++++ b/vllm/v1/worker/gpu/spec_decode/hierarchical/speculator.py
+@@ -103,0 +104 @@ class HierarchicalSpeculator(BaseSpeculator):
++            preverify_gdn_mode="none",
+@@ -119,0 +121,2 @@ class HierarchicalSpeculator(BaseSpeculator):
++        if self.check_preverify and config.preverify_gdn_mode != "none":
++            raise ValueError("Mean GDN cannot use exact sequential preverify checks")
+@@ -129 +132,14 @@ class HierarchicalSpeculator(BaseSpeculator):
+-        self.state = PreverifyState(self.model, self.depth + 1, self.device)
++        self.state = PreverifyState(
++            self.model, self.depth + 1, self.device, self.config.preverify_gdn_mode
++        )
++        if self.config.preverify_gdn_mode != "none":
++            if self.preverify.model_family != "qwen3_6" or self.device.type != "cuda":
++                raise ValueError("Mean GDN preverify requires Qwen3.6 on CUDA")
++            if self.vllm_config.parallel_config.tensor_parallel_size != 1:
++                raise ValueError("Mean GDN preverify currently requires TP=1")
++            if self.vllm_config.quant_config is not None:
++                raise ValueError("Mean GDN preverify requires unquantized weights")
++            if any(
++                cache[1].dtype != torch.float32 for cache in self.state.caches.values()
++            ):
++                raise ValueError("Mean GDN preverify requires FP32 recurrent state")
+@@ -372 +388,4 @@ class HierarchicalSpeculator(BaseSpeculator):
+-                additional_forward_kwargs={"routing_top_k": self.config.moe_skip_top_h},
++                additional_forward_kwargs={
++                    "routing_top_k": self.config.moe_skip_top_h,
++                    "preverify_gdn_mode": self.config.preverify_gdn_mode,
++                },
+diff --git a/vllm/v1/worker/gpu/spec_decode/hierarchical/state.py b/vllm/v1/worker/gpu/spec_decode/hierarchical/state.py
+index 077ac907b3..ee0e4a8db7 100644
+--- a/vllm/v1/worker/gpu/spec_decode/hierarchical/state.py
++++ b/vllm/v1/worker/gpu/spec_decode/hierarchical/state.py
+@@ -17 +17 @@ class PreverifyState:
+-    def __init__(self, model, width: int, device: torch.device):
++    def __init__(self, model, width: int, device: torch.device, mode="none"):
+@@ -18,0 +19,3 @@ class PreverifyState:
++        self.mode = mode
++        if mode not in ("none", "ssm_mean", "input_mean"):
++            raise ValueError(f"Unknown preverify GDN mode: {mode}")
+@@ -25,0 +29,8 @@ class PreverifyState:
++            shapes = list(layer.get_state_shape())
++            if mode != "none":
++                conv_shape = list(shapes[0])
++                axis = 1 if is_conv_state_dim_first() else 0
++                conv_shape[axis] = layer.conv_kernel_size - 1
++                if mode == "ssm_mean":
++                    conv_shape[axis] += width
++                shapes[0] = tuple(conv_shape)
+@@ -27,3 +38,4 @@ class PreverifyState:
+-                torch.zeros((width + 1, *shape), dtype=dtype, device=device)
+-                for shape, dtype in zip(
+-                    layer.get_state_shape(), layer.get_state_dtype(), strict=True
++                torch.zeros(
++                    (width + 1 if mode == "none" else 1, *shape),
++                    dtype=dtype,
++                    device=device,
+@@ -30,0 +43 @@ class PreverifyState:
++                for shape, dtype in zip(shapes, layer.get_state_dtype(), strict=True)
+@@ -34,0 +48,2 @@ class PreverifyState:
++        if mode != "none":
++            self.state_indices.zero_()
+@@ -39 +54 @@ class PreverifyState:
+-        positions = torch.arange(source.shape[axis], device=source.device)
++        positions = torch.arange(destination.shape[axis], device=source.device)
+@@ -62,2 +77,9 @@ class PreverifyState:
+-                self._copy_conv(private_conv[1:2], conv.index_select(0, conv_idx), bias)
+-                private_temporal[1:2].copy_(temporal.index_select(0, temporal_idx))
++                start = 1 if getattr(self, "mode", "none") == "none" else 0
++                self._copy_conv(
++                    private_conv[start : start + 1],
++                    conv.index_select(0, conv_idx),
++                    bias,
++                )
++                private_temporal[start : start + 1].copy_(
++                    temporal.index_select(0, temporal_idx)
++                )
+@@ -65,0 +88,3 @@ class PreverifyState:
++        mode = getattr(self, "mode", "none")
++        if mode == "input_mean":
++            return
+@@ -66,0 +92,3 @@ class PreverifyState:
++            if mode == "ssm_mean":
++                self._copy_conv(conv, conv, accepted_drafts)
++                continue

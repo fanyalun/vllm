@@ -101,6 +101,7 @@ class HierarchicalSpeculator(BaseSpeculator):
             model=None,
             inner_method=None,
             dspark_draft_topk=None,
+            preverify_gdn_mode="none",
         )
         self.preverify = MoeSkipSpeculator(self.preverify_config, device)
         self.buffers = InputBuffers(1, scheduler.max_num_batched_tokens, device)
@@ -117,6 +118,8 @@ class HierarchicalSpeculator(BaseSpeculator):
         self.check_preverify = (
             os.environ.get("VLLM_HIERARCHICAL_CHECK_PREVERIFY") == "1"
         )
+        if self.check_preverify and config.preverify_gdn_mode != "none":
+            raise ValueError("Mean GDN cannot use exact sequential preverify checks")
         self.pending_req_id = None
         self.preverify_graphs = {}
         self.use_preverify_graphs = False
@@ -126,7 +129,20 @@ class HierarchicalSpeculator(BaseSpeculator):
         self.preverify.load_model(target_model)
         self.model = self.preverify.model
         self.logits_model = target_model
-        self.state = PreverifyState(self.model, self.depth + 1, self.device)
+        self.state = PreverifyState(
+            self.model, self.depth + 1, self.device, self.config.preverify_gdn_mode
+        )
+        if self.config.preverify_gdn_mode != "none":
+            if self.preverify.model_family != "qwen3_6" or self.device.type != "cuda":
+                raise ValueError("Mean GDN preverify requires Qwen3.6 on CUDA")
+            if self.vllm_config.parallel_config.tensor_parallel_size != 1:
+                raise ValueError("Mean GDN preverify currently requires TP=1")
+            if self.vllm_config.quant_config is not None:
+                raise ValueError("Mean GDN preverify requires unquantized weights")
+            if any(
+                cache[1].dtype != torch.float32 for cache in self.state.caches.values()
+            ):
+                raise ValueError("Mean GDN preverify requires FP32 recurrent state")
         if self.preverify.model_family == "qwen3_6" and not self.state.layers:
             raise ValueError("hierarchical requires Qwen GDN layers")
         self.small.load_model(target_model)
@@ -369,7 +385,10 @@ class HierarchicalSpeculator(BaseSpeculator):
                     num_tokens=batch.num_tokens_after_padding
                 ),
                 is_padding=batch.is_padding,
-                additional_forward_kwargs={"routing_top_k": self.config.moe_skip_top_h},
+                additional_forward_kwargs={
+                    "routing_top_k": self.config.moe_skip_top_h,
+                    "preverify_gdn_mode": self.config.preverify_gdn_mode,
+                },
             ),
         ):
             self.tracing_layers = self.check_preverify

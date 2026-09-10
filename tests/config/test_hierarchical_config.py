@@ -66,6 +66,8 @@ def test_graph_hash_distinguishes_inner_method_depth_rounds_and_top_h(monkeypatc
             {"inner_num_speculative_tokens": 2},
             {"inner_num_rounds": 2},
             {"moe_skip_top_h": 2},
+            {"preverify_gdn_mode": "ssm_mean"},
+            {"preverify_gdn_mode": "input_mean"},
         )
     ]
     assert len({config.compute_hash() for config in configs}) == len(configs)
@@ -84,3 +86,13 @@ def test_graph_hash_distinguishes_inner_method_depth_rounds_and_top_h(monkeypatc
 def test_unsupported_hierarchical_semantics_fail_closed(monkeypatch, kwargs, message):
     with pytest.raises(ValueError, match=message):
         make_config(monkeypatch, **kwargs)
+
+
+@pytest.mark.parametrize("mode", ["ssm_mean", "input_mean"])
+def test_mean_gdn_rejects_other_models_and_depths(monkeypatch, mode):
+    with pytest.raises(ValueError, match="Qwen3.6"):
+        make_config(monkeypatch, family="gemma4", preverify_gdn_mode=mode)
+    with pytest.raises(ValueError, match="D=4"):
+        make_config(
+            monkeypatch, inner_num_speculative_tokens=2, preverify_gdn_mode=mode
+        )

@@ -29,6 +29,7 @@ from vllm.model_executor.layers.linear import (
     RowParallelLinear,
 )
 from vllm.model_executor.layers.mamba.gdn.base import GatedDeltaNetAttention
+from vllm.model_executor.layers.mamba.gdn.mean_update import mean_state_update
 from vllm.model_executor.layers.mamba.mamba_mixer2 import mamba_v2_sharded_weight_loader
 from vllm.model_executor.layers.mamba.mamba_utils import (
     MambaStateShapeCalculator,
@@ -483,6 +484,10 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             activation=output_gate_type,
             device=current_platform.current_device(),
         )
+        spec_config = vllm_config.speculative_config
+        self.enable_mean_preverify = (
+            spec_config is not None and spec_config.preverify_gdn_mode != "none"
+        )
 
         self.out_proj = RowParallelLinear(
             self.value_dim,
@@ -896,6 +901,15 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         2. Core attention (custom op)
         3. Output projection
         """
+        if getattr(self, "enable_mean_preverify", False):
+            output = torch.empty_like(hidden_states)
+            torch.ops.vllm.qwen_gdn_mean_forward(
+                hidden_states, output, _encode_layer_name(self.prefix)
+            )
+            return output
+        return self._forward_cuda_exact(hidden_states)
+
+    def _forward_cuda_exact(self, hidden_states: torch.Tensor) -> torch.Tensor:
         num_tokens = hidden_states.size(0)
         # ============================================================
         # Part 1: Input Projection
@@ -1907,6 +1921,85 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             output_gate[:num_actual_tokens],
             core_attn_out[:num_actual_tokens],
         )
+
+
+def qwen_gdn_mean_forward(
+    hidden_states: torch.Tensor, output: torch.Tensor, layer_name: LayerNameType
+) -> None:
+    context = get_forward_context()
+    mode = context.additional_kwargs.get("preverify_gdn_mode")
+    layer = context.no_compile_layers[_resolve_layer_name(layer_name)]
+    if mode in (None, "none"):
+        output.copy_(layer._forward_cuda_exact(hidden_states))
+        return
+    metadata = context.attn_metadata[layer.prefix]
+    assert isinstance(metadata, GDNAttentionMetadata)
+    assert metadata.spec_state_indices_tensor is not None
+    if mode not in ("ssm_mean", "input_mean") or layer.gqa_interleaved_layout:
+        raise ValueError("Mean GDN requires Qwen3.5 layout and explicit preverify mode")
+    conv, state = layer.kv_cache
+    if state.shape[0] != 1 or conv.shape[0] != 1 or metadata.num_spec_decodes != 1:
+        raise ValueError("Mean GDN requires private single-request state")
+    tokens = hidden_states.shape[0]
+    if tokens != metadata.num_actual_tokens or not 1 <= tokens <= 5:
+        raise ValueError("Mean GDN requires 1..5 actual, unpadded query tokens")
+    if mode == "input_mean":
+        hidden_states = (
+            hidden_states.float().mean(0, keepdim=True).to(hidden_states.dtype)
+        )
+    qkvz, _ = layer.in_proj_qkvz(hidden_states)
+    ba, _ = layer.in_proj_ba(hidden_states)
+    qkv_size = layer.key_dim * 2 + layer.value_dim
+    qkv, z = qkvz.split([qkv_size, layer.value_dim], dim=-1)
+    b, a = layer.split_ba(ba)
+    conv = conv if is_conv_state_dim_first() else conv.transpose(-1, -2)
+    convolved = (
+        causal_conv1d_update(
+            qkv.transpose(0, 1).unsqueeze(0),
+            conv,
+            layer.conv1d.weight.view(layer.conv_dim, layer.conv_kernel_size),
+            layer.conv1d.bias,
+            layer.activation,
+            conv_state_indices=metadata.spec_state_indices_tensor[:, 0],
+            num_accepted_tokens=metadata.num_accepted_tokens
+            if mode == "ssm_mean"
+            else None,
+            null_block_id=-1,
+            validate_data=False,
+        )
+        .squeeze(0)
+        .transpose(0, 1)
+    )
+    q, k, v = convolved.split([layer.key_dim, layer.key_dim, layer.value_dim], -1)
+    n = hidden_states.shape[0]
+    core = mean_state_update(
+        q.reshape(n, layer.num_k_heads, layer.head_k_dim),
+        k.reshape(n, layer.num_k_heads, layer.head_k_dim),
+        v.reshape(n, layer.num_v_heads, layer.head_v_dim),
+        a,
+        b,
+        layer.A_log,
+        layer.dt_bias,
+        state,
+    )
+    projected = layer._output_projection(
+        core, z.reshape(n, layer.num_v_heads, layer.head_v_dim)
+    )
+    output.copy_(projected.expand(tokens, -1))
+
+
+def qwen_gdn_mean_forward_fake(
+    hidden_states: torch.Tensor, output: torch.Tensor, layer_name: LayerNameType
+) -> None:
+    return
+
+
+direct_register_custom_op(
+    op_name="qwen_gdn_mean_forward",
+    op_func=qwen_gdn_mean_forward,
+    mutates_args=["output"],
+    fake_impl=qwen_gdn_mean_forward_fake,
+)
 
 
 def qwen_gdn_attention_core(

@@ -9,9 +9,24 @@ import torch
 
 from benchmarks.hierarchical.analyze_failure import round_survival
 from benchmarks.hierarchical.analyze_forward_kernels import map_graph
+from benchmarks.hierarchical.analyze_gdn_mean import steady_cycles
 from benchmarks.hierarchical.cycle_worker import CycleWorker, pair_cycles
 from benchmarks.hierarchical.measurement_worker import MeasurementWorker
 from benchmarks.hierarchical.summarize_forward_stages import partition
+
+
+def test_cycle_yield_counts_only_tokens_returned_before_output_limit():
+    request = {
+        "cycles": [
+            {"proposal_step": 0, "emitted": 3, "accepted": 2, "scheduled": 4},
+            {"proposal_step": 1, "emitted": 5, "accepted": 4, "scheduled": 4},
+            {"proposal_step": 2, "emitted": 5, "accepted": 4, "scheduled": 4},
+        ]
+    }
+    cycles = steady_cycles(request, 6)
+    assert len(cycles) == 1
+    assert cycles[0]["returned"] == 2
+    assert cycles[0]["emitted"] == 5
 
 
 def test_stage_partition_counts_shared_routed_overlap_once():

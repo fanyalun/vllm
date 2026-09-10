@@ -114,4 +114,18 @@ class CycleWorker:
             row["cpu_ms"] = row["cpu_end_ms"] - row["cpu_start_ms"]
             if "count_tensor" in row:
                 row["emitted"] = int(row.pop("count_tensor").item())
-        return {"spans": self._cycle_rows, "cycles": pair_cycles(self._cycle_rows)}
+        result = {"spans": self._cycle_rows, "cycles": pair_cycles(self._cycle_rows)}
+        state = getattr(self.model_runner.speculator, "state", None)
+        if state is not None and hasattr(state, "caches"):
+            result["private_gdn_state"] = {
+                "mode": getattr(state, "mode", "none"),
+                "layers": len(state.caches),
+                "conv_bytes": sum(
+                    c.numel() * c.element_size() for c, _ in state.caches.values()
+                ),
+                "ssm_bytes": sum(
+                    s.numel() * s.element_size() for _, s in state.caches.values()
+                ),
+                "slots": sorted({s.shape[0] for _, s in state.caches.values()}),
+            }
+        return result

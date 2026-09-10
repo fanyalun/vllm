@@ -618,6 +618,13 @@ class SpeculativeConfig:
     preverify_method: Literal["moe_skip"] = "moe_skip"
     """Shared-weight intermediate verifier for hierarchical decoding."""
 
+    preverify_gdn_mode: Literal["none", "ssm_mean", "input_mean"] = "none"
+    """Experimental Qwen preverify mean update, reset from Target each cycle.
+
+    ssm_mean pools recurrent writes; input_mean pools the entire GDN input.
+    Both keep one private SSM state and retain it after inner rejection.
+    """
+
     def make_inner_config(self) -> "SpeculativeConfig":
         from dataclasses import replace
 
@@ -626,6 +633,7 @@ class SpeculativeConfig:
             method=self.inner_method,
             inner_method=None,
             moe_skip_top_h=None,
+            preverify_gdn_mode="none",
             num_speculative_tokens=self.inner_num_speculative_tokens,
         )
 
@@ -655,6 +663,7 @@ class SpeculativeConfig:
                     self.inner_num_speculative_tokens,
                     self.inner_num_rounds,
                     self.moe_skip_top_h,
+                    self.preverify_gdn_mode,
                     inner.compute_hash(),
                 )
             )
@@ -1131,6 +1140,8 @@ class SpeculativeConfig:
             return self
         if self.inner_method is not None:
             raise ValueError("inner_method requires method='hierarchical'")
+        if self.preverify_gdn_mode != "none":
+            raise ValueError("preverify_gdn_mode requires method='hierarchical'")
         # Note: "method" is a new parameter that helps to extend the
         # configuration of non-model-based proposers, and the "model" parameter
         # will be used to set the draft model, eagle head, or additional weight
@@ -1603,6 +1614,7 @@ class SpeculativeConfig:
             inner_method=None,
             dspark_draft_topk=None,
             num_speculative_tokens=max(2, self.inner_num_speculative_tokens),
+            preverify_gdn_mode="none",
         )
         if not set(self.target_model_config.architectures or ()) <= {
             "Qwen3_5MoeForCausalLM",
@@ -1612,6 +1624,15 @@ class SpeculativeConfig:
         }:
             raise ValueError("hierarchical supports Qwen3.6 MoE and Gemma4 MoE only")
         self.moe_skip_top_h = preverify.moe_skip_top_h
+        if self.preverify_gdn_mode != "none":
+            architectures = set(self.target_model_config.architectures or ())
+            if not architectures or not architectures <= {
+                "Qwen3_5MoeForCausalLM",
+                "Qwen3_5MoeForConditionalGeneration",
+            }:
+                raise ValueError("Mean GDN preverify requires Qwen3.6 MoE")
+            if self.inner_num_speculative_tokens != 4:
+                raise ValueError("Mean GDN preverify currently requires inner D=4")
         inner = self.make_inner_config()
         self.model = inner.model
         self.draft_model_config = inner.draft_model_config
