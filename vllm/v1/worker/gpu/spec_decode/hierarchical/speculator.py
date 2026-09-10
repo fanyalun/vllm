@@ -4,6 +4,7 @@
 import copy
 import json
 import os
+from contextlib import contextmanager
 from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
 
@@ -173,6 +174,37 @@ class HierarchicalSpeculator(BaseSpeculator):
             target_input_buffers,
             target_attn_groups,
         )
+        self.refresh_small_lengths = (
+            self.preverify.model_family == "gemma4"
+            and self.config.inner_method == "mtp"
+        )
+        if self.refresh_small_lengths:
+            self.saved_small_seq_lens = torch.empty_like(
+                target_input_buffers.seq_lens[:1]
+            )
+            self.saved_small_query_start = torch.empty_like(
+                target_input_buffers.query_start_loc[:2]
+            )
+
+    @contextmanager
+    def _small_metadata(self, batch, inner_round):
+        if not self.refresh_small_lengths or inner_round == 0:
+            yield
+            return
+        # Gemma's Q-only MTP prefill graph captures the Target's Triton lengths.
+        # Inner batches use private buffers; restore Target lengths after replay.
+        buffers = self.small.target_input_buffers
+        seq_lens = buffers.seq_lens[:1]
+        query_start = buffers.query_start_loc[:2]
+        self.saved_small_seq_lens.copy_(seq_lens)
+        self.saved_small_query_start.copy_(query_start)
+        try:
+            seq_lens.copy_(batch.seq_lens)
+            query_start.copy_(batch.query_start_loc)
+            yield
+        finally:
+            seq_lens.copy_(self.saved_small_seq_lens)
+            query_start.copy_(self.saved_small_query_start)
 
     def init_cudagraph_manager(self, cudagraph_mode):
         self.small.init_cudagraph_manager(cudagraph_mode)
@@ -424,19 +456,20 @@ class HierarchicalSpeculator(BaseSpeculator):
             if width <= 0:
                 break
             self.last_sampled[0, 0] = anchor[0]
-            small_tokens = self.small.propose(
-                batch,
-                metadata,
-                slots,
-                hidden,
-                aux if self.config.inner_method == "dspark" else None,
-                num_sampled,
-                num_rejected,
-                self.last_sampled,
-                next_prefill_tokens,
-                temperature,
-                seeds,
-            )[0, : width - 1].clone()
+            with self._small_metadata(batch, round_idx):
+                small_tokens = self.small.propose(
+                    batch,
+                    metadata,
+                    slots,
+                    hidden,
+                    aux if self.config.inner_method == "dspark" else None,
+                    num_sampled,
+                    num_rejected,
+                    self.last_sampled,
+                    next_prefill_tokens,
+                    temperature,
+                    seeds,
+                )[0, : width - 1].clone()
             batch, metadata, slots = self._batch(
                 input_batch, position, torch.cat((anchor, small_tokens))
             )

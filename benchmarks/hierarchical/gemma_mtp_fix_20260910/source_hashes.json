@@ -1,0 +1,10 @@
+{
+  "benchmark_results/hierarchical_gemma_fix_20260910/mtp_n4/MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+  "benchmark_results/hierarchical_gemma_fix_20260910/mtp_n4/config.json": "be50887da4c92c43ef04c8b4e10b70335dc1f68d5ff2a544adaf290f33252c1d",
+  "benchmark_results/hierarchical_gemma_fix_20260910/mtp_n4/result.json": "2a25cbb912e4468cd9159a1be635a747b38a8d6bf29e2fc3748a1f8433e7fd42",
+  "benchmark_results/hierarchical_gemma_fix_20260910/mtp_n4/run.log": "f25cc03d255a332c71c92714b1ac2dbf3e2f12afcb9a92d90e361e84c74d19a8",
+  "benchmark_results/hierarchical_gemma_fix_20260910/mtp_d16_legacy/MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+  "benchmark_results/hierarchical_gemma_fix_20260910/mtp_d16_legacy/config.json": "28e9fb8409f7e473ccf2680edd715eb69783a547f507f351e45bfe8f4a303166",
+  "benchmark_results/hierarchical_gemma_fix_20260910/mtp_d16_legacy/result.json": "58c7f0b2f03d761e0cb1ca7af1087210309817196dbe7e58bd2b4cd94fc810f0",
+  "benchmark_results/hierarchical_gemma_fix_20260910/mtp_d16_legacy/run.log": "395a03631f2aede5a724a91817cbe9216b177c296d325d3ac3f5b2e5db278dcf"
+}

@@ -1,0 +1,8 @@
+{
+  "requests": 4,
+  "generated_tokens": 2048,
+  "paired_calls": 357,
+  "equal_calls": 357,
+  "graph_lengths_match_current_batch": true,
+  "latency_valid": false
+}

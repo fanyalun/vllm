@@ -87,6 +87,39 @@ def test_graph_metadata_refresh_preserves_captured_addresses():
         refresh_graph_metadata(captured, {"layer": Metadata(4, torch.tensor([17]))})
 
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_inner_mtp_refreshes_graph_lengths_and_restores_target_on_exit(fail):
+    proposer = object.__new__(HierarchicalSpeculator)
+    buffers = SimpleNamespace(
+        seq_lens=torch.tensor([131]), query_start_loc=torch.tensor([0, 131])
+    )
+    proposer.small = SimpleNamespace(target_input_buffers=buffers)
+    proposer.refresh_small_lengths = True
+    proposer.saved_small_seq_lens = torch.empty_like(buffers.seq_lens)
+    proposer.saved_small_query_start = torch.empty_like(buffers.query_start_loc)
+    inner = SimpleNamespace(
+        seq_lens=torch.tensor([136]), query_start_loc=torch.tensor([0, 5])
+    )
+    addresses = (buffers.seq_lens.data_ptr(), buffers.query_start_loc.data_ptr())
+    try:
+        with proposer._small_metadata(inner, 1):
+            assert buffers.seq_lens.tolist() == [136]
+            assert buffers.query_start_loc.tolist() == [0, 5]
+            if fail:
+                raise RuntimeError("draft failed")
+    except RuntimeError:
+        assert fail
+    assert buffers.seq_lens.tolist() == [131]
+    assert buffers.query_start_loc.tolist() == [0, 131]
+    assert addresses == (
+        buffers.seq_lens.data_ptr(),
+        buffers.query_start_loc.data_ptr(),
+    )
+    assert inner.seq_lens.tolist() == [136]
+    with proposer._small_metadata(inner, 0):
+        assert buffers.seq_lens.tolist() == [131]
+
+
 def test_scheduler_receives_only_materialized_candidates():
     handler = object.__new__(DraftTokensHandler)
     handler.req_ids = ["short", "empty"]
@@ -233,6 +266,7 @@ def test_four_rounds_compact_recoveries_and_start_after_computed_prefix():
     proposer.kv_cache_config = Mock()
     proposer.block_tables = Mock()
     proposer.check_preverify = False
+    proposer.refresh_small_lengths = False
     small = torch.tensor([[1, 2, 3, 4]])
     proposer.small = SimpleNamespace(propose=Mock(return_value=small))
     positions = []
