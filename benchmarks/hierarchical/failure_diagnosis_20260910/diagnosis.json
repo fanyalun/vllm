@@ -1,0 +1,290 @@
+[
+  {
+    "case": "mtp_n4_retry",
+    "cycles": 202,
+    "counts": {
+      "scheduled": 2590,
+      "accepted": 1837,
+      "emitted": 2039,
+      "inner_proposed": 3232,
+      "inner_accepted": 1782,
+      "inner_rounds": 808,
+      "zero_retained_rounds": 242,
+      "rounds_after_first_rejection": 202,
+      "cycle_stream_ms": 19238.108688354492
+    },
+    "inner_by_round": {
+      "0": {
+        "proposed": 808,
+        "accepted": 465,
+        "acceptance": 0.5754950495049505
+      },
+      "1": {
+        "proposed": 808,
+        "accepted": 438,
+        "acceptance": 0.5420792079207921
+      },
+      "2": {
+        "proposed": 808,
+        "accepted": 427,
+        "acceptance": 0.5284653465346535
+      },
+      "3": {
+        "proposed": 808,
+        "accepted": 452,
+        "acceptance": 0.5594059405940595
+      }
+    },
+    "inner_acceptance": 0.5513613861386139,
+    "outer_acceptance": 0.7092664092664093,
+    "zero_retained_round_fraction": 0.2995049504950495,
+    "trailing_round_fraction": 0.25,
+    "first_rejection_round_zero_based_or_4_if_all_accepted": {
+      "0": 40,
+      "4": 89,
+      "3": 21,
+      "2": 22,
+      "1": 30
+    },
+    "scheduled_per_cycle": 12.821782178217822,
+    "emitted_per_cycle": 10.094059405940595,
+    "cycle_ms": 95.23816182353708,
+    "small_ms": 14.081247059425506,
+    "preverify_graph_ms": 33.63131822689925,
+    "target_ms": 17.999953107078476,
+    "remaining_stream_ms": 29.525643430133847,
+    "phase_ms_per_cycle": {
+      "proposal": 76.68285841989045,
+      "state_begin": 5.196571897752214,
+      "small_draft": 14.081247059425506,
+      "preverify_metadata": 7.25118226285028,
+      "preverify": 37.80354534281362,
+      "preverify_graph_5": 33.63131822689925,
+      "accept_prefix_sync": 0.2154851486666663,
+      "state_advance": 11.077484522715654,
+      "target_execute": 17.291116988304818,
+      "target_sample": 0.7088361187736587
+    },
+    "observed_ms_per_token": 9.435070470012011,
+    "zero_outer_rejection_fixed_cost_ms_per_token": 6.890440074625534,
+    "zero_overhead_fixed_yield_ms_per_token": 6.510018987477906,
+    "zero_both_fixed_trajectory_ms_per_token": 4.7542724625599755,
+    "model": "qwen"
+  },
+  {
+    "case": "dspark_n4",
+    "cycles": 195,
+    "counts": {
+      "scheduled": 2158,
+      "accepted": 1834,
+      "emitted": 2029,
+      "inner_proposed": 3120,
+      "inner_accepted": 1378,
+      "inner_rounds": 780,
+      "zero_retained_rounds": 135,
+      "rounds_after_first_rejection": 105,
+      "cycle_stream_ms": 18743.61296081543
+    },
+    "inner_by_round": {
+      "0": {
+        "proposed": 780,
+        "accepted": 307,
+        "acceptance": 0.3935897435897436
+      },
+      "1": {
+        "proposed": 780,
+        "accepted": 356,
+        "acceptance": 0.4564102564102564
+      },
+      "2": {
+        "proposed": 780,
+        "accepted": 381,
+        "acceptance": 0.48846153846153845
+      },
+      "3": {
+        "proposed": 780,
+        "accepted": 334,
+        "acceptance": 0.4282051282051282
+      }
+    },
+    "inner_acceptance": 0.44166666666666665,
+    "outer_acceptance": 0.8498609823911029,
+    "zero_retained_round_fraction": 0.17307692307692307,
+    "trailing_round_fraction": 0.1346153846153846,
+    "first_rejection_round_zero_based_or_4_if_all_accepted": {
+      "0": 21,
+      "4": 131,
+      "3": 14,
+      "1": 13,
+      "2": 16
+    },
+    "scheduled_per_cycle": 11.066666666666666,
+    "emitted_per_cycle": 10.405128205128205,
+    "cycle_ms": 96.12109210674579,
+    "small_ms": 7.5212642602431465,
+    "preverify_graph_ms": 33.815562512324405,
+    "target_ms": 19.111237595020196,
+    "remaining_stream_ms": 35.673027739158044,
+    "phase_ms_per_cycle": {
+      "proposal": 76.36865950364333,
+      "state_begin": 5.335696413578131,
+      "small_draft": 7.5212642602431465,
+      "preverify_metadata": 12.53588149241912,
+      "preverify": 38.309373390980255,
+      "preverify_graph_5": 33.815562512324405,
+      "accept_prefix_sync": 0.22031376384771786,
+      "state_advance": 11.31669137049944,
+      "target_execute": 18.40477211781037,
+      "target_sample": 0.7064654772098248
+    },
+    "observed_ms_per_token": 9.237857545990847,
+    "zero_outer_rejection_fixed_cost_ms_per_token": 7.965836362437496,
+    "zero_overhead_fixed_yield_ms_per_token": 5.8094492615473685,
+    "zero_both_fixed_trajectory_ms_per_token": 5.009508096761416,
+    "model": "qwen"
+  },
+  {
+    "case": "mtp_n4",
+    "cycles": 185,
+    "counts": {
+      "scheduled": 1942,
+      "accepted": 1875,
+      "emitted": 2060,
+      "inner_proposed": 2960,
+      "inner_accepted": 1202,
+      "inner_rounds": 740,
+      "zero_retained_rounds": 53,
+      "rounds_after_first_rejection": 38,
+      "cycle_stream_ms": 13821.723503112793
+    },
+    "inner_by_round": {
+      "0": {
+        "proposed": 740,
+        "accepted": 643,
+        "acceptance": 0.8689189189189189
+      },
+      "1": {
+        "proposed": 740,
+        "accepted": 212,
+        "acceptance": 0.2864864864864865
+      },
+      "2": {
+        "proposed": 740,
+        "accepted": 158,
+        "acceptance": 0.21351351351351353
+      },
+      "3": {
+        "proposed": 740,
+        "accepted": 189,
+        "acceptance": 0.2554054054054054
+      }
+    },
+    "inner_acceptance": 0.4060810810810811,
+    "outer_acceptance": 0.9654994850669413,
+    "zero_retained_round_fraction": 0.07162162162162163,
+    "trailing_round_fraction": 0.051351351351351354,
+    "first_rejection_round_zero_based_or_4_if_all_accepted": {
+      "4": 166,
+      "0": 8,
+      "1": 6,
+      "3": 3,
+      "2": 2
+    },
+    "scheduled_per_cycle": 10.497297297297298,
+    "emitted_per_cycle": 11.135135135135135,
+    "cycle_ms": 74.71201893574482,
+    "small_ms": 13.11539754609804,
+    "preverify_graph_ms": 40.649844216011665,
+    "target_ms": 14.56939448214866,
+    "remaining_stream_ms": 6.37738269148646,
+    "phase_ms_per_cycle": {
+      "proposal": 59.66507046673749,
+      "state_begin": 0.013383956751912026,
+      "small_draft": 13.11539754609804,
+      "preverify_metadata": 1.5596405604401151,
+      "preverify": 43.68859429746061,
+      "preverify_graph_5": 40.649844216011665,
+      "accept_prefix_sync": 0.2157453836218731,
+      "state_advance": 0.0474471792629039,
+      "target_execute": 13.555136319753286,
+      "target_sample": 1.0142581623953741
+    },
+    "observed_ms_per_token": 6.709574516074172,
+    "zero_outer_rejection_fixed_cost_ms_per_token": 6.49822449605679,
+    "zero_overhead_fixed_yield_ms_per_token": 6.136848400576601,
+    "zero_both_fixed_trajectory_ms_per_token": 5.9435391185650195,
+    "model": "gemma"
+  },
+  {
+    "case": "dspark_n4",
+    "cycles": 139,
+    "counts": {
+      "scheduled": 1972,
+      "accepted": 1909,
+      "emitted": 2048,
+      "inner_proposed": 2224,
+      "inner_accepted": 1416,
+      "inner_rounds": 556,
+      "zero_retained_rounds": 37,
+      "rounds_after_first_rejection": 27,
+      "cycle_stream_ms": 9703.031455993652
+    },
+    "inner_by_round": {
+      "0": {
+        "proposed": 556,
+        "accepted": 335,
+        "acceptance": 0.6025179856115108
+      },
+      "1": {
+        "proposed": 556,
+        "accepted": 351,
+        "acceptance": 0.6312949640287769
+      },
+      "2": {
+        "proposed": 556,
+        "accepted": 399,
+        "acceptance": 0.7176258992805755
+      },
+      "3": {
+        "proposed": 556,
+        "accepted": 331,
+        "acceptance": 0.5953237410071942
+      }
+    },
+    "inner_acceptance": 0.6366906474820144,
+    "outer_acceptance": 0.968052738336714,
+    "zero_retained_round_fraction": 0.06654676258992806,
+    "trailing_round_fraction": 0.048561151079136694,
+    "first_rejection_round_zero_based_or_4_if_all_accepted": {
+      "4": 121,
+      "2": 5,
+      "0": 6,
+      "3": 5,
+      "1": 2
+    },
+    "scheduled_per_cycle": 14.18705035971223,
+    "emitted_per_cycle": 14.733812949640289,
+    "cycle_ms": 69.80598169779606,
+    "small_ms": 6.9741766864447285,
+    "preverify_graph_ms": 40.63927436389511,
+    "target_ms": 15.608596259312664,
+    "remaining_stream_ms": 6.583934388143552,
+    "phase_ms_per_cycle": {
+      "proposal": 53.71306552475305,
+      "state_begin": 0.013135194302730852,
+      "small_draft": 6.9741766864447285,
+      "preverify_metadata": 1.6690905336424602,
+      "preverify": 43.743983522593545,
+      "preverify_graph_5": 40.63927436389511,
+      "accept_prefix_sync": 0.22351539561109576,
+      "state_advance": 0.047096633854851445,
+      "target_execute": 14.571888340462884,
+      "target_sample": 1.0367079188497803
+    },
+    "observed_ms_per_token": 4.737808328121901,
+    "zero_outer_rejection_fixed_cost_ms_per_token": 4.5964147115081255,
+    "zero_overhead_fixed_yield_ms_per_token": 4.29094950002036,
+    "zero_both_fixed_trajectory_ms_per_token": 4.162891793482566,
+    "model": "gemma"
+  }
+]

@@ -1,0 +1,76 @@
+{
+  "method": "fresh metadata eager draft on inner rounds 1..3; duplicate graph/eager proposals; latency invalid",
+  "summary": {
+    "case": "gemma_metadata",
+    "cycles": 121,
+    "counts": {
+      "scheduled": 2160,
+      "accepted": 1943,
+      "emitted": 2064,
+      "inner_proposed": 1936,
+      "inner_accepted": 1676,
+      "inner_rounds": 484,
+      "zero_retained_rounds": 68,
+      "rounds_after_first_rejection": 53,
+      "cycle_stream_ms": 11752.142303466797
+    },
+    "inner_by_round": {
+      "0": {
+        "proposed": 484,
+        "accepted": 406,
+        "acceptance": 0.8388429752066116
+      },
+      "1": {
+        "proposed": 484,
+        "accepted": 421,
+        "acceptance": 0.8698347107438017
+      },
+      "2": {
+        "proposed": 484,
+        "accepted": 423,
+        "acceptance": 0.8739669421487604
+      },
+      "3": {
+        "proposed": 484,
+        "accepted": 426,
+        "acceptance": 0.8801652892561983
+      }
+    },
+    "inner_acceptance": 0.8657024793388429,
+    "outer_acceptance": 0.899537037037037,
+    "zero_retained_round_fraction": 0.14049586776859505,
+    "trailing_round_fraction": 0.10950413223140495,
+    "first_rejection_round_zero_based_or_4_if_all_accepted": {
+      "4": 92,
+      "1": 8,
+      "0": 12,
+      "3": 8,
+      "2": 1
+    },
+    "scheduled_per_cycle": 17.85123966942149,
+    "emitted_per_cycle": 17.05785123966942,
+    "cycle_ms": 97.12514300385783,
+    "small_ms": 32.515029688512,
+    "preverify_graph_ms": 40.866232020795835,
+    "target_ms": 16.27036987355918,
+    "remaining_stream_ms": 7.473511420990814,
+    "phase_ms_per_cycle": {
+      "proposal": 80.33555029246433,
+      "state_begin": 0.013295074401438728,
+      "small_draft": 32.515029688512,
+      "preverify_metadata": 1.905977123039813,
+      "preverify": 43.889545519489886,
+      "preverify_graph_5": 40.866232020795835,
+      "accept_prefix_sync": 0.21911378506540266,
+      "state_advance": 0.04727325708536077,
+      "target_execute": 15.207390170452022,
+      "target_sample": 1.062979703107156
+    },
+    "observed_ms_per_token": 5.6938673950905025,
+    "zero_outer_rejection_fixed_cost_ms_per_token": 5.1521886468508535,
+    "zero_overhead_fixed_yield_ms_per_token": 5.255740029809549,
+    "zero_both_fixed_trajectory_ms_per_token": 4.755741964720258
+  },
+  "same_input_calls": 387,
+  "same_input_equal_calls": 73
+}

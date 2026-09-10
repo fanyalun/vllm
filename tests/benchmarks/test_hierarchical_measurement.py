@@ -6,8 +6,21 @@ from unittest.mock import Mock
 
 import torch
 
+from benchmarks.hierarchical.analyze_failure import round_survival
 from benchmarks.hierarchical.cycle_worker import CycleWorker, pair_cycles
 from benchmarks.hierarchical.measurement_worker import MeasurementWorker
+
+
+def test_outer_rejection_distinguishes_partial_and_fully_wasted_inner_rounds():
+    trace = [
+        {"offset": 0, "accepted": 2, "emitted": 3},
+        {"offset": 3, "accepted": 1, "emitted": 2},
+        {"offset": 5, "accepted": 3, "emitted": 4},
+        {"offset": 9, "accepted": 0, "emitted": 1},
+    ]
+    assert round_survival(trace, 4) == [3, 1, 0, 0]
+    assert round_survival(trace, 10) == [3, 2, 4, 1]
+    assert round_survival(trace, 0) == [0, 0, 0, 0]
 
 
 def test_cycle_pairs_proposal_with_next_target_and_excludes_tail_proposal():

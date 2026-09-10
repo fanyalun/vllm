@@ -1,0 +1,121 @@
+{
+  "method": "refresh only target-owned seq_lens/query_start_loc for inner MTP graph; restore after replay; triple proposals; latency invalid",
+  "summary": {
+    "case": "gemma_buffers",
+    "cycles": 111,
+    "counts": {
+      "scheduled": 2026,
+      "accepted": 1931,
+      "emitted": 2042,
+      "inner_proposed": 1776,
+      "inner_accepted": 1582,
+      "inner_rounds": 444,
+      "zero_retained_rounds": 42,
+      "rounds_after_first_rejection": 30,
+      "cycle_stream_ms": 10993.612319946289
+    },
+    "inner_by_round": {
+      "0": {
+        "proposed": 444,
+        "accepted": 393,
+        "acceptance": 0.8851351351351351
+      },
+      "1": {
+        "proposed": 444,
+        "accepted": 397,
+        "acceptance": 0.8941441441441441
+      },
+      "2": {
+        "proposed": 444,
+        "accepted": 385,
+        "acceptance": 0.8671171171171171
+      },
+      "3": {
+        "proposed": 444,
+        "accepted": 407,
+        "acceptance": 0.9166666666666666
+      }
+    },
+    "inner_acceptance": 0.8907657657657657,
+    "outer_acceptance": 0.9531095755182626,
+    "zero_retained_round_fraction": 0.0945945945945946,
+    "trailing_round_fraction": 0.06756756756756757,
+    "first_rejection_round_zero_based_or_4_if_all_accepted": {
+      "4": 96,
+      "2": 3,
+      "0": 5,
+      "1": 6,
+      "3": 1
+    },
+    "scheduled_per_cycle": 18.25225225225225,
+    "emitted_per_cycle": 18.396396396396398,
+    "cycle_ms": 99.04155243194855,
+    "small_ms": 34.106912305763174,
+    "preverify_graph_ms": 40.7948684434633,
+    "target_ms": 16.631466636249613,
+    "remaining_stream_ms": 7.508305046472458,
+    "phase_ms_per_cycle": {
+      "proposal": 81.93604251071139,
+      "state_begin": 0.012859964080423385,
+      "small_draft": 34.106912305763174,
+      "preverify_metadata": 1.899842890533241,
+      "preverify": 43.76260498837308,
+      "preverify_graph_5": 40.7948684434633,
+      "accept_prefix_sync": 0.22602378345421842,
+      "state_advance": 0.04590472135155856,
+      "target_execute": 15.172469594457128,
+      "target_sample": 1.458997041792483
+    },
+    "observed_ms_per_token": 5.383747463244999,
+    "zero_outer_rejection_fixed_cost_ms_per_token": 5.14441381373247,
+    "zero_overhead_fixed_yield_ms_per_token": 4.975607472961726,
+    "zero_both_fixed_trajectory_ms_per_token": 4.754417622736475
+  },
+  "same_input_calls": 357,
+  "normal_matches_fresh": 88,
+  "refreshed_matches_fresh": 357,
+  "first_example": {
+    "step": 0,
+    "inner_round": 1,
+    "normal_tokens": [
+      [
+        845,
+        496,
+        1595,
+        531
+      ]
+    ],
+    "refreshed_graph_tokens": [
+      [
+        768,
+        1027,
+        1156,
+        4945
+      ]
+    ],
+    "fresh_metadata_tokens": [
+      [
+        768,
+        1027,
+        1156,
+        4945
+      ]
+    ],
+    "normal_matches_fresh": false,
+    "refreshed_matches_fresh": true,
+    "captured_seq_lens": [
+      131
+    ],
+    "actual_seq_lens": [
+      136
+    ],
+    "captured_query_start": [
+      0,
+      131
+    ],
+    "actual_query_start": [
+      0,
+      5
+    ]
+  }
+}

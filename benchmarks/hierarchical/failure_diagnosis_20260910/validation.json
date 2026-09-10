@@ -1,0 +1,11 @@
+{
+  "targeted_tests_passed": 46,
+  "pre_commit_passed": true,
+  "mypy_312_passed": true,
+  "counts_audit_passed": true,
+  "gemma_buffer_same_input_matches": 357,
+  "gemma_buffer_same_input_calls": 357,
+  "runtime_modified": false,
+  "lossless_certified": false,
+  "corrected_uninstrumented_throughput_measured": false
+}

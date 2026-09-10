@@ -1,0 +1,85 @@
+{
+  "target_execute": {
+    "kernel_ms": 160.03721500000032,
+    "kernel_calls": 13640,
+    "memcpy_ms": 1.0049089999999978,
+    "memcpy_calls": 590,
+    "memcpy_bytes": 24376540,
+    "nvtx_calls": 10,
+    "nvtx_cpu_ms": 54.527057
+  },
+  "target_sample": {
+    "kernel_ms": 6.989817000000003,
+    "kernel_calls": 100,
+    "memcpy_ms": 0.015648000000000002,
+    "memcpy_calls": 10,
+    "memcpy_bytes": 40,
+    "nvtx_calls": 10,
+    "nvtx_cpu_ms": 9.309248
+  },
+  "outside": {
+    "kernel_ms": 0.17417899999999997,
+    "kernel_calls": 40,
+    "memcpy_ms": 0.06416199999999997,
+    "memcpy_calls": 40,
+    "memcpy_bytes": 3360
+  },
+  "proposal": {
+    "kernel_ms": 0.8737109999999998,
+    "kernel_calls": 340,
+    "memcpy_ms": 0.505482,
+    "memcpy_calls": 339,
+    "memcpy_bytes": 3672,
+    "nvtx_calls": 10,
+    "nvtx_cpu_ms": 1125.044012
+  },
+  "state_begin": {
+    "kernel_ms": 9.375051999999972,
+    "kernel_calls": 3340,
+    "memcpy_ms": 1.6361869999999918,
+    "memcpy_calls": 600,
+    "memcpy_bytes": 742195200,
+    "nvtx_calls": 10,
+    "nvtx_cpu_ms": 87.51141399999999
+  },
+  "small_draft": {
+    "kernel_ms": 138.86707099999953,
+    "kernel_calls": 5218,
+    "memcpy_ms": 0.5999070000000007,
+    "memcpy_calls": 400,
+    "memcpy_bytes": 2184872,
+    "nvtx_calls": 40,
+    "nvtx_cpu_ms": 37.069306
+  },
+  "preverify_metadata": {
+    "kernel_ms": 2.2134350000000005,
+    "kernel_calls": 1040,
+    "memcpy_ms": 1.5211059999999939,
+    "memcpy_calls": 1120,
+    "memcpy_bytes": 18480,
+    "nvtx_calls": 40,
+    "nvtx_cpu_ms": 208.23012099999997
+  },
+  "preverify_graph_5": {
+    "kernel_ms": 393.1776979999994,
+    "kernel_calls": 41320,
+    "nvtx_calls": 40,
+    "nvtx_cpu_ms": 62.313838000000004
+  },
+  "state_advance": {
+    "kernel_ms": 9.348858999999953,
+    "kernel_calls": 4800,
+    "memcpy_ms": 11.391770000000072,
+    "memcpy_calls": 3600,
+    "memcpy_bytes": 5485363200,
+    "nvtx_calls": 40,
+    "nvtx_cpu_ms": 183.48453599999996
+  },
+  "preverify": {
+    "memcpy_ms": 1.7814279999999907,
+    "memcpy_calls": 1200,
+    "memcpy_bytes": 1200,
+    "nvtx_calls": 40,
+    "nvtx_cpu_ms": 118.321367
+  }
+}

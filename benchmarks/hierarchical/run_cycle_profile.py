@@ -26,6 +26,7 @@ def main():
     parser.add_argument("--draft-model")
     parser.add_argument("--dataset", type=Path)
     parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument("--worker-extension", default="cycle_worker.CycleWorker")
     parser.add_argument(
         "--phases",
         nargs="+",
@@ -77,7 +78,7 @@ def main():
         speculative_config=spec,
         disable_log_stats=True,
         seed=0,
-        worker_extension_cls="cycle_worker.CycleWorker",
+        worker_extension_cls=args.worker_extension,
     )
     if args.legacy_mm_inputs:
         assert not args.rounds

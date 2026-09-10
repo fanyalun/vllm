@@ -1,0 +1,101 @@
+{
+  "runtime_source_commit": "afd237df26008cbea173cb50d35a277dd229f732",
+  "runtime_modified": false,
+  "new_runs": {
+    "gemma_buffers": {
+      "requests": 4,
+      "output_tokens": 2048,
+      "warmup_output_tokens": 512,
+      "nsys_report": false,
+      "source_files": {
+        "MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+        "config.json": "60d2c53a544e94621e57632faad26d80d767e4f8593a66ccabc254543aa6d551",
+        "result.json": "8232f4abc9c008150a1c7b85a0b110530fd9b167b1a34ccb024abbc3aff0df0e",
+        "run.log": "bb02b08f5a369256a023c402927414086e0a5c3317f06f074d382fb7c5257b79"
+      }
+    },
+    "gemma_metadata": {
+      "requests": 4,
+      "output_tokens": 2048,
+      "warmup_output_tokens": 512,
+      "nsys_report": false,
+      "source_files": {
+        "MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+        "config.json": "0bb4b08e45dc9ce707cc0d25cd6e7798b22e5bf8ee1a4498e8d5ec12cb855dcd",
+        "result.json": "c46dc2e0543b1a462f2050d7afec4af71d0b24f80e35543f67b2831148c86a50",
+        "run.log": "159afeee9368f6e80480de454c858c5cdb7b25f7889b53b5684c72b0e3e6c253"
+      }
+    },
+    "gemma_paired": {
+      "requests": 1,
+      "output_tokens": 512,
+      "warmup_output_tokens": 512,
+      "nsys_report": false,
+      "source_files": {
+        "MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+        "config.json": "6ea0fd292522c7c050ebeb00a302d719b66a4a17c3503e89116beab60955c5fe",
+        "result.json": "b86749980d87da178bdb8f2e417661d971a3b937806af14d3c72e1baf77571f4",
+        "run.log": "ee38f85fcc57fe0e5fcf56b4ea323adf4f6ee841e62f4b8b89eaf5557caf069f"
+      }
+    },
+    "gemma_trace": {
+      "requests": 1,
+      "output_tokens": 512,
+      "warmup_output_tokens": 512,
+      "nsys_report": false,
+      "source_files": {
+        "MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+        "config.json": "e4aff643810c99f5a3b3d5965b4f900396d2851a44fa79621a89c01d477febb5",
+        "result.json": "a6bb3c376a39c352be64f8e5e8dda92ed2107ace33a4c3ca87d88d3cf28ad63e",
+        "run.log": "10b4ba7ccff4c4ef32a06d43504419cedce0266c34ee06d00458420e66b7a1dc"
+      }
+    },
+    "gemma_trace_retry": {
+      "requests": 1,
+      "output_tokens": 512,
+      "warmup_output_tokens": 512,
+      "nsys_report": false,
+      "source_files": {
+        "MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+        "config.json": "0e1055ba521846d76f39257c6dbf157caed3f0add47e1476d610a1e059972fb7",
+        "result.json": "4bd20100a7c868139964b042ee313bf6422f26a5acf9b476663edb3ea21acb30",
+        "run.log": "eb3dd3d76ceb4d9786dadc319b6595abe1c8830b04681b6bd1e9135818c273ff"
+      }
+    },
+    "qwen_paired": {
+      "requests": 1,
+      "output_tokens": 512,
+      "warmup_output_tokens": 512,
+      "nsys_report": false,
+      "source_files": {
+        "MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+        "config.json": "be39cb84232dfc1a19c57fe78c8255a86bb16ca60e2846f0f764793bd04a83c3",
+        "result.json": "2f19b21e65d001848e7944ac2e4b4e2a17ee2d56e84f2dfcf80085720bb0eb31",
+        "run.log": "6629d2bca04f14d28c649b0752918caa31142faa2dad51727ca5c30b11aa5ef8"
+      }
+    },
+    "qwen_trace": {
+      "requests": 1,
+      "output_tokens": 512,
+      "warmup_output_tokens": 512,
+      "nsys_report": true,
+      "source_files": {
+        "MEASUREMENT_COMPLETE": "9730572707f228ea40c79d0b41a18ecffab6d308f7792a6497248047412dfad1",
+        "config.json": "774615d46e2418c976d0ec538886ae69cb76ff919b6b64151d2dee4c9d340715",
+        "export.log": "46c4187aa3ccf6b2eec06d7df6930f4d8c6313a5d46c2c0005244ffb0d85425b",
+        "result.json": "5c4aa590ae14dab9be514a7490e4d69a306ef38b611ede72bb63417291e8f9c2",
+        "run.log": "7333b85177d57719aa01a1d12474520bf8912f3dd26f229610d864417a5a62c7",
+        "timeline.nsys-rep": "043338e3256afd9e1b63ff1f3ea1803cd763015e4a8028bbd0b09d379d42f718"
+      }
+    }
+  },
+  "nsys_successful_models": [
+    "qwen"
+  ],
+  "nsys_failed_models": [
+    "gemma",
+    "gemma_retry"
+  ],
+  "model_probe_latency_is_e2e": false,
+  "lossless_gate_passed": false
+}
