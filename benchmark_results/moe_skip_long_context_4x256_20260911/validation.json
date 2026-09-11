@@ -1,0 +1,19 @@
+{
+  "syntax": "passed",
+  "ruff": "passed",
+  "matrix_coverage": "16/16 cells, 64/64 requests, 16384/16384 tokens",
+  "counter_checks": "All per-step counts and histogram bins, totals, rates and weighted means recomputed",
+  "negative_checks": "Mutated num_spec_steps, num_accepted_draft_tokens, num_draft_tokens and num_spec_tokens were rejected",
+  "png_visual_review": "passed",
+  "pdf": "one page; rendered and visually reviewed",
+  "commands": [
+    ".venv/bin/python -m py_compile benchmarks/moe_skip/run_long_context_acceptance.py benchmarks/moe_skip/plot_long_context_acceptance.py",
+    "/home/fanya/.cache/uv/archive-v0/CoIRc8y2DIwrL54n/bin/ruff check benchmarks/moe_skip/run_long_context_acceptance.py benchmarks/moe_skip/plot_long_context_acceptance.py",
+    ".venv/bin/python benchmarks/moe_skip/run_long_context_acceptance.py --run-dir benchmark_results/moe_skip_long_context_4x256_20260911 --summarize"
+  ],
+  "runtime_decoder_changes": false,
+  "limitations": [
+    "Four C4 continuation samples, one seed per sample, no confidence intervals",
+    "No short-context control, long-document QA score, AR parity, distributional correctness proof or throughput measurement"
+  ]
+}

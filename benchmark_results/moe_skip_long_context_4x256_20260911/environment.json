@@ -1,0 +1,24 @@
+{
+  "python": "3.12.13 | packaged by conda-forge | (main, Mar  5 2026, 16:50:00) [GCC 14.3.0]",
+  "executable": "/home/fanya/vllm/.venv/bin/python",
+  "platform": "Linux-5.15.0-179-generic-x86_64-with-glibc2.35",
+  "packages": {
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "transformers": "5.16.1",
+    "vllm": "0.1.dev20823+g21a221104.d20260906.cu129",
+    "flashinfer-python": "0.6.18"
+  },
+  "model_metadata_sha256": {
+    "/data1/fanya/Qwen/Qwen3.6-35B-A3B/config.json": "93a4693fa9d8392fbfccd4b3c9873f4bfdcb14fdede978b123d07d19675efe99",
+    "/data1/fanya/Qwen/Qwen3.6-35B-A3B/tokenizer_config.json": "5186f0defcd7f232382c7f0aebcd2252d073bb921ab240e407b7ae8745d2b29b",
+    "/data1/fanya/Qwen/Qwen3.6-35B-A3B/model.safetensors.index.json": "41b9356101ebf8e7519e150dc811f80c4226e727301fbb032b890f006ed0be83"
+  },
+  "gpu_assignment": {
+    "mtp": 0,
+    "moe_skip": 1
+  },
+  "runner": "V2",
+  "sampling": "stochastic Target; greedy point-mass draft; standard rejection sampling",
+  "initial_attempt": "Sandbox CUDA device discovery failed; restarted with approved host GPU access. Both attempts are retained in D4 logs."
+}

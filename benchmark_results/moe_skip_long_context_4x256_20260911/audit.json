@@ -1,0 +1,25 @@
+{
+  "status": "passed",
+  "cells": 16,
+  "requests": 64,
+  "output_tokens": 16384,
+  "result_hashes": {
+    "mtp_d4_c16384": "3cf96548edfafa9bd420486a34f652639fb8d2dbaa6cf835e661d23fe10d236f",
+    "mtp_d8_c16384": "5d60b0927dd5a458e6e1ad23689367e101240ff894f15da30371aa315fdf787f",
+    "mtp_d16_c16384": "3cf4481d82cf5825d39aa05a168211cae430bbd62a8b13f346e786343d9565bb",
+    "mtp_d32_c16384": "e5a20a2e43964b9a41c4238dd64080978bcf5ecbf757b6e0584b690a983f550f",
+    "moe_skip_d4_c16384": "84c095f6e5d22a1dbf3ec0b631ba3bfbd89bb85837c988a7a025266bf636822e",
+    "moe_skip_d8_c16384": "990f9969ea441aa4bdd0ec601771443eeefcf8f2584db6204bd957afdb721688",
+    "moe_skip_d16_c16384": "5799970003e86d28e65fdeeb0f74b3e223b51f45426c3d4ff111432855fdafc6",
+    "moe_skip_d32_c16384": "b1e6e074965dce8051d3c1de8d64f624d4b2bf20b5c85d1052db6029be10e8fa",
+    "mtp_d4_c32768": "0183dc59323db020d3b87bc9ebdfb87810148b3f447ab1115775a058bdf76df3",
+    "mtp_d8_c32768": "47ceaf95331ff525e90495f6d6f26194abe39da076a2ab5979568a9f0d44d9d1",
+    "mtp_d16_c32768": "6017f90f59f8ea6bbf8fbc7992e27400920b6d48aaff6fe0f1d531a3e04701d3",
+    "mtp_d32_c32768": "cb3145d5a530a628fcb4ae7c38a81a03a1566918c5a81144fd175ae2afa11c06",
+    "moe_skip_d4_c32768": "21c9fcbc00bb438d504e071772389ec21f3d6bfd9c183289eccceeb1a43ac690",
+    "moe_skip_d8_c32768": "ee90fa66c864c29b909432b2186a90a9295312bb41c08e768a1e98e7d8b897d5",
+    "moe_skip_d16_c32768": "2b1dfe890c7232040b0d19b73ef9ead6f0481baf551d0d50e5e6940f9229acaf",
+    "moe_skip_d32_c32768": "ccaa872a0a697019a06b583435db3a9d8e1961bdf7cf8121bcf9e37edfe0e6c7"
+  },
+  "scope": "Prompt identity, output length, seed and integer acceptance accounting; no distributional correctness or AR parity claim."
+}

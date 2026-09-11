@@ -1,0 +1,34 @@
+{
+  "model": "/data1/fanya/Qwen/Qwen3.6-35B-A3B",
+  "source": "/home/fanya/data1/fanya/hf_datasets_cache/processed_datasets/c4/c4_data_10000.jsonl",
+  "source_sha256": "519464bffd69e50b4e465c3481f343498b14249a2c81452d7eeb7505316386da",
+  "dataset_sha256": "8b147466824819e986fb3c9dd081cf73a7fe24c78e6309ba0238423b7c03dfb7",
+  "context_lengths": [
+    16384,
+    32768
+  ],
+  "draft_lengths": [
+    4,
+    8,
+    16,
+    32
+  ],
+  "methods": [
+    "mtp",
+    "moe_skip"
+  ],
+  "samples_per_cell": 4,
+  "max_tokens": 256,
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "seed": 20260911,
+  "moe_skip_top_h": 4,
+  "max_model_len": 33792,
+  "batch_size": 1,
+  "tensor_parallel_size": 1,
+  "prefix_caching": false,
+  "cuda_graph": true,
+  "dataset_design": "Disjoint concatenated C4 blocks; 16K is the suffix of 32K. Raw token continuation, no chat template.",
+  "git_commit": "64defd358bcb7c38d02414c1c7659274ec14b568",
+  "git_status": "?? benchmark_results/\n?? benchmarks/moe_skip/\n"
+}
