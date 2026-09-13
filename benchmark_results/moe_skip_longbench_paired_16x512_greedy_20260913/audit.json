@@ -1,0 +1,11 @@
+{
+  "status": "passed",
+  "scope": "coverage, identity, integer metrics",
+  "speculative_cells": 16,
+  "speculative_requests": 256,
+  "speculative_output_tokens": 131072,
+  "ar_requests": 32,
+  "ar_output_tokens": 16384,
+  "output_consistency_status": "failed",
+  "cross_method_consistency_status": "passed"
+}

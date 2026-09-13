@@ -1,0 +1,5 @@
+{
+  "gate": "exact_ar_output",
+  "details": "output_consistency.json",
+  "note": "Acceptance measurements are complete; strict AR parity did not pass."
+}

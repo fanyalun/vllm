@@ -1,0 +1,26 @@
+{
+  "python": "3.12.13 | packaged by conda-forge | (main, Mar  5 2026, 16:50:00) [GCC 14.3.0]",
+  "executable": "/home/fanya/vllm/.venv/bin/python",
+  "platform": "Linux-5.15.0-179-generic-x86_64-with-glibc2.35",
+  "packages": {
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "transformers": "5.16.1",
+    "vllm": "0.1.dev20823+g21a221104.precompiled",
+    "pyarrow": "24.0.0",
+    "flashinfer-python": "0.6.18",
+    "flashinfer-cubin": "0.6.18"
+  },
+  "runner": "V2",
+  "multimodal_limits": {
+    "image": 1,
+    "video": 0
+  },
+  "model_metadata_sha256": {
+    "config.json": "93a4693fa9d8392fbfccd4b3c9873f4bfdcb14fdede978b123d07d19675efe99",
+    "generation_config.json": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+    "tokenizer_config.json": "5186f0defcd7f232382c7f0aebcd2252d073bb921ab240e407b7ae8745d2b29b",
+    "chat_template.jinja": "e84f32a23fdda27689f868aa4a1a5621f41133e51a48d7f3efcbea2839574259",
+    "model.safetensors.index.json": "41b9356101ebf8e7519e150dc811f80c4226e727301fbb032b890f006ed0be83"
+  }
+}

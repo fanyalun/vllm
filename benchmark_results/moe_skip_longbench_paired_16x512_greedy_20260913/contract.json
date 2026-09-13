@@ -1,0 +1,51 @@
+{
+  "dataset": "sfc-gh-goliaro/longbench-longctx",
+  "dataset_revision": "8e44d485957d753310a4af8096491d16c3f37ba2",
+  "split": "train",
+  "selection": "All 16 source rows with nominal bucket >= 32K, source order",
+  "dataset_digest": "01030860b653b534763e0d47d8bd172306ed56a6bf082f6242aaf9b283533292",
+  "model": "/data1/fanya/Qwen/Qwen3.6-35B-A3B",
+  "methods": [
+    "mtp",
+    "moe_skip"
+  ],
+  "draft_lengths": [
+    4,
+    8,
+    16,
+    32
+  ],
+  "buckets": [
+    16384,
+    32768
+  ],
+  "requests_per_cell": 32,
+  "samples_per_context_length": 16,
+  "max_tokens": 512,
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "seed": 20260913,
+  "ignore_eos": true,
+  "eos_token_ids": [
+    248046,
+    248044
+  ],
+  "moe_skip_top_h": 4,
+  "max_model_len": 33792,
+  "max_num_batched_tokens": 4096,
+  "gpu_memory_utilization": 0.97,
+  "batch_size": 1,
+  "tensor_parallel_size": 1,
+  "prefix_caching": false,
+  "cuda_graph": true,
+  "chat_template": "Model default, add_generation_prompt=True; no override",
+  "thinking": "Default template emits an opening think tag",
+  "truncation": "Token-prefix truncate only document to exact 16K/32K total prompt; instruction, question, choices and chat suffix remain identical",
+  "gpu_assignment": {
+    "ar": 0,
+    "mtp": 0,
+    "moe_skip": 1
+  },
+  "git_commit": "52c71a47349ad8fd6186cdf20d5fc0130f174a29",
+  "git_tracked_diff": ""
+}
