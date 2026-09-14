@@ -203,16 +203,6 @@ def main():
                 write(root / "status.json", {"state": "failed", "cell": str(cell_dir)})
                 raise RuntimeError(f"Diagnostic failed: {cell_dir}")
             print(f"DONE {model} {mode}", flush=True)
-    subprocess.run(
-        [
-            sys.executable,
-            str(script_dir / "analyze_performance_paths.py"),
-            "--output",
-            str(root),
-        ],
-        cwd=ROOT,
-        check=True,
-    )
     write(root / "status.json", {"state": "complete"})
 
 

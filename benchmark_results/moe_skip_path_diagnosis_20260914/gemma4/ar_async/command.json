@@ -1,0 +1,6 @@
+[
+  "/home/fanya/vllm/.venv/bin/python",
+  "/home/fanya/vllm/benchmarks/moe_skip/diagnose_performance_paths.py",
+  "--worker",
+  "/home/fanya/vllm/benchmark_results/moe_skip_path_diagnosis_20260914/gemma4/ar_async/config.json"
+]

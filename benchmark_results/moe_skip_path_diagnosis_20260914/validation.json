@@ -1,0 +1,9 @@
+{
+  "coverage": "6/6 cells, 36 E2E requests, 18432 tokens",
+  "report_audit": "passed",
+  "post_warmup_jit": "none",
+  "png_visual_review": "passed",
+  "pdf_visual_review": "passed, one page",
+  "runtime_changes": "none",
+  "analysis": "run explicitly after queued measurements completed"
+}

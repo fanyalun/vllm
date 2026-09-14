@@ -1,0 +1,46 @@
+{
+  "cells": [
+    {
+      "model": "qwen36",
+      "mode": "ar_sync",
+      "passed": true
+    },
+    {
+      "model": "qwen36",
+      "mode": "h8_d8",
+      "passed": true
+    },
+    {
+      "model": "qwen36",
+      "mode": "ar_async",
+      "passed": true
+    },
+    {
+      "model": "gemma4",
+      "mode": "ar_sync",
+      "passed": true
+    },
+    {
+      "model": "gemma4",
+      "mode": "h8_d8",
+      "passed": true
+    },
+    {
+      "model": "gemma4",
+      "mode": "ar_async",
+      "passed": true
+    }
+  ],
+  "ar_sync_async_exact": {
+    "qwen36": 6,
+    "gemma4": 3
+  },
+  "h8_vs_ar_sync_exact": {
+    "qwen36": 0,
+    "gemma4": 0
+  },
+  "requests": 36,
+  "output_tokens": 18432,
+  "post_warmup_jit": "none",
+  "scope": "CPU/CUDA diagnostic; same prompts, not forced identical continuations"
+}

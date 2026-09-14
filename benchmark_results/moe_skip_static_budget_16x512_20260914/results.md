@@ -1,5 +1,13 @@
 # Static expert budget results
 
+Follow-up performance diagnosis: the speedups below use **synchronous AR**.
+A separate two-prompt, three-repeat control found asynchronous AR faster than
+h=8/D=8 on both models, with essentially unchanged AR backbone/kernel work
+and substantially smaller execution gaps. These ratios therefore do not show
+speedup over the faster asynchronous AR baseline or isolate expert-skipping
+benefits. See [the diagnostic report](../moe_skip_path_diagnosis_20260914/results.md).
+Original 16-prompt measurements and denominators below are preserved.
+
 All costs below use summed measured request wall time. Accepted-token cost excludes correction/bonus from its denominator. Output-token cost includes all 8192 final tokens. See audit.json for coverage, timing and strict output parity.
 
 Strict greedy AR parity failed in 32 budget cells. The curves describe measured costs and do not establish lossless speedups. Each budget cell ran once; small differences should not be interpreted as stable optima.

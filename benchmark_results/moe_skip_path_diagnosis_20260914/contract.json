@@ -1,0 +1,20 @@
+{
+  "models": [
+    "qwen36",
+    "gemma4"
+  ],
+  "modes": [
+    "ar_sync",
+    "h8_d8",
+    "ar_async"
+  ],
+  "samples": 2,
+  "output_tokens": 512,
+  "repeats": 3,
+  "gpu": "1",
+  "wait_pids": [
+    1073451
+  ],
+  "git_head": "0422762cbb6b06a2ad10cc1079e122cbb353dcec",
+  "scope": "Diagnostic only; no replacement for the 16x512 matrix. Profile timing is not E2E throughput."
+}
