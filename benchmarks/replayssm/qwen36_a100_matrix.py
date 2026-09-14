@@ -1,0 +1,307 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""Single-device AR/MTP/ReplaySSM matrix with separate CUDA profiling."""
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+def write_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(value, indent=2) + "\n")
+    tmp.replace(path)
+
+
+def install_jit_counter(worker):
+    from vllm.utils import jit_monitor
+
+    original = jit_monitor._handle_jit_event
+    jit_monitor._benchmark_events = []
+
+    def record(**kwargs):
+        jit_monitor._benchmark_events.append(kwargs)
+        original(**kwargs)
+
+    jit_monitor._handle_jit_event = record
+
+
+def read_jit_counter(worker):
+    from vllm.utils import jit_monitor
+
+    return jit_monitor._benchmark_events
+
+
+class JitMonitorExtension:
+    def benchmark_install_jit_counter(self):
+        install_jit_counter(self)
+
+    def benchmark_read_jit_counter(self):
+        return read_jit_counter(self)
+
+
+def worker(args):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import torch
+
+    from vllm import LLM, SamplingParams
+
+    root = Path(args.output).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    gate = root.parent / "kernel_correctness.json"
+    if args.mode == "replayssm" and not gate.exists():
+        subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).with_name("qwen36_replayssm_gate.py")),
+                "--output",
+                str(gate),
+            ],
+            check=True,
+        )
+    if args.mode == "replayssm":
+        gates = json.loads(gate.read_text())
+        deadline = time.monotonic() + 1200
+        while not any(row["draft"] == args.draft for row in gates) and (
+            time.monotonic() < deadline
+        ):
+            time.sleep(1)
+            gates = json.loads(gate.read_text())
+        assert any(row["draft"] == args.draft and row["passed"] for row in gates)
+    width = args.draft + 1 if args.mode != "ar" else 1
+    captures = [b * width for b in (1, 2, 4, 8, 16) if b <= args.batch]
+    kwargs = dict(
+        model=args.model,
+        tensor_parallel_size=1,
+        enable_expert_parallel=False,
+        dtype="bfloat16",
+        mamba_ssm_cache_dtype="float32",
+        language_model_only=True,
+        max_model_len=1024,
+        max_num_seqs=args.batch,
+        max_num_batched_tokens=4096,
+        enable_prefix_caching=False,
+        mamba_cache_mode="none",
+        enforce_eager=False,
+        disable_log_stats=False,
+        gpu_memory_utilization=0.95,
+        kv_cache_memory_bytes=7 * 1024**3,
+        seed=0,
+        worker_extension_cls="qwen36_a100_matrix.JitMonitorExtension",
+        additional_config={"gdn_prefill_backend": "triton"},
+        compilation_config={
+            "cudagraph_capture_sizes": captures,
+            "max_cudagraph_capture_size": max(captures),
+        },
+        kernel_config={"enable_flashinfer_autotune": False},
+        profiler_config={
+            "profiler": "torch",
+            "torch_profiler_dir": str(root / "profile"),
+            "torch_profiler_with_stack": False,
+            "torch_profiler_record_shapes": False,
+            "delay_iterations": 2,
+            "max_iterations": 128,
+            "ignore_frontend": True,
+        },
+    )
+    if args.mode != "ar":
+        kwargs["speculative_config"] = {
+            "method": "mtp",
+            "num_speculative_tokens": args.draft,
+        }
+    if args.mode == "replayssm":
+        kwargs.update(use_replayssm_spec=True, replayssm_buffer_len=64)
+    write_json(root / "config.json", kwargs)
+    started = time.perf_counter()
+    llm = LLM(**kwargs)
+    init_s = time.perf_counter() - started
+    llm.collective_rpc("benchmark_install_jit_counter")
+    rows = [
+        json.loads(line)
+        for line in Path(args.dataset).read_text().splitlines()
+        if line.strip()
+    ][:16]
+    assert len(rows) == 16
+    messages = [[{"role": "user", "content": row["question"]}] for row in rows]
+    sampling = SamplingParams(temperature=0, max_tokens=128, ignore_eos=True, seed=0)
+
+    def generate(batch):
+        return llm.chat(
+            batch,
+            sampling,
+            use_tqdm=False,
+            chat_template_kwargs={"enable_thinking": False},
+        )
+
+    def counters():
+        return {
+            m.name: m.value
+            for m in llm.get_metrics()
+            if hasattr(m, "value") and "spec_decode" in m.name
+        }
+
+    # Warm every prompt batch, including the exact measured decode shapes.
+    for _ in range(2):
+        for start in range(0, 16, args.batch):
+            generate(messages[start : start + args.batch])
+    measurements = []
+    attempt = 0
+    while len(measurements) < args.repeats:
+        repeat = len(measurements)
+        attempt += 1
+        assert attempt <= 12, "Runtime JIT did not settle after 12 attempts"
+        jit_before = len(llm.collective_rpc("benchmark_read_jit_counter")[0])
+        before = counters()
+        outputs = []
+        batch_seconds = []
+        for start in range(0, 16, args.batch):
+            torch.accelerator.synchronize()
+            t0 = time.perf_counter()
+            result = generate(messages[start : start + args.batch])
+            torch.accelerator.synchronize()
+            batch_seconds.append(time.perf_counter() - t0)
+            outputs.extend(result)
+        after = counters()
+        jit_events = llm.collective_rpc("benchmark_read_jit_counter")[0][jit_before:]
+        tokens = [list(o.outputs[0].token_ids) for o in outputs]
+        assert len(tokens) == 16 and all(len(t) == 128 for t in tokens)
+        metrics = {k: v - before.get(k, 0) for k, v in after.items()}
+        elapsed = sum(batch_seconds)
+        measurement = dict(
+            repeat=repeat,
+            elapsed_s=elapsed,
+            throughput=2048 / elapsed,
+            batch_seconds=batch_seconds,
+            counters=metrics,
+            token_ids=tokens,
+            prompt_token_ids=[list(o.prompt_token_ids) for o in outputs],
+            jit_events=jit_events,
+        )
+        if jit_events:
+            write_json(root / f"jit_warmup_attempt_{attempt}.json", measurement)
+            print(f"EXCLUDE_JIT attempt={attempt} events={len(jit_events)}", flush=True)
+            continue
+        measurements.append(measurement)
+        write_json(root / f"repeat_{repeat}.json", measurement)
+        print(
+            f"MEASURE {args.mode} B={args.batch} D={args.draft} "
+            f"repeat={repeat}: {2048 / elapsed:.3f} tok/s",
+            flush=True,
+        )
+    write_json(
+        root / "timing_complete.json",
+        dict(
+            mode=args.mode,
+            batch=args.batch,
+            draft=args.draft,
+            gpu=os.environ.get("CUDA_VISIBLE_DEVICES"),
+            init_s=init_s,
+            measurements=measurements,
+        ),
+    )
+    # Profiling is a separate replay, never used as the E2E timer.
+    llm.start_profile()
+    generate(messages[: args.batch])
+    llm.stop_profile()
+    write_json(root / "complete.json", {"timing": True, "profile": True})
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model", default="/data1/fanya/Qwen/Qwen3.6-35B-A3B")
+    parser.add_argument(
+        "--dataset", default="/home/fanya/replayssm_build_artifacts/gsm8k_test.jsonl"
+    )
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument("--batches", default="1,4")
+    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--worker", action="store_true")
+    parser.add_argument("--batch", type=int)
+    parser.add_argument("--draft", type=int, default=0)
+    parser.add_argument("--mode", choices=["ar", "standard", "replayssm"])
+    args = parser.parse_args()
+    if args.worker:
+        worker(args)
+        return
+    root = Path(args.output).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env.update(
+        CUDA_VISIBLE_DEVICES=str(args.gpu),
+        PATH=str(Path(sys.executable).parent) + ":" + env["PATH"],
+        HF_HUB_OFFLINE="1",
+        HF_DATASETS_OFFLINE="1",
+        VLLM_WORKER_MULTIPROC_METHOD="spawn",
+        OMP_NUM_THREADS="8",
+    )
+    for batch in map(int, args.batches.split(",")):
+        cells = [("ar", 0)]
+        for draft in (4, 8, 16, 32):
+            modes = (
+                ("standard", "replayssm")
+                if draft in (4, 16)
+                else ("replayssm", "standard")
+            )
+            cells.extend((mode, draft) for mode in modes)
+        for mode, draft in cells:
+            cell = root / f"b{batch}_d{draft}_{mode}"
+            if (cell / "complete.json").exists():
+                continue
+            cell.mkdir(exist_ok=True)
+            cmd = [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--worker",
+                "--output",
+                str(cell),
+                "--model",
+                args.model,
+                "--dataset",
+                args.dataset,
+                "--batch",
+                str(batch),
+                "--draft",
+                str(draft),
+                "--mode",
+                mode,
+                "--repeats",
+                str(args.repeats),
+            ]
+            write_json(
+                cell / "launch.json",
+                dict(
+                    command=cmd,
+                    environment={
+                        k: env[k]
+                        for k in (
+                            "CUDA_VISIBLE_DEVICES",
+                            "PATH",
+                            "HF_HUB_OFFLINE",
+                            "OMP_NUM_THREADS",
+                        )
+                    },
+                    script_sha256=hashlib.sha256(
+                        Path(__file__).read_bytes()
+                    ).hexdigest(),
+                ),
+            )
+            with (cell / "run.log").open("w") as log:
+                code = subprocess.call(
+                    cmd, env=env, stdout=log, stderr=subprocess.STDOUT
+                )
+            print(f"DONE {cell.name} exit={code}", flush=True)
+            if code:
+                write_json(cell / "failed.json", {"exit_code": code})
+                raise SystemExit(code)
+
+
+if __name__ == "__main__":
+    main()

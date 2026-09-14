@@ -1,0 +1,12 @@
+{
+  "measurement_complete": true,
+  "e2e_and_profile_cells": 36,
+  "controlled_kernel_cells": 16,
+  "formal_output_tokens": 221184,
+  "jit_free_repeats_per_cell": 3,
+  "kernel_correctness_passed": true,
+  "strict_cross_method_output_equivalence": false,
+  "worker_source_sha256": "5e0dd95507d5867119509511dc776c4f53eb2b56b77018f71fc12fee017c037e",
+  "e2e_batch_semantics": "submitted requests and max_num_seqs",
+  "constant_execution_batch_guaranteed": false
+}

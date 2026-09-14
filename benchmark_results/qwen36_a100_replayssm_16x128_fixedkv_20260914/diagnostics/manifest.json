@@ -1,0 +1,17 @@
+{
+  "initial_profile_oom_run.log": {
+    "original": "benchmark_results/qwen36_a100_replayssm_16x128_20260914/b8_d32_replayssm/run.log",
+    "sha256": "bc694821714e8212ffabed8125eb0062d131f198c44dd24831ad6f487c13470e",
+    "scope": "superseded diagnostic, excluded from formal performance"
+  },
+  "initial_profile_oom_config.json": {
+    "original": "benchmark_results/qwen36_a100_replayssm_16x128_20260914/b8_d32_replayssm/config.json",
+    "sha256": "f8c3e104cb192e3e727772a03b732e72836055c7c8011cd8238bccc6e1f535bc",
+    "scope": "superseded diagnostic, excluded from formal performance"
+  },
+  "initial_profile_oom_launch.json": {
+    "original": "benchmark_results/qwen36_a100_replayssm_16x128_20260914/b8_d32_replayssm/launch.json",
+    "sha256": "742ace97e60e0f6dbdefadb294cab1718c8d9329d0829a0747ab8eac088e1c08",
+    "scope": "superseded diagnostic, excluded from formal performance"
+  }
+}

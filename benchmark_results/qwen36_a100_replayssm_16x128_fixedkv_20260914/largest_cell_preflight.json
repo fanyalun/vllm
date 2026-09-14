@@ -1,0 +1,6 @@
+{
+  "exit_code": 0,
+  "cell": "b16_d32_replayssm",
+  "timing_and_profile_complete": true,
+  "prior_attempt_record": "startup_failures/prior_failed_preflight.json"
+}

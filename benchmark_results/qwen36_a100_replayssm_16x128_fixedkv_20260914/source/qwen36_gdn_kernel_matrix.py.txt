@@ -1,0 +1,187 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""Controlled Qwen GDN kernels, fixed B and four committed tokens per step."""
+
+import argparse
+import csv
+import json
+import statistics
+from pathlib import Path
+
+import torch
+
+from vllm.model_executor.layers.fla.ops import (
+    fused_recurrent_gated_delta_rule_packed_decode,
+)
+from vllm.model_executor.layers.fla.ops.fused_sigmoid_gating import (
+    fused_sigmoid_gating_delta_rule_update,
+)
+from vllm.model_executor.layers.fla.ops.gdn_replayssm_spec_decode import (
+    commit_gdn_replayssm_spec,
+    gdn_replayssm_spec_decode,
+)
+
+
+def measure(fn):
+    for _ in range(32):
+        fn()
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        for _ in range(64):
+            fn()
+    times = []
+    for _ in range(7):
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        for _ in range(20):
+            graph.replay()
+        end.record()
+        end.synchronize()
+        times.append(start.elapsed_time(end) * 1000 / (64 * 20))
+    return dict(us=statistics.median(times), min_us=min(times), max_us=max(times))
+
+
+def cell(batch, draft):
+    torch.manual_seed(0)
+    dev = "cuda"
+    width = draft + 1
+    h, hv, k, v = 16, 32, 128, 128
+    n = batch * width
+    qkv = torch.randn(n, 2 * h * k + hv * v, device=dev, dtype=torch.bfloat16)
+    a = torch.randn(n, hv, device=dev, dtype=torch.bfloat16)
+    b = torch.randn_like(a)
+    a_log = torch.randn(hv, device=dev)
+    dt_bias = torch.randn(hv, device=dev)
+    q, key, value = [x.contiguous() for x in qkv.split([h * k, h * k, hv * v], dim=1)]
+    q = q.reshape(1, n, h, k)
+    key = key.reshape(1, n, h, k)
+    value = value.reshape(1, n, hv, v)
+    slots = torch.arange(1, batch + 1, device=dev, dtype=torch.int32)
+    indices = torch.arange(1, n + 1, device=dev, dtype=torch.int32).reshape(
+        batch, width
+    )
+    accepted = torch.full((batch,), 4, device=dev, dtype=torch.int32)
+    qsl = torch.arange(batch + 1, device=dev, dtype=torch.int32) * width
+    checkpoint = torch.randn(batch + 1, hv, v, k, device=dev) * 0.1
+    baseline = torch.zeros(n + 1, hv, v, k, device=dev)
+    baseline[indices[:, 3].long()] = checkpoint[1:]
+    d_cache = torch.zeros(batch + 1, hv, 128, v, device=dev, dtype=torch.bfloat16)
+    k_cache = torch.zeros(batch + 1, h, 128, k, device=dev, dtype=torch.bfloat16)
+    g_cache = torch.zeros(batch + 1, hv, 128, device=dev)
+    wp = torch.zeros(batch + 1, device=dev, dtype=torch.int32)
+    base = torch.zeros_like(wp)
+    flush = torch.zeros(batch + 1, device=dev, dtype=torch.int8)
+    output = torch.empty(n, hv, v, device=dev, dtype=torch.bfloat16)
+
+    def standard():
+        return fused_sigmoid_gating_delta_rule_update(
+            A_log=a_log,
+            a=a,
+            b=b,
+            dt_bias=dt_bias,
+            q=q,
+            k=key,
+            v=value,
+            initial_state=baseline,
+            cu_seqlens=qsl,
+            ssm_state_indices=indices,
+            num_accepted_tokens=accepted,
+            use_qk_l2norm_in_kernel=True,
+        )[0]
+
+    def replay():
+        gdn_replayssm_spec_decode(
+            mixed_qkv=qkv,
+            a=a,
+            b=b,
+            A_log=a_log,
+            dt_bias=dt_bias,
+            checkpoint_state=checkpoint,
+            d_cache=d_cache,
+            k_cache=k_cache,
+            g_cache=g_cache,
+            out=output,
+            query_start_loc=qsl,
+            ssm_state_indices=slots,
+            write_pos=wp,
+            cache_base=base,
+            is_flush=flush,
+            max_cache_len=64 + width,
+            max_spec_len=width,
+            use_qk_l2norm_in_kernel=True,
+        )
+        commit_gdn_replayssm_spec(
+            wp,
+            base,
+            flush,
+            accepted,
+            slots,
+            64 + width,
+            width,
+            cache_buf_len=128,
+        )
+
+    reference = standard().reshape_as(output)
+    replay()
+    torch.testing.assert_close(output, reference, rtol=0.04, atol=0.01)
+    standard_time = measure(standard)
+    replay_time = measure(replay)
+    ar_state = checkpoint.clone()
+    ar_qkv = qkv.reshape(batch, width, -1)[:, 0].contiguous()
+    ar_a = a.reshape(batch, width, -1)[:, 0].contiguous()
+    ar_b = b.reshape(batch, width, -1)[:, 0].contiguous()
+    ar_out = torch.empty(batch, 1, hv, v, device=dev, dtype=torch.bfloat16)
+
+    def ar():
+        fused_recurrent_gated_delta_rule_packed_decode(
+            mixed_qkv=ar_qkv,
+            a=ar_a,
+            b=ar_b,
+            A_log=a_log,
+            dt_bias=dt_bias,
+            scale=k**-0.5,
+            initial_state=ar_state,
+            out=ar_out,
+            ssm_state_indices=slots,
+            use_qk_l2norm_in_kernel=True,
+        )
+
+    ar_time = measure(ar)
+    return dict(
+        batch=batch,
+        draft=draft,
+        accepted_tokens=4,
+        correctness=True,
+        ar_us=ar_time["us"],
+        standard_us=standard_time["us"],
+        replayssm_us=replay_time["us"],
+        speedup=standard_time["us"] / replay_time["us"],
+        timings=dict(ar=ar_time, standard=standard_time, replayssm=replay_time),
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    args.output.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for batch in (1, 4, 8, 16):
+        for draft in (4, 8, 16, 32):
+            row = cell(batch, draft)
+            rows.append(row)
+            print(json.dumps(row), flush=True)
+            (args.output / "controlled_kernels.json").write_text(
+                json.dumps(rows, indent=2) + "\n"
+            )
+    with (args.output / "controlled_kernels.csv").open("w") as stream:
+        keys = [k for k in rows[0] if k != "timings"]
+        writer = csv.DictWriter(stream, fieldnames=keys, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+if __name__ == "__main__":
+    main()

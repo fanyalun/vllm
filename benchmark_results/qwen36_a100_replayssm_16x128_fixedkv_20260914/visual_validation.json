@@ -1,0 +1,29 @@
+[
+  {
+    "name": "qwen36_a100_figure7",
+    "png_viewed": true,
+    "pdf_render_viewed": true,
+    "pages": 1,
+    "fonts_embedded": true,
+    "pdf_info": "Creator:         Matplotlib v3.11.1, https://matplotlib.org\nProducer:        Matplotlib pdf backend v3.11.1\nCreationDate:    Mon Sep 14 11:26:34 2026 UTC\nCustom Metadata: no\nMetadata Stream: no\nTagged:          no\nUserProperties:  no\nSuspects:        no\nForm:            none\nJavaScript:      no\nPages:           1\nEncrypted:       no\nPage size:       712.47 x 753.48 pts\nPage rot:        0\nFile size:       14146 bytes\nOptimized:       no\nPDF version:     1.4\n",
+    "pdf_fonts": "name                                 type              encoding         emb sub uni object ID\n------------------------------------ ----------------- ---------------- --- --- --- ---------\nESJOQT+STIXGeneral-Regular           CID TrueType      Identity-H       yes yes yes     15  0\n"
+  },
+  {
+    "name": "qwen36_a100_throughput",
+    "png_viewed": true,
+    "pdf_render_viewed": true,
+    "pages": 1,
+    "fonts_embedded": true,
+    "pdf_info": "Creator:         Matplotlib v3.11.1, https://matplotlib.org\nProducer:        Matplotlib pdf backend v3.11.1\nCreationDate:    Mon Sep 14 11:26:35 2026 UTC\nCustom Metadata: no\nMetadata Stream: no\nTagged:          no\nUserProperties:  no\nSuspects:        no\nForm:            none\nJavaScript:      no\nPages:           1\nEncrypted:       no\nPage size:       684.36 x 515.88 pts\nPage rot:        0\nFile size:       12450 bytes\nOptimized:       no\nPDF version:     1.4\n",
+    "pdf_fonts": "name                                 type              encoding         emb sub uni object ID\n------------------------------------ ----------------- ---------------- --- --- --- ---------\nFNPKGV+STIXGeneral-Regular           CID TrueType      Identity-H       yes yes yes     15  0\n"
+  },
+  {
+    "name": "qwen36_a100_kernel_latency",
+    "png_viewed": true,
+    "pdf_render_viewed": true,
+    "pages": 1,
+    "fonts_embedded": true,
+    "pdf_info": "Creator:         Matplotlib v3.11.1, https://matplotlib.org\nProducer:        Matplotlib pdf backend v3.11.1\nCreationDate:    Mon Sep 14 11:26:36 2026 UTC\nCustom Metadata: no\nMetadata Stream: no\nTagged:          no\nUserProperties:  no\nSuspects:        no\nForm:            none\nJavaScript:      no\nPages:           1\nEncrypted:       no\nPage size:       685.24 x 515.88 pts\nPage rot:        0\nFile size:       11930 bytes\nOptimized:       no\nPDF version:     1.4\n",
+    "pdf_fonts": "name                                 type              encoding         emb sub uni object ID\n------------------------------------ ----------------- ---------------- --- --- --- ---------\nDMOCDZ+STIXGeneral-Regular           CID TrueType      Identity-H       yes yes yes     15  0\n"
+  }
+]

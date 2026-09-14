@@ -1,0 +1,10 @@
+{
+  "qwen36_a100_matrix": {
+    "measured_sha256": "5e0dd95507d5867119509511dc776c4f53eb2b56b77018f71fc12fee017c037e",
+    "published_sha256": "50a3d3ed9332fbada3e67b8cb5e33fc7bb05782272392868527c4c367e936f53"
+  },
+  "qwen36_gdn_kernel_matrix": {
+    "measured_sha256": "b3b0bae5b2777abe01bc6fbc1600f9f65234b7fd9636db396fc1389bf04ec0c2",
+    "published_sha256": "ec3d941580e27787d7a3cfe4d6efe7ba1edebc6177010759eed24aaeaa15c5ea"
+  }
+}

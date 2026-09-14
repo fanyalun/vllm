@@ -1,0 +1,36 @@
+--- measured/qwen36_a100_matrix.py.txt
++++ benchmarks/replayssm/qwen36_a100_matrix.py
+@@ -162,10 +162,10 @@
+         outputs = []
+         batch_seconds = []
+         for start in range(0, 16, args.batch):
+-            torch.cuda.synchronize()
++            torch.accelerator.synchronize()
+             t0 = time.perf_counter()
+             result = generate(messages[start : start + args.batch])
+-            torch.cuda.synchronize()
++            torch.accelerator.synchronize()
+             batch_seconds.append(time.perf_counter() - t0)
+             outputs.extend(result)
+         after = counters()
+--- measured/qwen36_gdn_kernel_matrix.py.txt
++++ benchmarks/replayssm/qwen36_gdn_kernel_matrix.py
+@@ -25,15 +25,15 @@
+ def measure(fn):
+     for _ in range(32):
+         fn()
+-    torch.cuda.synchronize()
++    torch.accelerator.synchronize()
+     graph = torch.cuda.CUDAGraph()
+     with torch.cuda.graph(graph):
+         for _ in range(64):
+             fn()
+     times = []
+     for _ in range(7):
+-        start = torch.cuda.Event(enable_timing=True)
+-        end = torch.cuda.Event(enable_timing=True)
++        start = torch.Event(device="cuda", enable_timing=True)
++        end = torch.Event(device="cuda", enable_timing=True)
+         start.record()
+         for _ in range(20):
+             graph.replay()

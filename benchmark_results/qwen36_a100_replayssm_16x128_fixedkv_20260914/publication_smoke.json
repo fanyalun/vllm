@@ -1,0 +1,32 @@
+{
+  "purpose": "published API smoke validation only; not formal matrix data",
+  "script_sha256": "ec3d941580e27787d7a3cfe4d6efe7ba1edebc6177010759eed24aaeaa15c5ea",
+  "gpu": 0,
+  "result": {
+    "batch": 1,
+    "draft": 4,
+    "accepted_tokens": 4,
+    "correctness": true,
+    "ar_us": 7.013600319623947,
+    "standard_us": 14.751200377941132,
+    "replayssm_us": 26.449599862098694,
+    "speedup": 0.557709774622302,
+    "timings": {
+      "ar": {
+        "us": 7.013600319623947,
+        "min_us": 7.0128001272678375,
+        "max_us": 7.044800370931625
+      },
+      "standard": {
+        "us": 14.751200377941132,
+        "min_us": 14.748799800872803,
+        "max_us": 14.792799949645996
+      },
+      "replayssm": {
+        "us": 26.449599862098694,
+        "min_us": 26.43679976463318,
+        "max_us": 26.531198620796204
+      }
+    }
+  }
+}

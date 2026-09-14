@@ -1,0 +1,26 @@
+{
+  "command": [
+    "/home/fanya/vllm-replayssm-pr47576/.venv/bin/python",
+    "/home/fanya/vllm-replayssm-pr47576/benchmarks/replayssm/qwen36_a100_matrix.py",
+    "--worker",
+    "--output",
+    "/home/fanya/vllm-replayssm-pr47576/benchmark_results/qwen36_a100_replayssm_16x128_fixedkv_20260914/b16_d32_replayssm",
+    "--batch",
+    "16",
+    "--draft",
+    "32",
+    "--mode",
+    "replayssm",
+    "--repeats",
+    "3"
+  ],
+  "environment": {
+    "CUDA_VISIBLE_DEVICES": "1",
+    "HF_HUB_OFFLINE": "1",
+    "HF_DATASETS_OFFLINE": "1",
+    "OMP_NUM_THREADS": "8",
+    "PATH_PREFIX": "/home/fanya/vllm-replayssm-pr47576/.venv/bin"
+  },
+  "script_sha256": "5e0dd95507d5867119509511dc776c4f53eb2b56b77018f71fc12fee017c037e",
+  "purpose": "largest-cell preflight included in matrix"
+}

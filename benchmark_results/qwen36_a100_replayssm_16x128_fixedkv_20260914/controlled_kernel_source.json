@@ -1,0 +1,7 @@
+{
+  "script": "benchmarks/replayssm/qwen36_gdn_kernel_matrix.py",
+  "sha256": "b3b0bae5b2777abe01bc6fbc1600f9f65234b7fd9636db396fc1389bf04ec0c2",
+  "gpu": 1,
+  "source_commit": "501b9513ed8fd663d90ea3a2326ac9fa0a633b0f",
+  "measurement_archive": "source/qwen36_gdn_kernel_matrix.py.txt"
+}

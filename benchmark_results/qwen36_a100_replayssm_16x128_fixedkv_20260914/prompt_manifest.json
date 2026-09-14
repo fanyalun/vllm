@@ -1,0 +1,23 @@
+{
+  "sample_count": 16,
+  "token_lengths": [
+    77,
+    38,
+    69,
+    47,
+    123,
+    67,
+    53,
+    82,
+    116,
+    72,
+    72,
+    77,
+    79,
+    70,
+    64,
+    106
+  ],
+  "prompt_token_ids_sha256": "ede3bd41d3ee1a2e37e5dae105395ddf8bc47e3e3645039f5c80ceeec9665800",
+  "all_formal_prompts_identical": true
+}

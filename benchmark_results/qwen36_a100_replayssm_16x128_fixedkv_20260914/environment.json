@@ -1,0 +1,27 @@
+{
+  "captured_at": "2026-09-14T10:44:34.130479+00:00",
+  "python": "3.12.12 | packaged by conda-forge | (main, Oct 13 2025, 14:34:15) [GCC 14.3.0]",
+  "interpreter": "/home/fanya/vllm-replayssm-pr47576/.venv/bin/python",
+  "platform": "Linux-5.15.0-179-generic-x86_64-with-glibc2.35",
+  "gpus": [
+    {
+      "index": "0",
+      "name": "NVIDIA A100 80GB PCIe",
+      "uuid": "GPU-92c316af-729a-d2b2-87e6-f49f1ee62b4a",
+      "driver_version": "580.95.05",
+      "memory.total": "81920 MiB",
+      "pci.bus_id": "00000000:65:00.0",
+      "power.limit": "300.00 W"
+    },
+    {
+      "index": "1",
+      "name": "NVIDIA A100 80GB PCIe",
+      "uuid": "GPU-c7954c39-6588-4e28-8636-b460b8346ef8",
+      "driver_version": "580.95.05",
+      "memory.total": "81920 MiB",
+      "pci.bus_id": "00000000:B1:00.0",
+      "power.limit": "300.00 W"
+    }
+  ],
+  "topology": "\t\u001b[4mGPU0\tGPU1\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\u001b[0m\nGPU0\t X \tSYS\t0-23,48-71\t0\t\tN/A\nGPU1\tSYS\t X \t24-47,72-95\t1\t\tN/A\n\nLegend:\n\n  X    = Self\n  SYS  = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)\n  NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node\n  PHB  = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)\n  PXB  = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)\n  PIX  = Connection traversing at most a single PCIe bridge\n  NV#  = Connection traversing a bonded set of # NVLinks\n"
+}

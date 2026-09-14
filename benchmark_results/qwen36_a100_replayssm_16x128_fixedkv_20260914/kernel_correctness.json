@@ -1,0 +1,18 @@
+[
+  {
+    "draft": 4,
+    "passed": true
+  },
+  {
+    "draft": 8,
+    "passed": true
+  },
+  {
+    "draft": 16,
+    "passed": true
+  },
+  {
+    "draft": 32,
+    "passed": true
+  }
+]

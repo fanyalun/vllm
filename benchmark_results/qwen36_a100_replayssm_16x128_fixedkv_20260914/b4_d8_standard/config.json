@@ -1,0 +1,46 @@
+{
+  "model": "/data1/fanya/Qwen/Qwen3.6-35B-A3B",
+  "tensor_parallel_size": 1,
+  "enable_expert_parallel": false,
+  "dtype": "bfloat16",
+  "mamba_ssm_cache_dtype": "float32",
+  "language_model_only": true,
+  "max_model_len": 1024,
+  "max_num_seqs": 4,
+  "max_num_batched_tokens": 4096,
+  "enable_prefix_caching": false,
+  "mamba_cache_mode": "none",
+  "enforce_eager": false,
+  "disable_log_stats": false,
+  "gpu_memory_utilization": 0.95,
+  "kv_cache_memory_bytes": 7516192768,
+  "seed": 0,
+  "worker_extension_cls": "qwen36_a100_matrix.JitMonitorExtension",
+  "additional_config": {
+    "gdn_prefill_backend": "triton"
+  },
+  "compilation_config": {
+    "cudagraph_capture_sizes": [
+      9,
+      18,
+      36
+    ],
+    "max_cudagraph_capture_size": 36
+  },
+  "kernel_config": {
+    "enable_flashinfer_autotune": false
+  },
+  "profiler_config": {
+    "profiler": "torch",
+    "torch_profiler_dir": "/home/fanya/vllm-replayssm-pr47576/benchmark_results/qwen36_a100_replayssm_16x128_fixedkv_20260914/b4_d8_standard/profile",
+    "torch_profiler_with_stack": false,
+    "torch_profiler_record_shapes": false,
+    "delay_iterations": 2,
+    "max_iterations": 128,
+    "ignore_frontend": true
+  },
+  "speculative_config": {
+    "method": "mtp",
+    "num_speculative_tokens": 8
+  }
+}

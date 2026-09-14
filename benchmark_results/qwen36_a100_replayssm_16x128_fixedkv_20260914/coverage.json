@@ -1,0 +1,10 @@
+{
+  "completed_cells": 36,
+  "expected_cells": 36,
+  "timing_and_profile_complete": true,
+  "formal_output_tokens": 221184,
+  "kernel_correctness_passed": true,
+  "worker_source_sha256": "5e0dd95507d5867119509511dc776c4f53eb2b56b77018f71fc12fee017c037e",
+  "repeated_output_exact_cells": 36,
+  "strict_cross_method_output_equivalence": false
+}

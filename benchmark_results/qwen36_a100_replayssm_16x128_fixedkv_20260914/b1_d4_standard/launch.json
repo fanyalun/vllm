@@ -1,0 +1,28 @@
+{
+  "command": [
+    "/home/fanya/vllm-replayssm-pr47576/.venv/bin/python",
+    "/home/fanya/vllm-replayssm-pr47576/benchmarks/replayssm/qwen36_a100_matrix.py",
+    "--worker",
+    "--output",
+    "/home/fanya/vllm-replayssm-pr47576/benchmark_results/qwen36_a100_replayssm_16x128_fixedkv_20260914/b1_d4_standard",
+    "--model",
+    "/data1/fanya/Qwen/Qwen3.6-35B-A3B",
+    "--dataset",
+    "/home/fanya/replayssm_build_artifacts/gsm8k_test.jsonl",
+    "--batch",
+    "1",
+    "--draft",
+    "4",
+    "--mode",
+    "standard",
+    "--repeats",
+    "3"
+  ],
+  "environment": {
+    "CUDA_VISIBLE_DEVICES": "0",
+    "PATH": "/home/fanya/vllm-replayssm-pr47576/.venv/bin:/home/fanya/.nvm/versions/node/v22.22.3/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-path:/home/fanya/.local/bin:/home/fanya/.codex/tmp/arg0/codex-arg02cZSER:/home/fanya/.nvm/versions/node/v22.22.3/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-path:/home/fanya/.local/bin:/home/fanya/.local/bin:/home/fanya/.cargo/bin:/home/fanya/.local/bin:/usr/local/cuda-12.9/bin:/home/fanya/.nvm/versions/node/v22.22.3/bin:/home/fanya/miniforge/bin:/home/fanya/miniforge/condabin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin",
+    "HF_HUB_OFFLINE": "1",
+    "OMP_NUM_THREADS": "8"
+  },
+  "script_sha256": "5e0dd95507d5867119509511dc776c4f53eb2b56b77018f71fc12fee017c037e"
+}
