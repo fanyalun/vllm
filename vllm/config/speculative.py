@@ -847,7 +847,32 @@ class SpeculativeConfig:
                         self.draft_model_config.hf_config = eagle_config
                         self.update_arch_()
 
-                if self.method == "dspark" and (
+                if (
+                    self.method == "dspark"
+                    and self.draft_model_config.architecture == "DSparkDraftModel"
+                    and getattr(
+                        self.draft_model_config.hf_config,
+                        "speculators_model_type",
+                        None,
+                    )
+                    == "dspark"
+                ):
+                    # Speculators exports both Qwen and Gemma trained DSpark
+                    # checkpoints with the same Qwen3-style backbone. Older
+                    # Gemma exports used the generic DSparkDraftModel name,
+                    # which otherwise selects the unrelated DeepSeek-V4 model.
+                    hf = self.draft_model_config.hf_config
+                    hf.architectures = ["Qwen3DSparkModel"]
+                    hf.sample_from_anchor = getattr(hf, "sample_from_anchor", False)
+                    hf.dspark_target_layer_ids = getattr(
+                        hf,
+                        "dspark_target_layer_ids",
+                        getattr(hf, "aux_hidden_state_layer_ids", None),
+                    )
+                    if getattr(hf, "n_predict", None) is None:
+                        hf.n_predict = hf.block_size
+                    self.update_arch_()
+                elif self.method == "dspark" and (
                     "Qwen3DSparkModel" not in self.draft_model_config.architectures
                     and "Gemma4DSparkModel" not in self.draft_model_config.architectures
                 ):

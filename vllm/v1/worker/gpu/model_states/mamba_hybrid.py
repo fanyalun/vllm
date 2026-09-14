@@ -34,6 +34,8 @@ from vllm.v1.worker.utils import AttentionGroup
 @dataclass
 class MambaHybridAttnMetadata(ModelSpecificAttnMetadata):
     is_prefilling: torch.Tensor
+    num_prompt_tokens_cpu: torch.Tensor
+    num_computed_tokens_cpu: torch.Tensor
     num_accepted_tokens: torch.Tensor | None = None
     num_decode_draft_tokens_cpu: torch.Tensor | None = None
 
@@ -42,7 +44,11 @@ class MambaHybridAttnMetadata(ModelSpecificAttnMetadata):
         kv_cache_group_id: int,
         num_reqs: int,
     ) -> dict[str, Any]:
-        return {"is_prefilling": self.is_prefilling[:num_reqs]}
+        return {
+            "is_prefilling": self.is_prefilling[:num_reqs],
+            "num_prompt_tokens_cpu": self.num_prompt_tokens_cpu[:num_reqs],
+            "_num_computed_tokens_cpu": self.num_computed_tokens_cpu[:num_reqs],
+        }
 
     def get_extra_attn_kwargs(
         self,
@@ -265,6 +271,10 @@ class MambaHybridModelState(DefaultModelState):
 
         mamba_attn_metadata = MambaHybridAttnMetadata(
             is_prefilling=is_prefilling,
+            num_prompt_tokens_cpu=torch.from_numpy(input_batch.prefill_len_np),
+            num_computed_tokens_cpu=torch.from_numpy(
+                input_batch.num_computed_tokens_np
+            ),
             num_accepted_tokens=num_accepted_tokens,
             num_decode_draft_tokens_cpu=num_decode_draft_tokens_cpu,
         )

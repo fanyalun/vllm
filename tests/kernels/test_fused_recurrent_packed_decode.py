@@ -8,6 +8,103 @@ from vllm.model_executor.layers.fla.ops import (
     fused_recurrent_gated_delta_rule,
     fused_recurrent_gated_delta_rule_packed_decode,
 )
+from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
+    ChunkGatedDeltaRule,
+)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Need CUDA device")
+def test_float32_gdn_prefill_uses_recurrent_reference():
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    batch, seq_len, num_q_heads = 1, 8, 2
+    num_v_heads, head_dim = 4, 128
+
+    q = torch.randn(
+        batch,
+        seq_len,
+        num_q_heads,
+        head_dim,
+        device=device,
+        dtype=torch.float32,
+    )
+    k = torch.randn_like(q)
+    v = torch.randn(
+        batch,
+        seq_len,
+        num_v_heads,
+        head_dim,
+        device=device,
+        dtype=torch.float32,
+    )
+    g = -torch.rand(
+        batch,
+        seq_len,
+        num_v_heads,
+        device=device,
+        dtype=torch.float32,
+    )
+    beta = torch.rand_like(g)
+    initial_state = torch.randn(
+        batch,
+        num_v_heads,
+        head_dim,
+        head_dim,
+        device=device,
+        dtype=torch.float32,
+    )
+    cu_seqlens = torch.tensor([0, seq_len], device=device, dtype=torch.int32)
+    output_buffer = torch.empty_like(v.squeeze(0))
+
+    actual_output, actual_state = ChunkGatedDeltaRule.forward_native(
+        None,
+        q=q,
+        k=k,
+        v=v,
+        g=g,
+        beta=beta,
+        initial_state=initial_state,
+        output_final_state=True,
+        cu_seqlens=cu_seqlens,
+        use_qk_l2norm_in_kernel=True,
+        core_attn_out=output_buffer,
+    )
+    expected_output, per_token_states = fused_recurrent_gated_delta_rule(
+        q=q,
+        k=k,
+        v=v,
+        g=g,
+        beta=beta,
+        initial_state=initial_state,
+        inplace_final_state=False,
+        cu_seqlens=cu_seqlens,
+        use_qk_l2norm_in_kernel=True,
+    )
+
+    torch.testing.assert_close(actual_output, expected_output)
+    torch.testing.assert_close(actual_state, per_token_states[-1:])
+    torch.testing.assert_close(output_buffer, expected_output.squeeze(0))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Need CUDA device")
+def test_float32_gdn_prefill_rejects_multiple_sequences():
+    q = torch.zeros(1, 4, 1, 128, device="cuda", dtype=torch.float32)
+    v = torch.zeros(1, 4, 2, 128, device="cuda", dtype=torch.float32)
+    g = torch.zeros(1, 4, 2, device="cuda", dtype=torch.float32)
+    initial_state = torch.zeros(2, 2, 128, 128, device="cuda", dtype=torch.float32)
+
+    with pytest.raises(ValueError, match="exactly one sequence"):
+        ChunkGatedDeltaRule.forward_native(
+            None,
+            q=q,
+            k=q,
+            v=v,
+            g=g,
+            beta=g,
+            initial_state=initial_state,
+            output_final_state=True,
+            cu_seqlens=torch.tensor([0, 2, 4], device="cuda"),
+        )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Need CUDA device")

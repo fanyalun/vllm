@@ -26,6 +26,7 @@ from vllm.model_executor.layers.fla.ops import (
 )
 from vllm.model_executor.layers.fla.ops import (
     fused_post_conv_prep,
+    fused_recurrent_gated_delta_rule,
     fused_recurrent_gated_delta_rule_packed_decode,
     fused_recurrent_gated_delta_rule_replayssm,
     fused_sigmoid_gating_delta_rule_update,
@@ -358,6 +359,36 @@ class ChunkGatedDeltaRule(CustomOp):
         use_qk_l2norm_in_kernel: bool = True,
         core_attn_out: torch.Tensor | None = None,
     ):
+        if q.dtype == torch.float32 or envs.VLLM_GDN_PREFILL_USE_RECURRENT_REFERENCE:
+            if q.dtype != k.dtype or q.dtype != v.dtype:
+                raise ValueError("GDN query, key, and value dtypes must match.")
+            if q.shape[0] != 1 or (cu_seqlens is not None and cu_seqlens.numel() != 2):
+                raise ValueError(
+                    "The float32 GDN prefill reference path supports exactly "
+                    "one sequence. Use batch size 1."
+                )
+            if q.shape[1] == 0:
+                raise ValueError(
+                    "The float32 GDN prefill reference path requires at least "
+                    "one token."
+                )
+            o, per_token_states = fused_recurrent_gated_delta_rule(
+                q=q,
+                k=k,
+                v=v,
+                g=g,
+                beta=beta,
+                initial_state=initial_state,
+                inplace_final_state=False,
+                cu_seqlens=cu_seqlens,
+                use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+            )
+            final_state = per_token_states[-1:].clone() if output_final_state else None
+            if core_attn_out is not None:
+                o_flat = o.reshape(-1)
+                core_attn_out.reshape(-1)[: o_flat.numel()].copy_(o_flat)
+            return o, final_state
+
         return fla_chunk_gated_delta_rule(
             q=q,
             k=k,

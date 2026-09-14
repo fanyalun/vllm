@@ -22,6 +22,7 @@ from vllm.v1.attention.backends.gdn_attn import (
     GDNAttentionMetadataBuilder,
 )
 from vllm.v1.kv_cache_interface import MambaSpec
+from vllm.v1.worker.gpu.model_states.mamba_hybrid import MambaHybridAttnMetadata
 
 BLOCK_SIZE = 16
 DEVICE = torch.device("cpu")
@@ -221,3 +222,23 @@ def test_full_cudagraph_spec_metadata_uses_request_count():
     assert meta.spec_query_start_loc.shape == (batch.batch_size + 1,)
     assert meta.num_accepted_tokens is not None
     assert meta.num_accepted_tokens.shape == (batch.batch_size,)
+
+
+def test_mamba_hybrid_metadata_forwards_replayssm_cpu_counts():
+    is_prefilling = torch.tensor([False, True, False])
+    prompt_lens = torch.tensor([128, 64, 32], dtype=torch.int32)
+    num_computed = torch.tensor([130, 16, 35], dtype=torch.int32)
+    metadata = MambaHybridAttnMetadata(
+        is_prefilling=is_prefilling,
+        num_prompt_tokens_cpu=prompt_lens,
+        num_computed_tokens_cpu=num_computed,
+    )
+
+    kwargs = metadata.get_extra_common_attn_kwargs(
+        kv_cache_group_id=0,
+        num_reqs=2,
+    )
+
+    assert torch.equal(kwargs["is_prefilling"], is_prefilling[:2])
+    assert torch.equal(kwargs["num_prompt_tokens_cpu"], prompt_lens[:2])
+    assert torch.equal(kwargs["_num_computed_tokens_cpu"], num_computed[:2])

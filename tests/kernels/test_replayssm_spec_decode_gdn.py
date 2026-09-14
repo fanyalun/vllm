@@ -91,7 +91,7 @@ def _build_history(
     and leaving the checkpoint unchanged."""
     sbi = torch.tensor([slot], device=DEV, dtype=torch.int32)
     for t in range(wp):
-        ot = torch.empty(1, 1, *state.shape[1:3], device=DEV, dtype=mqkv.dtype)
+        out_t = torch.empty(1, 1, *state.shape[1:3], device=DEV, dtype=mqkv.dtype)
         fused_recurrent_gated_delta_rule_replayssm(
             mixed_qkv=mqkv[t : t + 1],
             a=a[t : t + 1],
@@ -103,7 +103,7 @@ def _build_history(
             d_cache=d_cache,
             k_cache=k_cache,
             g_cache=g_cache,
-            out=ot,
+            out=out_t,
             ssm_state_indices=sbi,
             write_pos=torch.tensor([t], device=DEV, dtype=torch.int32),
             use_qk_l2norm_in_kernel=True,
@@ -135,7 +135,7 @@ def _standard_window_oracle(
     sbi = torch.tensor([slot], device=DEV, dtype=torch.int32)
     win = []
     for s in range(spec_len):
-        ot = torch.empty(1, 1, HV, V, device=DEV, dtype=mqkv.dtype)
+        out_t = torch.empty(1, 1, HV, V, device=DEV, dtype=mqkv.dtype)
         fused_recurrent_gated_delta_rule_replayssm(
             mixed_qkv=mqkv[wp + s : wp + s + 1],
             a=a[wp + s : wp + s + 1],
@@ -147,12 +147,12 @@ def _standard_window_oracle(
             d_cache=d_o,
             k_cache=k_o,
             g_cache=g_o,
-            out=ot,
+            out=out_t,
             ssm_state_indices=sbi,
             write_pos=torch.tensor([wp + s], device=DEV, dtype=torch.int32),
             use_qk_l2norm_in_kernel=True,
         )
-        win.append(ot.reshape(1, HV, V).clone())
+        win.append(out_t.reshape(1, HV, V).clone())
     return torch.cat(win, dim=0)
 
 
@@ -289,7 +289,7 @@ _REAL_GEOMETRIES = [
     pytest.param((16, 64, 128, 128), id="qwen122b"),
 ]
 _BASE_BLOCKS = [16, 32]  # history block B (replayssm_buffer_len)
-_MAX_SPEC_LENS = [2, 4, 6, 8]
+_MAX_SPEC_LENS = [2, 4, 5, 6, 8]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Need CUDA device")
@@ -461,7 +461,7 @@ def _run_rollback(
         k = int(torch.randint(1, spec_len + 1, (1,), generator=g).item())
         base_out = []
         for s in range(k):
-            ot = torch.empty(1, 1, HV, V, device=DEV, dtype=act_dtype)
+            out_t = torch.empty(1, 1, HV, V, device=DEV, dtype=act_dtype)
             fused_recurrent_gated_delta_rule_packed_decode(
                 mixed_qkv=mqkv[s : s + 1],
                 a=a[s : s + 1],
@@ -470,11 +470,11 @@ def _run_rollback(
                 dt_bias=dt_bias,
                 scale=scale,
                 initial_state=state_base,
-                out=ot,
+                out=out_t,
                 ssm_state_indices=sbi,
                 use_qk_l2norm_in_kernel=True,
             )
-            base_out.append(ot.reshape(1, HV, V).clone())
+            base_out.append(out_t.reshape(1, HV, V).clone())
             total_accepted += 1
             snapshots[total_accepted] = state_base[slot].clone()
         base_out = torch.cat(base_out, dim=0)
@@ -516,6 +516,23 @@ def test_spec_rollback_tracks_baseline(precision, base_block, max_spec_len):
         V=64,
         buffer_len=base_block,
         max_spec_len=max_spec_len,
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Need CUDA device")
+@pytest.mark.parametrize("precision", _PRECISIONS[:2])
+def test_spec_rollback_real_geometry_d4(precision):
+    """Exercise Qwen3.6's D=4 verify window and sampled-token contract."""
+    state_dtype, act_dtype = precision
+    _run_rollback(
+        state_dtype=state_dtype,
+        act_dtype=act_dtype,
+        HQ=16,
+        HV=32,
+        K=128,
+        V=128,
+        buffer_len=16,
+        max_spec_len=5,
     )
 
 

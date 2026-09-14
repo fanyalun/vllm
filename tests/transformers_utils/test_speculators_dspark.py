@@ -1,7 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from types import SimpleNamespace
+
+import pytest
+import torch
+
 from vllm.transformers_utils.configs.speculators import SpeculatorsConfig
+from vllm.v1.worker.gpu.spec_decode.dflash.speculator import DFlashSpeculator
+from vllm.v1.worker.gpu.spec_decode.dspark.speculator import DSparkSpeculator
+from vllm.v1.worker.gpu.spec_decode.dspark.utils import (
+    get_dspark_proposal_bank_width,
+)
 
 
 def _gemma4_26b_dspark_config() -> dict:
@@ -64,6 +74,49 @@ def test_qwen3_6_speculators_dspark_preserves_sample_from_anchor():
     assert draft["target_layer_ids"] == [1, 9, 19, 29, 36]
 
 
+@pytest.mark.parametrize("execution_width", [4, 8])
+def test_dspark_execution_width_stays_configured(monkeypatch, execution_width) -> None:
+    hf_config = SimpleNamespace(
+        sample_from_anchor=True,
+        block_size=8,
+        speculators_config={"proposal_methods": [{"speculative_tokens": 8}]},
+    )
+    draft_model_config = SimpleNamespace(
+        hf_config=hf_config,
+        get_hidden_size=lambda: 16,
+    )
+
+    def initialize_dflash(speculator, vllm_config, device) -> None:
+        speculator.vllm_config = vllm_config
+        speculator.draft_model_config = draft_model_config
+        speculator.num_speculative_steps = execution_width
+        speculator.max_num_tokens = 32
+        speculator.max_num_reqs = 2
+        speculator.dtype = torch.float32
+        speculator.device = device
+        speculator.draft_logits = None
+        speculator.draft_tokens = torch.zeros(2, execution_width)
+
+    monkeypatch.setattr(DFlashSpeculator, "__init__", initialize_dflash)
+
+    speculator = DSparkSpeculator(SimpleNamespace(), torch.device("cpu"))
+
+    assert speculator.num_speculative_steps == execution_width
+    assert speculator.num_query_per_req == execution_width
+    assert speculator.draft_tokens.shape[1] == execution_width
+    assert speculator.proposal_bank_width == 8
+
+
+def test_dspark_checkpoint_bank_width_is_independent_from_execution_width():
+    hf_config = SimpleNamespace(
+        sample_from_anchor=True,
+        block_size=99,
+        speculators_config={"proposal_methods": [{"speculative_tokens": 8}]},
+    )
+
+    assert get_dspark_proposal_bank_width(hf_config) == 8
+
+
 def test_gemma4_26b_speculators_dspark_extracts_runtime_defaults():
     config = _gemma4_26b_dspark_config()
 
@@ -73,3 +126,20 @@ def test_gemma4_26b_speculators_dspark_extracts_runtime_defaults():
         "method": "dspark",
         "num_speculative_tokens": 6,
     }
+
+
+def test_dspark_proposal_trace_exposes_compact_markov_top2():
+    speculator = DSparkSpeculator.__new__(DSparkSpeculator)
+    speculator._trace_top2_values = torch.tensor([[[4.0, 3.5], [2.0, 1.0]]])
+    speculator._trace_top2_ids = torch.tensor([[[10, 11], [12, 13]]])
+
+    metadata = speculator.proposal_trace_metadata(1)
+
+    assert metadata == [
+        {
+            "draft_top2": [
+                {"token_ids": [10, 11], "logits": [4.0, 3.5], "gap": 0.5},
+                {"token_ids": [12, 13], "logits": [2.0, 1.0], "gap": 1.0},
+            ]
+        }
+    ]

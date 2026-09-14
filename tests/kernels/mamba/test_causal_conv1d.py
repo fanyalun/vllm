@@ -272,6 +272,86 @@ def test_causal_conv1d_update_with_batch_gather(
     assert torch.allclose(out[:batch_size], out_ref, rtol=rtol, atol=atol)
 
 
+@pytest.mark.parametrize("itype", [torch.float32, torch.bfloat16])
+def test_causal_conv1d_spec_rollback_matches_sequential(itype):
+    """Match Qwen3.6 D=4 conv rollback to one-token decode exactly."""
+    set_random_seed(0)
+    device = DEVICE
+    dim = 8192
+    width = 4
+    verify_window = 5
+    num_rounds = 40
+    slot = 1
+
+    weight = torch.randn(dim, width, device=device, dtype=itype)
+    bias = torch.randn(dim, device=device, dtype=itype)
+    initial_history = torch.randn(1, dim, width - 1, device=device, dtype=itype)
+    sequential_state = torch.zeros(2, dim, width - 1, device=device, dtype=itype)
+    sequential_state[slot].copy_(initial_history[0])
+    spec_state = torch.zeros(
+        2,
+        dim,
+        width - 1 + verify_window - 1,
+        device=device,
+        dtype=itype,
+    )
+    spec_state[slot, :, : width - 1].copy_(initial_history[0])
+
+    state_indices = torch.tensor([slot], device=device, dtype=torch.int32)
+    query_start_loc = torch.tensor([0, verify_window], device=device, dtype=torch.int32)
+    previous_num_sampled = torch.ones(1, device=device, dtype=torch.int32)
+    generator = torch.Generator(device="cpu").manual_seed(1)
+
+    for _ in range(num_rounds):
+        spec_inputs = torch.randn(verify_window, dim, device=device, dtype=itype)
+        oracle_inputs = spec_inputs.clone()
+        num_sampled = int(
+            torch.randint(1, verify_window + 1, (1,), generator=generator).item()
+        )
+
+        oracle_state = sequential_state.clone()
+        oracle_outputs = []
+        next_sequential_state = None
+        for token_index in range(verify_window):
+            oracle_outputs.append(
+                causal_conv1d_update(
+                    oracle_inputs[token_index : token_index + 1],
+                    oracle_state,
+                    weight,
+                    bias,
+                    activation="silu",
+                    conv_state_indices=state_indices,
+                )
+            )
+            if token_index + 1 == num_sampled:
+                next_sequential_state = oracle_state.clone()
+
+        spec_outputs = causal_conv1d_update(
+            spec_inputs,
+            spec_state,
+            weight,
+            bias,
+            activation="silu",
+            conv_state_indices=state_indices,
+            num_accepted_tokens=previous_num_sampled,
+            query_start_loc=query_start_loc,
+            max_query_len=verify_window,
+        )
+
+        torch.testing.assert_close(
+            spec_outputs, torch.cat(oracle_outputs), rtol=0, atol=0
+        )
+        assert next_sequential_state is not None
+        sequential_state = next_sequential_state
+        selected_history = spec_state[
+            slot, :, num_sampled - 1 : num_sampled + width - 2
+        ]
+        torch.testing.assert_close(
+            selected_history, sequential_state[slot], rtol=0, atol=0
+        )
+        previous_num_sampled.fill_(num_sampled)
+
+
 @pytest.mark.parametrize("itype", [torch.bfloat16])
 @pytest.mark.parametrize("silu_activation", [True])
 @pytest.mark.parametrize("has_bias", [True])
