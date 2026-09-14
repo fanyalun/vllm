@@ -133,3 +133,10 @@ def test_performance_retry_archives_failed_attempt_and_can_retry_again(
             f"failed {attempt}"
         )
         assert not (directory / "result.json").exists()
+
+
+def test_kernel_busy_time_does_not_double_count_overlapping_streams(scripts):
+    union = scripts("analyze_performance_paths").union_duration
+    assert union([]) == 0
+    assert union([(0, 10), (2, 3), (5, 12), (15, 20)]) == 17
+    assert union([(0, 1), (1, 2)]) == 2
