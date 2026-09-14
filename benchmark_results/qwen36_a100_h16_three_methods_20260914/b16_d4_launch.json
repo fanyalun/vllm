@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/home/fanya/vllm-replayssm-pr47576/.venv/bin/python",
+    "/home/fanya/vllm-replayssm-pr47576/benchmarks/replayssm/qwen36_fixed_history.py",
+    "--output",
+    "benchmark_results/qwen36_a100_h16_three_methods_20260914",
+    "--batch",
+    "16",
+    "--draft",
+    "4"
+  ],
+  "gpu": 1,
+  "sources": {
+    "qwen36_fixed_history.py": "ebec2033bed4ef636e38922f20ec8688be7bc3e61d71055e06ee3bb250743969",
+    "qwen36_parallel_last.py": "71b05a7fffb0ceb3a4fcaa44cc8a5f594eec9109d772579e3fbc3441f8af9526",
+    "qwen36_flush_crossover.py": "862360f33216aeda58d131116338c7f5442ec5ee7907f7d83206d321172478ed"
+  },
+  "source_head": "bad302dd90ee44e6b1a9f42d41a6cf904d21b899"
+}

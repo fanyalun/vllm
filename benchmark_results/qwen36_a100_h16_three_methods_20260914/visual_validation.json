@@ -1,0 +1,16 @@
+[
+  {
+    "figure": "h16_latency",
+    "pdf_info": "Creator:         Matplotlib v3.11.1, https://matplotlib.org\nProducer:        Matplotlib pdf backend v3.11.1\nCreationDate:    Mon Sep 14 14:52:23 2026 UTC\nCustom Metadata: no\nMetadata Stream: no\nTagged:          no\nUserProperties:  no\nSuspects:        no\nForm:            none\nJavaScript:      no\nPages:           1\nEncrypted:       no\nPage size:       872.4 x 622.1 pts\nPage rot:        0\nFile size:       13975 bytes\nOptimized:       no\nPDF version:     1.4\n",
+    "pdf_fonts": "name                                 type              encoding         emb sub uni object ID\n------------------------------------ ----------------- ---------------- --- --- --- ---------\nEKNXFQ+STIXGeneral-Regular           CID TrueType      Identity-H       yes yes yes     15  0\n",
+    "png_visually_checked": true,
+    "pdf_render_visually_checked": true
+  },
+  {
+    "figure": "h16_speedup",
+    "pdf_info": "Creator:         Matplotlib v3.11.1, https://matplotlib.org\nProducer:        Matplotlib pdf backend v3.11.1\nCreationDate:    Mon Sep 14 14:52:24 2026 UTC\nCustom Metadata: no\nMetadata Stream: no\nTagged:          no\nUserProperties:  no\nSuspects:        no\nForm:            none\nJavaScript:      no\nPages:           1\nEncrypted:       no\nPage size:       872.4 x 622.1 pts\nPage rot:        0\nFile size:       13507 bytes\nOptimized:       no\nPDF version:     1.4\n",
+    "pdf_fonts": "name                                 type              encoding         emb sub uni object ID\n------------------------------------ ----------------- ---------------- --- --- --- ---------\nOAABJL+STIXGeneral-Regular           CID TrueType      Identity-H       yes yes yes     15  0\n",
+    "png_visually_checked": true,
+    "pdf_render_visually_checked": true
+  }
+]
