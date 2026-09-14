@@ -1,0 +1,7 @@
+{
+  "torch": "2.13.0+cu130",
+  "vllm": "0.1.dev20823+g21a221104.d20260906.cu129",
+  "transformers": "5.16.1",
+  "triton": "3.7.1",
+  "matplotlib": "3.10.9"
+}

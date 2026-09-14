@@ -1,0 +1,22 @@
+{
+  "driver_version": "580.95.05",
+  "gpus": [
+    {
+      "index": 0,
+      "model": "gemma4",
+      "name": "NVIDIA A100 80GB PCIe",
+      "uuid": "GPU-92c316af-729a-d2b2-87e6-f49f1ee62b4a",
+      "pci_bus_id": "00000000:65:00.0"
+    },
+    {
+      "index": 1,
+      "model": "qwen36",
+      "name": "NVIDIA A100 80GB PCIe",
+      "uuid": "GPU-c7954c39-6588-4e28-8636-b460b8346ef8",
+      "pci_bus_id": "00000000:B1:00.0"
+    }
+  ],
+  "initial_gpu_memory_used_mib": [0, 0],
+  "initial_gpu_utilization_percent": [0, 0],
+  "initial_probe_utc": "2026-09-14T06:34:54Z"
+}

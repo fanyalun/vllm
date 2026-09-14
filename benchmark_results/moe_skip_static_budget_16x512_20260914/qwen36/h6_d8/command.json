@@ -1,0 +1,6 @@
+[
+  "/home/fanya/vllm/.venv/bin/python",
+  "/home/fanya/vllm/benchmarks/moe_skip/run_static_budget.py",
+  "--cell",
+  "/home/fanya/vllm/benchmark_results/moe_skip_static_budget_16x512_20260914/qwen36/h6_d8/config.json"
+]

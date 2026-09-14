@@ -1,0 +1,190 @@
+{
+  "measurement_coverage": "passed",
+  "cells": 36,
+  "requests": 576,
+  "output_tokens": 294912,
+  "counter_consistency": "passed",
+  "emitted_accepted_reconstruction": "passed",
+  "ar_repeat_controls": [
+    {
+      "model": "qwen36",
+      "exact_ar_requests": 16,
+      "ar_end_vs_start_speed_ratio": 1.0512556894845877
+    },
+    {
+      "model": "gemma4",
+      "exact_ar_requests": 1,
+      "ar_end_vs_start_speed_ratio": 1.0826019128121585
+    }
+  ],
+  "strict_greedy_ar_parity": "failed",
+  "parity_failed_cells": [
+    {
+      "model": "qwen36",
+      "cell": "h6_d4",
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "qwen36",
+      "cell": "h2_d32",
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "qwen36",
+      "cell": "h4_d4",
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "qwen36",
+      "cell": "h2_d8",
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "qwen36",
+      "cell": "h2_d16",
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "qwen36",
+      "cell": "h4_d16",
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "qwen36",
+      "cell": "h8_d4",
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "qwen36",
+      "cell": "h8_d16",
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "qwen36",
+      "cell": "h2_d4",
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "qwen36",
+      "cell": "h8_d32",
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "qwen36",
+      "cell": "h4_d8",
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "qwen36",
+      "cell": "h6_d16",
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "qwen36",
+      "cell": "h4_d32",
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "qwen36",
+      "cell": "h6_d8",
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "qwen36",
+      "cell": "h6_d32",
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "qwen36",
+      "cell": "h8_d8",
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "gemma4",
+      "cell": "h6_d4",
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "gemma4",
+      "cell": "h2_d32",
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "gemma4",
+      "cell": "h4_d4",
+      "exact_ar_requests": 0
+    },
+    {
+      "model": "gemma4",
+      "cell": "h2_d8",
+      "exact_ar_requests": 3
+    },
+    {
+      "model": "gemma4",
+      "cell": "h2_d16",
+      "exact_ar_requests": 3
+    },
+    {
+      "model": "gemma4",
+      "cell": "h4_d16",
+      "exact_ar_requests": 3
+    },
+    {
+      "model": "gemma4",
+      "cell": "h8_d4",
+      "exact_ar_requests": 3
+    },
+    {
+      "model": "gemma4",
+      "cell": "h8_d16",
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "gemma4",
+      "cell": "h2_d4",
+      "exact_ar_requests": 0
+    },
+    {
+      "model": "gemma4",
+      "cell": "h8_d32",
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "gemma4",
+      "cell": "h4_d8",
+      "exact_ar_requests": 3
+    },
+    {
+      "model": "gemma4",
+      "cell": "h6_d16",
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "gemma4",
+      "cell": "h4_d32",
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "gemma4",
+      "cell": "h6_d8",
+      "exact_ar_requests": 2
+    },
+    {
+      "model": "gemma4",
+      "cell": "h6_d32",
+      "exact_ar_requests": 1
+    },
+    {
+      "model": "gemma4",
+      "cell": "h8_d8",
+      "exact_ar_requests": 3
+    },
+    {
+      "model": "gemma4",
+      "cell": "ar_end",
+      "exact_ar_requests": 1
+    }
+  ],
+  "scope": "standalone MoE-Skip only; no Pre-Verify measurements",
+  "timing_jit_gate": "passed"
+}

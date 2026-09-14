@@ -1,0 +1,118 @@
+{
+  "model": "gemma4",
+  "model_path": "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+  "gpu": "0",
+  "cells": [
+    {
+      "name": "ar_start",
+      "h": 0,
+      "d": 0
+    },
+    {
+      "name": "h6_d4",
+      "h": 6,
+      "d": 4
+    },
+    {
+      "name": "h2_d32",
+      "h": 2,
+      "d": 32
+    },
+    {
+      "name": "h4_d4",
+      "h": 4,
+      "d": 4
+    },
+    {
+      "name": "h2_d8",
+      "h": 2,
+      "d": 8
+    },
+    {
+      "name": "h2_d16",
+      "h": 2,
+      "d": 16
+    },
+    {
+      "name": "h4_d16",
+      "h": 4,
+      "d": 16
+    },
+    {
+      "name": "h8_d4",
+      "h": 8,
+      "d": 4
+    },
+    {
+      "name": "h8_d16",
+      "h": 8,
+      "d": 16
+    },
+    {
+      "name": "h2_d4",
+      "h": 2,
+      "d": 4
+    },
+    {
+      "name": "h8_d32",
+      "h": 8,
+      "d": 32
+    },
+    {
+      "name": "h4_d8",
+      "h": 4,
+      "d": 8
+    },
+    {
+      "name": "h6_d16",
+      "h": 6,
+      "d": 16
+    },
+    {
+      "name": "h4_d32",
+      "h": 4,
+      "d": 32
+    },
+    {
+      "name": "h6_d8",
+      "h": 6,
+      "d": 8
+    },
+    {
+      "name": "h6_d32",
+      "h": 6,
+      "d": 32
+    },
+    {
+      "name": "h8_d8",
+      "h": 8,
+      "d": 8
+    },
+    {
+      "name": "ar_end",
+      "h": 0,
+      "d": 0
+    }
+  ],
+  "dataset": "/home/fanya/vllm/benchmark_results/moe_skip_static_budget_16x512_20260914/gemma4/dataset.jsonl",
+  "dataset_sha256": "3c74e35549fcf771ce0674ae8e80fef56aaf5c349d1c01c3c7846012bdcd0cda",
+  "samples": 16,
+  "output_tokens_per_sample": 512,
+  "temperature": 0,
+  "seed": 0,
+  "ignore_eos": true,
+  "batch_size": 1,
+  "tensor_parallel_size": 1,
+  "cuda_graph": true,
+  "prefix_caching": false,
+  "async_scheduling": false,
+  "warmup_requests": 2,
+  "max_model_len": 1024,
+  "max_num_batched_tokens": 4096,
+  "gpu_memory_utilization": 0.95,
+  "spec_metrics": "detailed; included in measured wall time",
+  "timer": "sum of llm.generate wall times; prefill + decode + API",
+  "script_sha256": "851c76b3c3c87f1f601b2a69e190556930ef30cc705c2787d1dae735006ee82b",
+  "model_config_sha256": "ed0c1eb3633de771906e9ba004a44cc5635bcc06ee2062077c3d2e88a50707d3",
+  "git_head": "dea50e552e5372df969ed4e57612695cd9a0c822"
+}

@@ -1,0 +1,182 @@
+[
+  {
+    "model": "qwen36",
+    "cell": "ar_start",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "h6_d4",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "h2_d32",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "h4_d4",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "h2_d8",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "h2_d16",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "h4_d16",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "h8_d4",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "h8_d16",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "h2_d4",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "h8_d32",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "h4_d8",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "h6_d16",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "h4_d32",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "h6_d8",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "h6_d32",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "h8_d8",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "qwen36",
+    "cell": "ar_end",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "ar_start",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "h6_d4",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "h2_d32",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "h4_d4",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "h2_d8",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "h2_d16",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "h4_d16",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "h8_d4",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "h8_d16",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "h2_d4",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "h8_d32",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "h4_d8",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "h6_d16",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "h4_d32",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "h6_d8",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "h6_d32",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "h8_d8",
+    "post_warmup_jit_warnings": []
+  },
+  {
+    "model": "gemma4",
+    "cell": "ar_end",
+    "post_warmup_jit_warnings": []
+  }
+]
