@@ -369,6 +369,7 @@ def _advance_gdn_spec_cursors_kernel(
     MAX_CACHE_LEN: tl.constexpr,
     MAX_SPEC_LEN: tl.constexpr,
     CACHE_BUF_LEN: tl.constexpr,
+    FLUSH_INTERVAL: tl.constexpr,
     BLOCK: tl.constexpr,
     NULL_BLOCK_ID: tl.constexpr,
 ):
@@ -398,6 +399,8 @@ def _advance_gdn_spec_cursors_kernel(
     # Early-flush one window early so every verify step satisfies
     # write_pos + spec_len <= max_cache_len (the spec window never overflows).
     next_is_flush = ((new_wp + 2 * MAX_SPEC_LEN) > MAX_CACHE_LEN).to(tl.int8)
+    if FLUSH_INTERVAL > 0:
+        next_is_flush = next_is_flush | (new_wp >= FLUSH_INTERVAL).to(tl.int8)
 
     tl.store(write_pos_ptr + blk, new_wp, mask=valid)
     tl.store(cache_base_ptr + blk, new_base, mask=valid)
@@ -664,6 +667,7 @@ def commit_gdn_replayssm_spec(
     max_spec_len: int,
     cache_buf_len: int | None = None,  # physical pow2 buffer next_pow2(L)
     null_block_id: int = 0,
+    flush_interval: int | None = None,
 ):
     """Advance the block-keyed cursors once per decode step (device-only)."""
     if cache_buf_len is None:
@@ -682,6 +686,7 @@ def commit_gdn_replayssm_spec(
         MAX_CACHE_LEN=max_cache_len,
         MAX_SPEC_LEN=max_spec_len,
         CACHE_BUF_LEN=cache_buf_len,
+        FLUSH_INTERVAL=flush_interval or 0,
         BLOCK=BLOCK,
         NULL_BLOCK_ID=null_block_id,
     )

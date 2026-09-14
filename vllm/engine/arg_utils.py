@@ -71,6 +71,7 @@ from vllm.config.cache import (
     MambaCacheMode,
     MambaDType,
     PrefixCachingHashAlgo,
+    ReplaySSMRoute,
 )
 from vllm.config.device import Device
 from vllm.config.kernel import IrOpPriorityConfig, LinearBackend, MoEBackend
@@ -688,8 +689,11 @@ class EngineArgs:
     mamba_block_size: int | None = get_field(CacheConfig, "mamba_block_size")
     mamba_cache_mode: MambaCacheMode = CacheConfig.mamba_cache_mode
     replayssm_buffer_len: int = CacheConfig.replayssm_buffer_len
+    replayssm_spec_flush_interval: int | None = (
+        CacheConfig.replayssm_spec_flush_interval
+    )
     use_replayssm: bool = CacheConfig.use_replayssm
-    replayssm_route: str = CacheConfig.replayssm_route
+    replayssm_route: ReplaySSMRoute = CacheConfig.replayssm_route
     use_replayssm_spec: bool = CacheConfig.use_replayssm_spec
 
     mamba_backend: MambaBackendEnum = MambaBackendEnum.TRITON
@@ -1195,8 +1199,10 @@ class EngineArgs:
             "--replayssm-buffer-len", **cache_kwargs["replayssm_buffer_len"]
         )
         cache_group.add_argument(
-            "--use-replayssm", **cache_kwargs["use_replayssm"]
+            "--replayssm-spec-flush-interval",
+            **cache_kwargs["replayssm_spec_flush_interval"],
         )
+        cache_group.add_argument("--use-replayssm", **cache_kwargs["use_replayssm"])
         cache_group.add_argument(
             "--replayssm-route",
             **cache_kwargs["replayssm_route"],
@@ -1901,6 +1907,7 @@ class EngineArgs:
             mamba_block_size=self.mamba_block_size,
             mamba_cache_mode=self.mamba_cache_mode,
             replayssm_buffer_len=self.replayssm_buffer_len,
+            replayssm_spec_flush_interval=self.replayssm_spec_flush_interval,
             use_replayssm=self.use_replayssm,
             replayssm_route=self.replayssm_route,
             use_replayssm_spec=self.use_replayssm_spec,

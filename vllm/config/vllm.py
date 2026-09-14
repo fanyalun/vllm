@@ -2221,21 +2221,14 @@ class VllmConfig:
                 )
             return self
         if self.cache_config.mamba_cache_mode != "none":
-            raise ValueError(
-                "--use-replayssm requires --mamba-cache-mode none"
-            )
+            raise ValueError("--use-replayssm requires --mamba-cache-mode none")
         if self.num_speculative_tokens > 0:
-            raise ValueError(
-                "--use-replayssm does not support speculative decoding"
-            )
+            raise ValueError("--use-replayssm does not support speculative decoding")
         if self.mamba_config.backend != MambaBackendEnum.TRITON:
-            raise ValueError(
-                "--use-replayssm requires --mamba-backend triton"
-            )
+            raise ValueError("--use-replayssm requires --mamba-backend triton")
         if self.mamba_config.enable_stochastic_rounding:
             raise ValueError(
-                "--use-replayssm does not support Mamba cache "
-                "stochastic rounding"
+                "--use-replayssm does not support Mamba cache stochastic rounding"
             )
         return self
 
@@ -2243,6 +2236,13 @@ class VllmConfig:
     def validate_mamba_cached_spec_kernel(self) -> "VllmConfig":
         if not self.cache_config.use_replayssm_spec:
             return self
+        if self.cache_config.replayssm_spec_flush_interval is not None and (
+            self.model_config is None
+            or not hasattr(self.model_config.hf_text_config, "linear_key_head_dim")
+        ):
+            raise ValueError(
+                "replayssm_spec_flush_interval currently requires a Qwen GDN model"
+            )
         # Inverted guard: the cached-SPEC kernel *requires* speculative decode
         # (the opposite of --use-replayssm, which forbids it).
         if self.cache_config.use_replayssm:
@@ -2256,17 +2256,12 @@ class VllmConfig:
                 "(num_speculative_tokens > 0)"
             )
         if self.cache_config.mamba_cache_mode != "none":
-            raise ValueError(
-                "--use-replayssm-spec requires --mamba-cache-mode none"
-            )
+            raise ValueError("--use-replayssm-spec requires --mamba-cache-mode none")
         if self.mamba_config.backend != MambaBackendEnum.TRITON:
-            raise ValueError(
-                "--use-replayssm-spec requires --mamba-backend triton"
-            )
+            raise ValueError("--use-replayssm-spec requires --mamba-backend triton")
         if self.mamba_config.enable_stochastic_rounding:
             raise ValueError(
-                "--use-replayssm-spec does not support Mamba cache "
-                "stochastic rounding"
+                "--use-replayssm-spec does not support Mamba cache stochastic rounding"
             )
         max_spec_len = 1 + self.num_speculative_tokens
         # replayssm_buffer_len is the history block B; the flush threshold is

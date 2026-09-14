@@ -91,7 +91,7 @@ def _build_history(
     and leaving the checkpoint unchanged."""
     sbi = torch.tensor([slot], device=DEV, dtype=torch.int32)
     for t in range(wp):
-        ot = torch.empty(1, 1, *state.shape[1:3], device=DEV, dtype=mqkv.dtype)
+        token_out = torch.empty(1, 1, *state.shape[1:3], device=DEV, dtype=mqkv.dtype)
         fused_recurrent_gated_delta_rule_replayssm(
             mixed_qkv=mqkv[t : t + 1],
             a=a[t : t + 1],
@@ -103,7 +103,7 @@ def _build_history(
             d_cache=d_cache,
             k_cache=k_cache,
             g_cache=g_cache,
-            out=ot,
+            out=token_out,
             ssm_state_indices=sbi,
             write_pos=torch.tensor([t], device=DEV, dtype=torch.int32),
             use_qk_l2norm_in_kernel=True,
@@ -135,7 +135,7 @@ def _standard_window_oracle(
     sbi = torch.tensor([slot], device=DEV, dtype=torch.int32)
     win = []
     for s in range(spec_len):
-        ot = torch.empty(1, 1, HV, V, device=DEV, dtype=mqkv.dtype)
+        token_out = torch.empty(1, 1, HV, V, device=DEV, dtype=mqkv.dtype)
         fused_recurrent_gated_delta_rule_replayssm(
             mixed_qkv=mqkv[wp + s : wp + s + 1],
             a=a[wp + s : wp + s + 1],
@@ -147,12 +147,12 @@ def _standard_window_oracle(
             d_cache=d_o,
             k_cache=k_o,
             g_cache=g_o,
-            out=ot,
+            out=token_out,
             ssm_state_indices=sbi,
             write_pos=torch.tensor([wp + s], device=DEV, dtype=torch.int32),
             use_qk_l2norm_in_kernel=True,
         )
-        win.append(ot.reshape(1, HV, V).clone())
+        win.append(token_out.reshape(1, HV, V).clone())
     return torch.cat(win, dim=0)
 
 
@@ -379,6 +379,8 @@ def _run_rollback(
     max_spec_len,
     num_steps=40,
     seed=0,
+    flush_interval=None,
+    ring_dtype=None,
 ):
     """Drive the verify+commit loop from an empty buffer; accept a random k each
     step. Baseline packed decode of the accepted stream is the output ground
@@ -401,8 +403,12 @@ def _run_rollback(
     state_spec = S0.clone()
     state_base = S0.clone()  # full pool; row in slot 1
 
-    d_cache = torch.zeros(num_slots, HV, buf, V, device=DEV, dtype=act_dtype)
-    k_cache = torch.zeros(num_slots, H, buf, K, device=DEV, dtype=act_dtype)
+    d_cache = torch.zeros(
+        num_slots, HV, buf, V, device=DEV, dtype=ring_dtype or act_dtype
+    )
+    k_cache = torch.zeros(
+        num_slots, H, buf, K, device=DEV, dtype=ring_dtype or act_dtype
+    )
     g_cache = torch.zeros(num_slots, HV, buf, device=DEV, dtype=torch.float32)
 
     write_pos = torch.zeros(num_slots, dtype=torch.int32, device=DEV)
@@ -461,7 +467,7 @@ def _run_rollback(
         k = int(torch.randint(1, spec_len + 1, (1,), generator=g).item())
         base_out = []
         for s in range(k):
-            ot = torch.empty(1, 1, HV, V, device=DEV, dtype=act_dtype)
+            token_out = torch.empty(1, 1, HV, V, device=DEV, dtype=act_dtype)
             fused_recurrent_gated_delta_rule_packed_decode(
                 mixed_qkv=mqkv[s : s + 1],
                 a=a[s : s + 1],
@@ -470,11 +476,11 @@ def _run_rollback(
                 dt_bias=dt_bias,
                 scale=scale,
                 initial_state=state_base,
-                out=ot,
+                out=token_out,
                 ssm_state_indices=sbi,
                 use_qk_l2norm_in_kernel=True,
             )
-            base_out.append(ot.reshape(1, HV, V).clone())
+            base_out.append(token_out.reshape(1, HV, V).clone())
             total_accepted += 1
             snapshots[total_accepted] = state_base[slot].clone()
         base_out = torch.cat(base_out, dim=0)
@@ -490,6 +496,7 @@ def _run_rollback(
             sbi,
             L,
             max_spec_len,
+            flush_interval=flush_interval,
         )
 
         # (b) committed checkpoint == baseline state at the folded-token count.

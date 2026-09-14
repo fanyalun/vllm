@@ -196,6 +196,9 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
         self.max_spec_len: int = 1 + self.num_spec
         # L = B + max_spec_len history window; physical pow2 ring = next_pow2(L).
         self.spec_flush_threshold = self.max_cache_len + self.max_spec_len
+        self.spec_flush_interval = (
+            vllm_config.cache_config.replayssm_spec_flush_interval
+        )
         self.spec_cache_buf_len = 1 << (self.spec_flush_threshold - 1).bit_length()
         self.cursor_device = device
         self.spec_write_pos: torch.Tensor | None = None
@@ -561,6 +564,7 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                 max_cache_len=self.spec_flush_threshold,
                 max_spec_len=self.max_spec_len,
                 cache_buf_len=self.spec_cache_buf_len,
+                flush_interval=self.spec_flush_interval,
             )
             # prefill->decode reset for first-decode rows (cursors only; conv
             # context lives in conv_state). A request's first spec verify has

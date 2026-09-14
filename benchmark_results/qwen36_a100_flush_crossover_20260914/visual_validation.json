@@ -1,0 +1,30 @@
+[
+  {
+    "batch": 1,
+    "pdf_info": "Creator:         Matplotlib v3.11.1, https://matplotlib.org\nProducer:        Matplotlib pdf backend v3.11.1\nCreationDate:    Mon Sep 14 14:01:53 2026 UTC\nCustom Metadata: no\nMetadata Stream: no\nTagged:          no\nUserProperties:  no\nSuspects:        no\nForm:            none\nJavaScript:      no\nPages:           1\nEncrypted:       no\nPage size:       872.4 x 622.1 pts\nPage rot:        0\nFile size:       25457 bytes\nOptimized:       no\nPDF version:     1.4\n",
+    "pdf_fonts": "name                                 type              encoding         emb sub uni object ID\n------------------------------------ ----------------- ---------------- --- --- --- ---------\nEQMAES+STIXGeneral-Regular           CID TrueType      Identity-H       yes yes yes     15  0\nBXBAGT+STIXGeneral-Regular           CID TrueType      Identity-H       yes yes yes     22  0\n",
+    "png_visually_checked": true,
+    "pdf_render_visually_checked": true
+  },
+  {
+    "batch": 4,
+    "pdf_info": "Creator:         Matplotlib v3.11.1, https://matplotlib.org\nProducer:        Matplotlib pdf backend v3.11.1\nCreationDate:    Mon Sep 14 14:01:54 2026 UTC\nCustom Metadata: no\nMetadata Stream: no\nTagged:          no\nUserProperties:  no\nSuspects:        no\nForm:            none\nJavaScript:      no\nPages:           1\nEncrypted:       no\nPage size:       872.4 x 622.1 pts\nPage rot:        0\nFile size:       27886 bytes\nOptimized:       no\nPDF version:     1.4\n",
+    "pdf_fonts": "name                                 type              encoding         emb sub uni object ID\n------------------------------------ ----------------- ---------------- --- --- --- ---------\nEHFRYI+STIXGeneral-Regular           CID TrueType      Identity-H       yes yes yes     15  0\nBXBAGT+STIXGeneral-Regular           CID TrueType      Identity-H       yes yes yes     22  0\n",
+    "png_visually_checked": true,
+    "pdf_render_visually_checked": true
+  },
+  {
+    "batch": 8,
+    "pdf_info": "Creator:         Matplotlib v3.11.1, https://matplotlib.org\nProducer:        Matplotlib pdf backend v3.11.1\nCreationDate:    Mon Sep 14 14:01:56 2026 UTC\nCustom Metadata: no\nMetadata Stream: no\nTagged:          no\nUserProperties:  no\nSuspects:        no\nForm:            none\nJavaScript:      no\nPages:           1\nEncrypted:       no\nPage size:       872.4 x 622.1 pts\nPage rot:        0\nFile size:       28464 bytes\nOptimized:       no\nPDF version:     1.4\n",
+    "pdf_fonts": "name                                 type              encoding         emb sub uni object ID\n------------------------------------ ----------------- ---------------- --- --- --- ---------\nCNSWXW+STIXGeneral-Regular           CID TrueType      Identity-H       yes yes yes     15  0\nBXBAGT+STIXGeneral-Regular           CID TrueType      Identity-H       yes yes yes     22  0\n",
+    "png_visually_checked": true,
+    "pdf_render_visually_checked": true
+  },
+  {
+    "batch": 16,
+    "pdf_info": "Creator:         Matplotlib v3.11.1, https://matplotlib.org\nProducer:        Matplotlib pdf backend v3.11.1\nCreationDate:    Mon Sep 14 14:01:57 2026 UTC\nCustom Metadata: no\nMetadata Stream: no\nTagged:          no\nUserProperties:  no\nSuspects:        no\nForm:            none\nJavaScript:      no\nPages:           1\nEncrypted:       no\nPage size:       872.4 x 622.1 pts\nPage rot:        0\nFile size:       28940 bytes\nOptimized:       no\nPDF version:     1.4\n",
+    "pdf_fonts": "name                                 type              encoding         emb sub uni object ID\n------------------------------------ ----------------- ---------------- --- --- --- ---------\nEQMAES+STIXGeneral-Regular           CID TrueType      Identity-H       yes yes yes     15  0\nBXBAGT+STIXGeneral-Regular           CID TrueType      Identity-H       yes yes yes     22  0\n",
+    "png_visually_checked": true,
+    "pdf_render_visually_checked": true
+  }
+]

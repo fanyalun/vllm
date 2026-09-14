@@ -146,6 +146,10 @@ class CacheConfig:
     the checkpoint every B steps. Speculative decode (use_replayssm_spec) keeps a
     L = B + 1 + num_speculative_tokens history window (usable committed history
     B - 1 - num_speculative_tokens) in a power-of-two next_pow2(L) ring buffer."""
+    replayssm_spec_flush_interval: int | None = Field(default=None, gt=0)
+    """Optional GDN speculative early-flush interval in committed tokens.
+    Preserves the allocated history buffer and the existing overflow guard.
+    None retains the default flush policy."""
     use_replayssm: bool = False
     """Use the ReplaySSM Mamba2 decode kernel (cache recent SSM inputs instead
     of writing the recurrent state back to HBM each step). Only supported for
@@ -260,6 +264,17 @@ class CacheConfig:
         if value is None:
             return value
         return handler(value)
+
+    @model_validator(mode="after")
+    def _validate_spec_flush_interval(self) -> "CacheConfig":
+        if (
+            self.replayssm_spec_flush_interval is not None
+            and not self.use_replayssm_spec
+        ):
+            raise ValueError(
+                "replayssm_spec_flush_interval requires use_replayssm_spec"
+            )
+        return self
 
     @model_validator(mode="after")
     def _apply_block_size_default(self) -> "CacheConfig":

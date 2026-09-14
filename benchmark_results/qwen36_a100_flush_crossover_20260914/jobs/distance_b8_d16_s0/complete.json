@@ -1,0 +1,18 @@
+{
+  "complete": true,
+  "arguments": {
+    "output": "/home/fanya/vllm-replayssm-pr47576/benchmark_results/qwen36_a100_flush_crossover_20260914/kernels",
+    "batch": 8,
+    "draft": 16,
+    "seed": 0,
+    "layers": 30,
+    "repeats": 21,
+    "steps": 128,
+    "mode": "distance",
+    "history": 0,
+    "force_flush": false,
+    "trace": null,
+    "completion": "/home/fanya/vllm-replayssm-pr47576/benchmark_results/qwen36_a100_flush_crossover_20260914/jobs/distance_b8_d16_s0/complete.json",
+    "candidates": null
+  }
+}

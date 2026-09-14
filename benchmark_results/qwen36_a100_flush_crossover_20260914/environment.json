@@ -1,0 +1,10 @@
+{
+  "gpu": "index, name, uuid, driver_version, memory.total [MiB]\n0, NVIDIA A100 80GB PCIe, GPU-92c316af-729a-d2b2-87e6-f49f1ee62b4a, 580.95.05, 81920 MiB\n1, NVIDIA A100 80GB PCIe, GPU-c7954c39-6588-4e28-8636-b460b8346ef8, 580.95.05, 81920 MiB\n",
+  "profiler_restricted_to_admin": true,
+  "correctness": {
+    "test": "tests/kernels/test_replayssm_flush_interval.py",
+    "passed": 21,
+    "ring_dtype": "float16"
+  },
+  "policy_timing_prepared_not_run": "At least two default flushes per request; minimum 8 verify steps; 21 paired repetitions; three shared cursor groups."
+}

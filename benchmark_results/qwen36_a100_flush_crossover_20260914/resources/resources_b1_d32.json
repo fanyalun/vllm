@@ -1,0 +1,21 @@
+{
+  "compiled_kernels": [
+    {
+      "is_flush": false,
+      "registers_per_thread": 64,
+      "local_bytes_per_thread": 10808,
+      "shared_bytes": 45056,
+      "num_warps": 1,
+      "kernel_hash": "1b7ba4385a59cd69e389929b968d44e276249b95096c11cc2f6993a7664f12d9"
+    },
+    {
+      "is_flush": true,
+      "registers_per_thread": 168,
+      "local_bytes_per_thread": 9144,
+      "shared_bytes": 53248,
+      "num_warps": 1,
+      "kernel_hash": "f359fbf0683d5af12dc1724cccee3bdd1e183e8fdb991e3108613cb0976c6502"
+    }
+  ],
+  "note": "CUDA function attributes; local allocation is not measured DRAM traffic."
+}

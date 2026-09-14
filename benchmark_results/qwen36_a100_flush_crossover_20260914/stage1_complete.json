@@ -1,0 +1,15 @@
+{
+  "measurement_complete": true,
+  "batch_draft_cells": 16,
+  "history_points": 65,
+  "working_sets": [
+    1,
+    30
+  ],
+  "total_points": 2080,
+  "repetitions": 21,
+  "timed_values": 131040,
+  "output_checks_passed": true,
+  "later_stages_stopped_by_user": true,
+  "figures_validated": true
+}

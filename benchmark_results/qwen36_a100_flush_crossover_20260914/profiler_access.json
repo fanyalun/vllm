@@ -1,0 +1,8 @@
+{
+  "driver_setting": "RmProfilingAdminOnly: 1",
+  "current_uid": 1012,
+  "sudo_noninteractive": "password required",
+  "hardware_counters_collected": false,
+  "note": "Direct Nsight Compute probe confirmed unavailable hardware counters.",
+  "probe_error": "ERR_NVGPUCTRPERM"
+}

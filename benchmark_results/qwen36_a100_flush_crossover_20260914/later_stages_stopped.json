@@ -1,0 +1,11 @@
+{
+  "reason": "User requested stage 1 only",
+  "terminated_pids": [
+    1199137,
+    1214086,
+    1214434
+  ],
+  "policy_cycles_started": false,
+  "tuned_e2e_started": false,
+  "calibration_data": "Partial model calibration runs are excluded from stage-1 figures."
+}

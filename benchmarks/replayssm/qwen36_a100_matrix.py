@@ -46,6 +46,42 @@ class JitMonitorExtension:
     def benchmark_read_jit_counter(self):
         return read_jit_counter(self)
 
+    def benchmark_start_flush_trace(self):
+        from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
+
+        self._flush_trace = []
+        original = GDNAttentionMetadataBuilder.build
+        self._flush_trace_original = original
+
+        def traced(builder, *args, **kwargs):
+            metadata = original(builder, *args, **kwargs)
+            if metadata.spec_write_pos_d is None:
+                return metadata
+            slots = metadata.spec_state_indices_tensor[:, 0]
+            indices = slots.long()
+            mask = metadata.spec_sequence_masks.tolist()
+            request_ids = self.model_runner.input_batch.req_ids
+            self._flush_trace.append(
+                {
+                    "request_ids": [r for r, valid in zip(request_ids, mask) if valid],
+                    "cursor_id": metadata.spec_write_pos_d.data_ptr(),
+                    "slots": slots.tolist(),
+                    "accepted_previous": metadata.num_accepted_tokens.tolist(),
+                    "history": metadata.spec_write_pos_d[indices].tolist(),
+                    "flush": metadata.spec_is_flush_d[indices].tolist(),
+                    "query_start_loc": metadata.spec_query_start_loc.tolist(),
+                }
+            )
+            return metadata
+
+        GDNAttentionMetadataBuilder.build = traced
+
+    def benchmark_stop_flush_trace(self):
+        from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
+
+        GDNAttentionMetadataBuilder.build = self._flush_trace_original
+        return self._flush_trace
+
 
 def worker(args):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -118,6 +154,8 @@ def worker(args):
         }
     if args.mode == "replayssm":
         kwargs.update(use_replayssm_spec=True, replayssm_buffer_len=64)
+        if args.flush_interval is not None:
+            kwargs["replayssm_spec_flush_interval"] = args.flush_interval
     write_json(root / "config.json", kwargs)
     started = time.perf_counter()
     llm = LLM(**kwargs)
@@ -206,6 +244,15 @@ def worker(args):
             measurements=measurements,
         ),
     )
+    if args.flush_trace and args.mode == "replayssm":
+        llm.collective_rpc("benchmark_start_flush_trace")
+        for start in range(0, 16, args.batch):
+            generate(messages[start : start + args.batch])
+        trace = llm.collective_rpc("benchmark_stop_flush_trace")[0]
+        write_json(root / "flush_trace.json", trace)
+    if args.skip_profile:
+        write_json(root / "complete.json", {"timing": True, "profile": False})
+        return
     # Profiling is a separate replay, never used as the E2E timer.
     llm.start_profile()
     generate(messages[: args.batch])
@@ -224,6 +271,9 @@ def main():
     parser.add_argument("--batches", default="1,4")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--worker", action="store_true")
+    parser.add_argument("--flush-interval", type=int)
+    parser.add_argument("--flush-trace", action="store_true")
+    parser.add_argument("--skip-profile", action="store_true")
     parser.add_argument("--batch", type=int)
     parser.add_argument("--draft", type=int, default=0)
     parser.add_argument("--mode", choices=["ar", "standard", "replayssm"])
