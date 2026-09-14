@@ -1,0 +1,10 @@
+{
+  "name": "ar_start",
+  "h": 0,
+  "d": 0,
+  "async_scheduling": true,
+  "model": "gemma4",
+  "model_path": "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+  "dataset": "/home/fanya/vllm/benchmark_results/moe_skip_async_ar_16x512_20260914/gemma4/dataset.jsonl",
+  "dataset_sha256": "3c74e35549fcf771ce0674ae8e80fef56aaf5c349d1c01c3c7846012bdcd0cda"
+}

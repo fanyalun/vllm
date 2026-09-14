@@ -1,0 +1,41 @@
+{
+  "model": "qwen36",
+  "model_path": "/data1/fanya/Qwen/Qwen3.6-35B-A3B",
+  "gpu": "0",
+  "cells": [
+    {
+      "name": "ar_start",
+      "h": 0,
+      "d": 0,
+      "async_scheduling": true
+    },
+    {
+      "name": "ar_end",
+      "h": 0,
+      "d": 0,
+      "async_scheduling": true
+    }
+  ],
+  "dataset": "/home/fanya/vllm/benchmark_results/moe_skip_async_ar_16x512_20260914/qwen36/dataset.jsonl",
+  "dataset_source": "/home/fanya/vllm/benchmark_results/moe_skip_static_budget_16x512_20260914/qwen36/dataset.jsonl",
+  "dataset_sha256": "8ec22d593b9f0d1266def5e14aa9ff8d57d415427dba2df60634c25cf9cdf9de",
+  "samples": 16,
+  "output_tokens_per_sample": 512,
+  "temperature": 0,
+  "seed": 0,
+  "ignore_eos": true,
+  "batch_size": 1,
+  "tensor_parallel_size": 1,
+  "cuda_graph": true,
+  "prefix_caching": false,
+  "async_scheduling": true,
+  "warmup_requests": 2,
+  "max_model_len": 1024,
+  "max_num_batched_tokens": 4096,
+  "gpu_memory_utilization": 0.95,
+  "spec_metrics": "detailed; included in measured wall time",
+  "timer": "sum of llm.generate wall times; prefill + decode + API",
+  "script_sha256": "4ddb2c9e8817f46c8c7f56cd31198537b3008460808c90dda3e240cf5a268668",
+  "model_config_sha256": "93a4693fa9d8392fbfccd4b3c9873f4bfdcb14fdede978b123d07d19675efe99",
+  "git_head": "3392693f806f12dd2baca9e721c97f6605ad9a01"
+}

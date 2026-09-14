@@ -1,0 +1,10 @@
+{
+  "name": "ar_end",
+  "h": 0,
+  "d": 0,
+  "async_scheduling": true,
+  "model": "qwen36",
+  "model_path": "/data1/fanya/Qwen/Qwen3.6-35B-A3B",
+  "dataset": "/home/fanya/vllm/benchmark_results/moe_skip_async_ar_16x512_20260914/qwen36/dataset.jsonl",
+  "dataset_sha256": "8ec22d593b9f0d1266def5e14aa9ff8d57d415427dba2df60634c25cf9cdf9de"
+}

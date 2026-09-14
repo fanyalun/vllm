@@ -29,7 +29,7 @@ def emitted_accepted_tokens(output):
     return sum(counts[:-1]) + min(counts[-1], remaining)
 
 
-def analyze(root, models):
+def analyze(root, models, ar_root=None):
     rows, requests, positions, parity = [], [], [], []
     runtime = []
     for model in models:
@@ -57,14 +57,56 @@ def analyze(root, models):
         samples = [json.loads(s) for s in dataset.read_text().splitlines()]
         if len(samples) != 16:
             raise RuntimeError("Expected exactly 16 samples")
-        baseline = json.loads((folder / "ar_start/result.json").read_text())
-        end = json.loads((folder / "ar_end/result.json").read_text())
+        ar_folder = ar_root / model if ar_root else folder
+        if ar_root:
+            ar_contract = json.loads((ar_folder / "contract.json").read_text())
+            if (
+                ar_contract["async_scheduling"] is not True
+                or ar_contract["model_path"] != contract["model_path"]
+                or ar_contract["dataset_sha256"] != contract["dataset_sha256"]
+                or len(ar_contract["cells"]) != 2
+                or any(
+                    ar_contract[key] != contract[key]
+                    for key in (
+                        "samples",
+                        "output_tokens_per_sample",
+                        "temperature",
+                        "seed",
+                        "ignore_eos",
+                        "batch_size",
+                        "tensor_parallel_size",
+                        "cuda_graph",
+                        "prefix_caching",
+                        "warmup_requests",
+                        "max_model_len",
+                        "max_num_batched_tokens",
+                        "gpu_memory_utilization",
+                        "model_config_sha256",
+                    )
+                )
+                or sha256(ar_folder / "runner_snapshot.py")
+                != ar_contract["script_sha256"]
+                or {c["name"] for c in ar_contract["cells"]} != {"ar_start", "ar_end"}
+            ):
+                raise RuntimeError("Async AR baseline contract mismatch")
+        baseline = json.loads((ar_folder / "ar_start/result.json").read_text())
+        end = json.loads((ar_folder / "ar_end/result.json").read_text())
         baseline_seconds = (baseline["e2e_seconds"] + end["e2e_seconds"]) / 2
         for cell in contract["cells"]:
-            directory = folder / cell["name"]
+            directory = (folder if cell["h"] else ar_folder) / cell["name"]
             if not (directory / "CELL_COMPLETE").exists():
                 raise RuntimeError(f"Incomplete cell: {directory}")
             result = json.loads((directory / "result.json").read_text())
+            if (
+                ar_root
+                and not cell["h"]
+                and (
+                    result.get("async_scheduling") is not True
+                    or result["model_path"] != contract["model_path"]
+                    or result["dataset_sha256"] != contract["dataset_sha256"]
+                )
+            ):
+                raise RuntimeError(f"Invalid async AR result: {directory}")
             log = (directory / "run.log").read_text()
             measured_log = log.rsplit("WARMUP_COMPLETE", 1)
             if len(measured_log) != 2:
@@ -198,6 +240,8 @@ def analyze(root, models):
                     "mean_request_seconds": total / 16,
                     "output_tokens_per_second": 8192 / total,
                     "speedup_vs_ar": baseline_seconds / total,
+                    "ar_scheduling": "Async" if ar_root else "Sync",
+                    "measurement_source": str(directory),
                     "spec_steps": steps,
                     "accepted_draft_tokens": accepted,
                     "emitted_accepted_draft_tokens": emitted_accepted,
@@ -231,6 +275,8 @@ def analyze(root, models):
         root / "audit.json",
         {
             "measurement_coverage": "passed",
+            "ar_baseline_directory": str(ar_root) if ar_root else None,
+            "ar_scheduling": "Async" if ar_root else "Sync",
             "cells": len(rows),
             "requests": len(requests),
             "output_tokens": len(requests) * 512,
@@ -263,8 +309,14 @@ def analyze(root, models):
 
 
 def report(root, rows, models):
+    ar_mode = rows[0].get("ar_scheduling", "Sync")
     lines = [
         "# Static expert budget results",
+        "",
+        f"AR baseline: **AR ({ar_mode})**. "
+        "For an external baseline, only the AR controls were newly measured; "
+        "the original 32 budget cells are reused. Baseline repeats do not "
+        "bracket the old matrix in time. See measurement_source in summary.csv.",
         "",
         "All costs below use summed measured request wall time. "
         "Accepted-token cost excludes correction/bonus from its denominator. "
@@ -290,7 +342,7 @@ def report(root, rows, models):
             "",
             "| D | h | Accept rate | Accept length (with bonus) | "
             "ms/actual accepted draft token | ms/output token | tok/s | "
-            "Speedup/sync AR | Exact AR requests |",
+            f"Speedup/AR ({ar_mode}) | Exact AR requests |",
             "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
         for r in selected:
@@ -386,8 +438,9 @@ def plot(root, rows, models):
                 )
         ar = [r for r in rows if r["model"] == model and r["h"] == 0]
         ar_tps = 8192 / (sum(r["e2e_seconds"] for r in ar) / len(ar))
+        ar_mode = ar[0].get("ar_scheduling", "Sync")
         for axis in (axes[0, 0], axes[1, 1]):
-            axis.axhline(ar_tps, color="0.45", linestyle="--", label="AR (sync)")
+            axis.axhline(ar_tps, color="0.45", linestyle="--", label=f"AR ({ar_mode})")
             axis.axhspan(
                 min(r["output_tokens_per_second"] for r in ar),
                 max(r["output_tokens_per_second"] for r in ar),
@@ -436,14 +489,16 @@ def plot(root, rows, models):
             f"# {model}: static expert budget\n\n"
             "Source: ../summary.csv and per-cell result.json.\n\n"
             "16 identical ordered prompts (4 per category), 512 output tokens, "
-            "B=1, TP1, greedy, seed 0, CUDA Graph, prefix cache off, async "
-            "scheduling off. Two warmup requests excluded. Each cell runs once. "
+            "B=1, TP1, greedy, seed 0, CUDA Graph, prefix cache off. "
+            f"AR scheduling: {ar_mode}; speculative scheduling remains synchronous. "
+            "Two warmup requests excluded. Each budget cell runs once. "
             "Detailed acceptance collection is included in wall time.\n\n"
             "(a) Total output tokens divided by summed request wall time, "
             "including prefill/decode/API. (b) Accepted draft tokens / drafted "
             "tokens. (c) 1 + accepted draft tokens / speculative steps. "
             "(d) Throughput versus acceptance length; endpoint labels are h. "
-            "AR uses mean elapsed time of fresh start/end baselines. "
+            "AR uses mean elapsed time of its two controls. External async "
+            "controls were measured afterward, not bracketing the original matrix. "
             "Gray bands span the two AR endpoint measurements, not confidence "
             "intervals. AR repeat output agreement is reported in audit.json. "
             "(e) Summed request wall time / summed actually emitted accepted "
@@ -469,9 +524,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--models", nargs="+", default=["qwen36", "gemma4"])
+    parser.add_argument("--ar-baseline-dir", type=Path)
     args = parser.parse_args()
     root = args.run_dir.resolve()
-    rows = analyze(root, args.models)
+    selection = root / "ar_baseline.json"
+    ar_root = args.ar_baseline_dir
+    if ar_root is None and selection.exists():
+        ar_root = Path(json.loads(selection.read_text())["directory"])
+    ar_root = ar_root.resolve() if ar_root else None
+    rows = analyze(root, args.models, ar_root)
+    if ar_root:
+        write_json(selection, {"directory": str(ar_root), "scheduling": "Async"})
     report(root, rows, args.models)
     plot(root, rows, args.models)
     plot_costs(root, rows, args.models)

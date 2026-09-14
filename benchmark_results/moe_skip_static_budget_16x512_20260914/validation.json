@@ -1,7 +1,7 @@
 {
   "syntax": "passed",
   "pre_commit": "passed",
-  "worker_ast_matches_measured_snapshots": "passed",
+  "worker_ast_matches_measured_snapshots": "Passed at original publication; current runner now adds async AR option. Per-run measured snapshots remain authoritative.",
   "dataset_override_payload_identity": "passed",
   "independent_cost_recalculation": "passed",
   "terminal_clipping_boundary_cases": 5,
@@ -14,5 +14,6 @@
   "runtime_changes": "none",
   "measurement_git_head": "dea50e552e5372df969ed4e57612695cd9a0c822",
   "scope": "32 speculative cells plus 4 AR controls; strict output parity remains failed",
-  "commit_hooks": "All applicable hooks passed except typos false positive on original dataset proper name Smoot-Hawley; skip only typos on commit, preserve measured inputs."
+  "commit_hooks": "All applicable hooks passed except typos false positive on original dataset proper name Smoot-Hawley; skip only typos on commit, preserve measured inputs.",
+  "ar_baseline_refresh": "Four new asynchronous AR controls on the original 16x512 datasets; original speculative cells retained."
 }

@@ -3,7 +3,15 @@
 This run measures standalone shared-weight MoE-Skip drafting on Qwen3.6 and
 Gemma4. It does not measure hierarchical Pre-Verify.
 
-## Contract
+The current figures and speedup tables use **AR (Async)**, measured separately
+on the same 16 ordered prompts with 512 outputs and two excluded warmups.
+`ar_baseline.json` selects the new control directory. The original synchronous
+AR files below remain archived; they are no longer the plotted reference.
+Only AR was remeasured; all 32 speculative cells retain their original data.
+The two new AR repeats do not bracket the earlier matrix in time. New control
+placement is Qwen3.6 on GPU 0 and Gemma4 on GPU 1, both A100 80GB PCIe.
+
+## Original measurement contract
 
 - Models: Qwen3.6-35B-A3B on GPU 1 and Gemma4-26B-A4B-it on GPU 0.
 - Hardware: two NVIDIA A100 80GB PCIe GPUs; one independent TP1 model per GPU.
@@ -97,7 +105,9 @@ directory to analyze_static_budget.py instead of the reproduction directory.
 The measurement runner is archived as each model's runner_snapshot.py and its
 hash is recorded in contract.json. After measurements completed, the published
 runner gained an optional --dataset argument so the shipped 16-prompt manifests
-can be reused without the historical 128-prompt source directories. The worker
-function is unchanged. Resume requires the exact original runner fingerprint.
+can be reused without the historical 128-prompt source directories. The later
+AR refresh adds --async-ar-only and a per-cell async_scheduling flag, defaulting
+to False for original configs. Each run retains its own worker snapshot.
+Resume requires the exact original runner fingerprint.
 
 AI assistance was used to prepare the runner, analysis and report.

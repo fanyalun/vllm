@@ -1,5 +1,7 @@
 {
   "measurement_coverage": "passed",
+  "ar_baseline_directory": "/home/fanya/vllm/benchmark_results/moe_skip_async_ar_16x512_20260914",
+  "ar_scheduling": "Async",
   "cells": 36,
   "requests": 576,
   "output_tokens": 294912,
@@ -9,12 +11,12 @@
     {
       "model": "qwen36",
       "exact_ar_requests": 16,
-      "ar_end_vs_start_speed_ratio": 1.0512556894845877
+      "ar_end_vs_start_speed_ratio": 1.085245667967718
     },
     {
       "model": "gemma4",
       "exact_ar_requests": 1,
-      "ar_end_vs_start_speed_ratio": 1.0826019128121585
+      "ar_end_vs_start_speed_ratio": 1.0903676747265887
     }
   ],
   "strict_greedy_ar_parity": "failed",
