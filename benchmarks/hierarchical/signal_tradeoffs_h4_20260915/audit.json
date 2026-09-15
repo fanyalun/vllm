@@ -1,0 +1,11 @@
+{
+  "trace_sha256": {
+    "pilot": "245984dd1f0b0b55789f64afeac2d2c13b2de2c4b3172127274d0e5a92407ed2",
+    "heldout": "70a6eb895ecb2be066747701ca7a3a2dd786b0da8f6546342ea804326242d6ef"
+  },
+  "source_sha256": "86118772e75ce34ccfbe32d7f17f3efc39d85ae6aa2a7e886c18d3c947ae9246",
+  "rules": 26,
+  "status": "exploratory reused h4 traces; no adaptive GPU timing",
+  "utility": "saved - lambda * cut is sensitivity only; lambda not measured",
+  "semantics": "current L, strict M, correction required, first nonfinal hit"
+}

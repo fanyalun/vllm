@@ -12,6 +12,7 @@ from benchmarks.hierarchical.analyze_failure import round_survival
 from benchmarks.hierarchical.analyze_forward_kernels import map_graph
 from benchmarks.hierarchical.analyze_gdn_mean import steady_cycles
 from benchmarks.hierarchical.analyze_joint_confidence import trigger
+from benchmarks.hierarchical.compare_signal_tradeoffs import combined_trigger
 from benchmarks.hierarchical.cycle_worker import CycleWorker, pair_cycles
 from benchmarks.hierarchical.disagreement_worker import (
     distribution_pair,
@@ -19,6 +20,16 @@ from benchmarks.hierarchical.disagreement_worker import (
 )
 from benchmarks.hierarchical.measurement_worker import MeasurementWorker
 from benchmarks.hierarchical.summarize_forward_stages import partition
+
+
+def test_piecewise_stop_uses_earliest_branch_and_keeps_final_round_exclusion():
+    rounds = [
+        {"inner_round": i, "accepted": a, "proposed": 4, "correction_margin": m}
+        for i, (a, m) in enumerate(((0, 1.5), (2, 0.125), (0, 0.0), (0, 0.0)))
+    ]
+    assert combined_trigger(rounds, 3, 0.25, 2) is rounds[0]
+    assert combined_trigger(rounds, 3, 0.25, 1) is rounds[1]
+    assert combined_trigger(rounds[-1:], 3, 0.25, 2) is None
 
 
 def test_joint_stop_requires_both_features_in_the_same_nonfinal_round():
