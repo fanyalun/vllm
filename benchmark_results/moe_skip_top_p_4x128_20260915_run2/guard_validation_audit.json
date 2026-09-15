@@ -1,0 +1,16 @@
+[
+  {
+    "model": "qwen36",
+    "measurement_contract": "passed",
+    "guarded_worker_sha256": "d2612a83128853fdf14eaf1c453cb3dad344795bcd705d67d234dba11d7f9e2e",
+    "exact_matches_to_main_p08": 4,
+    "post_warmup_jit_warnings": 0
+  },
+  {
+    "model": "gemma4",
+    "measurement_contract": "passed",
+    "guarded_worker_sha256": "d2612a83128853fdf14eaf1c453cb3dad344795bcd705d67d234dba11d7f9e2e",
+    "exact_matches_to_main_p08": 1,
+    "post_warmup_jit_warnings": 0
+  }
+]

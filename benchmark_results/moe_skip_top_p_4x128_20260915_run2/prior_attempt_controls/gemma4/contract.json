@@ -1,0 +1,78 @@
+{
+  "model": "gemma4",
+  "model_path": "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+  "gpu": "1",
+  "cells": [
+    {
+      "name": "ar_start",
+      "h": 0,
+      "p": null,
+      "d": 0
+    },
+    {
+      "name": "h8",
+      "h": 8,
+      "p": null,
+      "d": 4
+    },
+    {
+      "name": "p1_control",
+      "h": 8,
+      "p": 1.0,
+      "d": 4
+    },
+    {
+      "name": "p08",
+      "h": 8,
+      "p": 0.8,
+      "d": 4
+    },
+    {
+      "name": "h4",
+      "h": 4,
+      "p": null,
+      "d": 4
+    },
+    {
+      "name": "p07",
+      "h": 8,
+      "p": 0.7,
+      "d": 4
+    },
+    {
+      "name": "h2",
+      "h": 2,
+      "p": null,
+      "d": 4
+    },
+    {
+      "name": "p09",
+      "h": 8,
+      "p": 0.9,
+      "d": 4
+    },
+    {
+      "name": "h6",
+      "h": 6,
+      "p": null,
+      "d": 4
+    },
+    {
+      "name": "ar_end",
+      "h": 0,
+      "p": null,
+      "d": 0
+    }
+  ],
+  "samples": 4,
+  "output_length": 128,
+  "dataset_payload": "{\"category\": \"human_eval\", \"prompt\": \"from typing import List\\n\\n\\ndef has_close_elements(numbers: List[float], threshold: float) -> bool:\\n    \\\"\\\"\\\" Check if in given list of numbers, are any two numbers closer to each other than\\n    given threshold.\\n    >>> has_close_elements([1.0, 2.0, 3.0], 0.5)\\n    False\\n    >>> has_close_elements([1.0, 2.8, 3.0, 4.0, 5.0, 2.0], 0.3)\\n    True\\n    \\\"\\\"\\\"\\n\", \"prompt_sha256\": \"00b2e074e127a6a9d1376278bef732933760ab706057ec755a8c2642217b557a\", \"prompt_token_count\": 131, \"sample_index\": 0, \"source_index\": 0}\n{\"category\": \"alpaca\", \"prompt\": \"Give three tips for staying healthy.\", \"prompt_sha256\": \"4354beb7755cbf2190034ae5ac9b6f8777928e763ee2308831bb015f62072076\", \"prompt_token_count\": 7, \"sample_index\": 1, \"source_index\": 0}\n{\"category\": \"gsm8k\", \"prompt\": \"Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?\", \"prompt_sha256\": \"73429d562982300e6643d83a84428a22e0656773b67dad037d2de2f8bc0b45b9\", \"prompt_token_count\": 37, \"sample_index\": 2, \"source_index\": 0}\n{\"category\": \"ultra_feedback\", \"prompt\": \"Can you write a C++ program that prompts the user to enter the name of a country and checks if it borders the Mediterranean Sea? Here's some starter code to help you out:\\n#include <iostream>\\n#include <string>\\nusing namespace std;\\nint main() {\\n    string country;\\n    // prompt user for input\\n    cout << \\\"Enter the name of a country: \\\";\\n    cin >> country;\\n    // check if country borders the Mediterranean Sea\\n    // [C++ code]\\n    return 0;\\n}\", \"prompt_sha256\": \"724c84b688772d27e20c7b34fe7a8e0b9caa19443311284e2aa2a32d6caf8f96\", \"prompt_token_count\": 117, \"sample_index\": 3, \"source_index\": 0}\n",
+  "source_sha256": {
+    "run_top_p_probe.py": "d9e14a0adeb8dde6b4a2531fee8c3ee8281672ad6bae8113d4a9aa3e890c4feb",
+    "top_p_worker.py": "e5a0f4123b7ee19037fd0d4f9d77e6fa65ed927d8024f58607ee7bb97385e131"
+  },
+  "model_config_sha256": "ed0c1eb3633de771906e9ba004a44cc5635bcc06ee2062077c3d2e88a50707d3",
+  "routing": "native top-8 mass; retained weights renormalized; h=1..8",
+  "timer": "llm.generate wall time including prefill and detailed metrics",
+  "warmup": "one full request per measured prompt, before counter reset"
+}

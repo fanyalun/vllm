@@ -1,0 +1,53 @@
+{
+  "scope": "Unmodified AR and native h8 repeated across attempts; top-p not enabled in these cells",
+  "comparisons": [
+    {
+      "method": "ar_start",
+      "category": "human_eval",
+      "first_different_token": 2,
+      "exact_match": false
+    },
+    {
+      "method": "ar_start",
+      "category": "alpaca",
+      "first_different_token": 0,
+      "exact_match": false
+    },
+    {
+      "method": "ar_start",
+      "category": "gsm8k",
+      "first_different_token": 0,
+      "exact_match": false
+    },
+    {
+      "method": "ar_start",
+      "category": "ultra_feedback",
+      "first_different_token": 8,
+      "exact_match": false
+    },
+    {
+      "method": "h8",
+      "category": "human_eval",
+      "first_different_token": 1,
+      "exact_match": false
+    },
+    {
+      "method": "h8",
+      "category": "alpaca",
+      "first_different_token": 0,
+      "exact_match": false
+    },
+    {
+      "method": "h8",
+      "category": "gsm8k",
+      "first_different_token": 2,
+      "exact_match": false
+    },
+    {
+      "method": "h8",
+      "category": "ultra_feedback",
+      "first_different_token": 17,
+      "exact_match": false
+    }
+  ]
+}

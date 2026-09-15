@@ -1,0 +1,6 @@
+[
+  "/home/fanya/vllm/.venv/bin/python",
+  "/home/fanya/vllm/benchmarks/moe_skip/run_top_p_probe.py",
+  "--cell",
+  "/home/fanya/vllm/benchmark_results/moe_skip_top_p_4x128_20260915_run2/gemma4/p1_control/config.json"
+]

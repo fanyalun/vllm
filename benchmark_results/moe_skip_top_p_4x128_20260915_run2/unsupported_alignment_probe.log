@@ -1,0 +1,13 @@
+WARNING 09-15 02:06:21 [fused_moe.py:1167] Using default MoE config. Performance might be sub-optimal! Config file not found at /home/fanya/vllm/vllm/model_executor/layers/fused_moe/configs/E=128,N=32,device_name=NVIDIA_A100_80GB_PCIe.json
+Traceback (most recent call last):
+  File "/home/fanya/vllm/benchmarks/moe_skip/check_top_p.py", line 55, in <module>
+    main()
+  File "/home/fanya/vllm/benchmarks/moe_skip/check_top_p.py", line 49, in main
+    torch.testing.assert_close(actual, reference, rtol=0.02, atol=0.01)
+  File "/home/fanya/vllm/.venv/lib/python3.12/site-packages/torch/testing/_comparison.py", line 1631, in assert_close
+    raise error_metas[0].to_error(msg)
+AssertionError: Tensor-likes are not close!
+
+Mismatched elements: 64 / 320 (20.0%)
+Greatest absolute difference: 0.02685546875 at index (0, 14) (up to 0.01 allowed)
+Greatest relative difference: 3.734375 at index (0, 12) (up to 0.02 allowed)

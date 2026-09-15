@@ -1,0 +1,393 @@
+{
+  "measurement_contract": "passed",
+  "cells": 20,
+  "output_parity": [
+    {
+      "model": "qwen36",
+      "method": "p1_control",
+      "reference": "ar_start",
+      "matching_requests": 2,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "p1_control",
+      "reference": "h8",
+      "matching_requests": 4,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "ar_start",
+      "reference": "ar_start",
+      "matching_requests": 4,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "ar_start",
+      "reference": "h8",
+      "matching_requests": 2,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "h8",
+      "reference": "ar_start",
+      "matching_requests": 2,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "h8",
+      "reference": "h8",
+      "matching_requests": 4,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "p08",
+      "reference": "ar_start",
+      "matching_requests": 2,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "p08",
+      "reference": "h8",
+      "matching_requests": 4,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "h4",
+      "reference": "ar_start",
+      "matching_requests": 2,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "h4",
+      "reference": "h8",
+      "matching_requests": 4,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "p07",
+      "reference": "ar_start",
+      "matching_requests": 2,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "p07",
+      "reference": "h8",
+      "matching_requests": 4,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "h2",
+      "reference": "ar_start",
+      "matching_requests": 2,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "h2",
+      "reference": "h8",
+      "matching_requests": 4,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "p09",
+      "reference": "ar_start",
+      "matching_requests": 2,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "p09",
+      "reference": "h8",
+      "matching_requests": 4,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "h6",
+      "reference": "ar_start",
+      "matching_requests": 2,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "h6",
+      "reference": "h8",
+      "matching_requests": 4,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "ar_end",
+      "reference": "ar_start",
+      "matching_requests": 4,
+      "total_requests": 4
+    },
+    {
+      "model": "qwen36",
+      "method": "ar_end",
+      "reference": "h8",
+      "matching_requests": 2,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "p1_control",
+      "reference": "ar_start",
+      "matching_requests": 0,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "p1_control",
+      "reference": "h8",
+      "matching_requests": 0,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "ar_start",
+      "reference": "ar_start",
+      "matching_requests": 4,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "ar_start",
+      "reference": "h8",
+      "matching_requests": 0,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "h8",
+      "reference": "ar_start",
+      "matching_requests": 0,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "h8",
+      "reference": "h8",
+      "matching_requests": 4,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "p08",
+      "reference": "ar_start",
+      "matching_requests": 0,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "p08",
+      "reference": "h8",
+      "matching_requests": 0,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "h4",
+      "reference": "ar_start",
+      "matching_requests": 1,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "h4",
+      "reference": "h8",
+      "matching_requests": 0,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "p07",
+      "reference": "ar_start",
+      "matching_requests": 0,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "p07",
+      "reference": "h8",
+      "matching_requests": 0,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "h2",
+      "reference": "ar_start",
+      "matching_requests": 0,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "h2",
+      "reference": "h8",
+      "matching_requests": 0,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "p09",
+      "reference": "ar_start",
+      "matching_requests": 1,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "p09",
+      "reference": "h8",
+      "matching_requests": 0,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "h6",
+      "reference": "ar_start",
+      "matching_requests": 0,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "h6",
+      "reference": "h8",
+      "matching_requests": 0,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "ar_end",
+      "reference": "ar_start",
+      "matching_requests": 1,
+      "total_requests": 4
+    },
+    {
+      "model": "gemma4",
+      "method": "ar_end",
+      "reference": "h8",
+      "matching_requests": 0,
+      "total_requests": 4
+    }
+  ],
+  "p1_output_identity_gate": {
+    "qwen36": "passed",
+    "gemma4": "failed"
+  },
+  "timing": [
+    {
+      "model": "qwen36",
+      "method": "p1_control",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "qwen36",
+      "method": "ar_start",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "qwen36",
+      "method": "h8",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "qwen36",
+      "method": "p08",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "qwen36",
+      "method": "h4",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "qwen36",
+      "method": "p07",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "qwen36",
+      "method": "h2",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "qwen36",
+      "method": "p09",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "qwen36",
+      "method": "h6",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "qwen36",
+      "method": "ar_end",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "gemma4",
+      "method": "p1_control",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "gemma4",
+      "method": "ar_start",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "gemma4",
+      "method": "h8",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "gemma4",
+      "method": "p08",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "gemma4",
+      "method": "h4",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "gemma4",
+      "method": "p07",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "gemma4",
+      "method": "h2",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "gemma4",
+      "method": "p09",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "gemma4",
+      "method": "h6",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "model": "gemma4",
+      "method": "ar_end",
+      "post_warmup_jit_warnings": []
+    }
+  ],
+  "timing_jit_gate": "passed"
+}

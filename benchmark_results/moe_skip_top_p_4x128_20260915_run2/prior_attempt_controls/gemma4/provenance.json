@@ -1,0 +1,32 @@
+[
+  {
+    "source": "benchmark_results/moe_skip_top_p_4x128_20260915/gemma4/ar_start/result.json",
+    "copy": "benchmark_results/moe_skip_top_p_4x128_20260915_run2/prior_attempt_controls/gemma4/ar_start/result.json",
+    "sha256": "321158fb248c04b4ec13d89ddaaabbb236149ad3648a48c1b8d1cecec16c7b23"
+  },
+  {
+    "source": "benchmark_results/moe_skip_top_p_4x128_20260915/gemma4/h8/result.json",
+    "copy": "benchmark_results/moe_skip_top_p_4x128_20260915_run2/prior_attempt_controls/gemma4/h8/result.json",
+    "sha256": "e9e59a547d458e89630f6418d4d27ac371f31c99a0599a711f7e1dfdb580a06a"
+  },
+  {
+    "source": "benchmark_results/moe_skip_top_p_4x128_20260915/gemma4/contract.json",
+    "copy": "benchmark_results/moe_skip_top_p_4x128_20260915_run2/prior_attempt_controls/gemma4/contract.json",
+    "sha256": "9440eb2df694db416c49dd279b384aad5067ea36909036a14924b3a9523abd2e"
+  },
+  {
+    "source": "benchmark_results/moe_skip_top_p_4x128_20260915/gemma4/dataset.jsonl",
+    "copy": "benchmark_results/moe_skip_top_p_4x128_20260915_run2/prior_attempt_controls/gemma4/dataset.jsonl",
+    "sha256": "5fd81da0e4f7e224f5c6ab63cace65beb5b84d5391dd57b6d890006779e14136"
+  },
+  {
+    "source": "benchmark_results/moe_skip_top_p_4x128_20260915/gemma4/run_top_p_probe.py",
+    "copy": "benchmark_results/moe_skip_top_p_4x128_20260915_run2/prior_attempt_controls/gemma4/run_top_p_probe.py",
+    "sha256": "d9e14a0adeb8dde6b4a2531fee8c3ee8281672ad6bae8113d4a9aa3e890c4feb"
+  },
+  {
+    "source": "benchmark_results/moe_skip_top_p_4x128_20260915/gemma4/top_p_worker.py",
+    "copy": "benchmark_results/moe_skip_top_p_4x128_20260915_run2/prior_attempt_controls/gemma4/top_p_worker.py",
+    "sha256": "e5a0f4123b7ee19037fd0d4f9d77e6fa65ed927d8024f58607ee7bb97385e131"
+  }
+]

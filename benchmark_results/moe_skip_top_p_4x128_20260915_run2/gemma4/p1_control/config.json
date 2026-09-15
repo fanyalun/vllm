@@ -1,0 +1,14 @@
+{
+  "name": "p1_control",
+  "h": 8,
+  "p": 1.0,
+  "d": 4,
+  "model": "gemma4",
+  "model_path": "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+  "dataset": "/home/fanya/vllm/benchmark_results/moe_skip_top_p_4x128_20260915_run2/gemma4/dataset.jsonl",
+  "dataset_sha256": "5fd81da0e4f7e224f5c6ab63cace65beb5b84d5391dd57b6d890006779e14136",
+  "source_sha256": {
+    "run_top_p_probe.py": "8c4538719630e15a89c8d8a6fe1b78fad94cbc88141edaf4d6d9ed5fe4d8fead",
+    "top_p_worker.py": "e5a0f4123b7ee19037fd0d4f9d77e6fa65ed927d8024f58607ee7bb97385e131"
+  }
+}

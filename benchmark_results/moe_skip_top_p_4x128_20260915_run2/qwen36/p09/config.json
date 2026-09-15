@@ -1,0 +1,14 @@
+{
+  "name": "p09",
+  "h": 8,
+  "p": 0.9,
+  "d": 8,
+  "model": "qwen36",
+  "model_path": "/data1/fanya/Qwen/Qwen3.6-35B-A3B",
+  "dataset": "/home/fanya/vllm/benchmark_results/moe_skip_top_p_4x128_20260915_run2/qwen36/dataset.jsonl",
+  "dataset_sha256": "3c8f159dd04207759c479c0e7e9c33fbfbcfdb24da7470cf35e9047d42038087",
+  "source_sha256": {
+    "run_top_p_probe.py": "8c4538719630e15a89c8d8a6fe1b78fad94cbc88141edaf4d6d9ed5fe4d8fead",
+    "top_p_worker.py": "e5a0f4123b7ee19037fd0d4f9d77e6fa65ed927d8024f58607ee7bb97385e131"
+  }
+}

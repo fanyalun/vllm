@@ -1,0 +1,10 @@
+{
+  "png_visual_inspection": "all four inspected",
+  "pdf_pages": 1,
+  "figures": [
+    "top_p_ms_per_emitted_accepted_token",
+    "top_p_ms_per_output_token",
+    "top_p_acceptance_length",
+    "top_p_mean_h"
+  ]
+}

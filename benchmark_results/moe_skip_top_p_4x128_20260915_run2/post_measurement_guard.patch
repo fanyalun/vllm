@@ -1,0 +1,11 @@
+--- benchmark_results/moe_skip_top_p_4x128_20260915_run2/qwen36/top_p_worker.py	2026-09-15 01:31:44.760779411 +0000
++++ benchmarks/moe_skip/top_p_worker.py	2026-09-15 02:07:39.447832761 +0000
+@@ -37,6 +37,8 @@
+ def truncate(weights, ids, logits, counts, p):
+     if weights.shape[-1] != 8 or not 0 < p <= 1:
+         raise ValueError("Top-p benchmark requires native top-8 and 0 < p <= 1")
++    if weights.shape[0] * 8 * 4 > logits.shape[1]:
++        raise ValueError("Top-p requires naive MoE assignment: 4 * tokens * 8 <= E")
+     out_weights, out_ids = torch.empty_like(weights), torch.empty_like(ids)
+     _truncate[(weights.shape[0],)](
+         weights,
