@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -20,6 +21,22 @@ from benchmarks.hierarchical.disagreement_worker import (
 )
 from benchmarks.hierarchical.measurement_worker import MeasurementWorker
 from benchmarks.hierarchical.summarize_forward_stages import partition
+from benchmarks.hierarchical.summarize_policy_matrix import summarize
+
+
+def test_policy_matrix_does_not_certify_partial_requested_coverage(tmp_path):
+    (tmp_path / "contract.json").write_text(
+        json.dumps(
+            {
+                "samples": 16,
+                "output_length": 512,
+                "cells": [[1, "ar"]],
+            }
+        )
+    )
+    with pytest.raises(AssertionError):
+        summarize(tmp_path)
+    assert not (tmp_path / "MATRIX_AUDIT_COMPLETE").exists()
 
 
 def test_piecewise_stop_uses_earliest_branch_and_keeps_final_round_exclusion():

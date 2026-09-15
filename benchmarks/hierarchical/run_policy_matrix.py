@@ -152,12 +152,22 @@ def main():
     if args.cell:
         worker(args.cell)
         return
+    root = args.root.resolve()
+    root.mkdir(parents=True, exist_ok=True)
     if args.wait_pid:
+        write_json(
+            root / "status.json",
+            {
+                "state": "waiting_for_existing_job",
+                "wait_pid": args.wait_pid,
+                "pid": os.getpid(),
+                "completed_cells": 0,
+                "expected_cells": 20,
+            },
+        )
         while Path(f"/proc/{args.wait_pid}").exists():
             print(f"WAITING_FOR_EXISTING_JOB {args.wait_pid}", flush=True)
             time.sleep(30)
-    root = args.root.resolve()
-    root.mkdir(parents=True, exist_ok=True)
     source = (
         ROOT
         / "benchmark_results/gemma_h4_confidence_late_16x128_20260915/dataset.jsonl"
@@ -174,6 +184,9 @@ def main():
     paths = [
         Path(__file__),
         Path(__file__).with_name("policy_worker.py"),
+        Path(__file__).with_name("finish_policy_matrix.py"),
+        Path(__file__).with_name("summarize_policy_matrix.py"),
+        Path(__file__).with_name("plot_policy_matrix.py"),
         ROOT / "vllm/config/speculative.py",
     ] + list((ROOT / "vllm/v1/worker/gpu/spec_decode/hierarchical").glob("*.py"))
     fingerprints = {
@@ -232,6 +245,18 @@ def main():
         if (folder / "CELL_COMPLETE").exists():
             continue
         folder.mkdir(exist_ok=True)
+        write_json(
+            root / "status.json",
+            {
+                "state": "waiting_for_idle_gpu",
+                "cell": folder.name,
+                "pid": os.getpid(),
+                "completed_cells": sum(
+                    (root / f"b{b}_{m}" / "CELL_COMPLETE").exists() for b, m in cells
+                ),
+                "expected_cells": len(cells),
+            },
+        )
         while True:
             gpu = idle_gpu()
             time.sleep(30)
@@ -258,18 +283,53 @@ def main():
         env["CUDA_VISIBLE_DEVICES"] = str(gpu)
         env["VLLM_CACHE_ROOT"] = str(root / "compiler_cache" / mode)
         print(f"START {folder.name} GPU{gpu}", flush=True)
+        write_json(
+            root / "status.json",
+            {
+                "state": "running",
+                "cell": folder.name,
+                "gpu": gpu,
+                "pid": os.getpid(),
+                "completed_cells": sum(
+                    (root / f"b{b}_{m}" / "CELL_COMPLETE").exists() for b, m in cells
+                ),
+                "expected_cells": len(cells),
+            },
+        )
         with (folder / "run.log").open("w") as log:
-            subprocess.run(
+            process = subprocess.run(
                 command,
                 cwd=ROOT,
                 env=env,
                 stdout=log,
                 stderr=subprocess.STDOUT,
-                check=True,
+                check=False,
             )
+        if process.returncode:
+            write_json(
+                root / "status.json",
+                {
+                    "state": "failed",
+                    "cell": folder.name,
+                    "returncode": process.returncode,
+                },
+            )
+            process.check_returncode()
         print(f"COMPLETE {folder.name}", flush=True)
     (root / "MEASUREMENTS_COMPLETE").write_text(
         f"{len(cells)} cells completed; analysis pending\n"
+    )
+    if not args.smoke:
+        from benchmarks.hierarchical.finish_policy_matrix import finish
+
+        finish(root)
+    write_json(
+        root / "status.json",
+        {
+            "state": "complete",
+            "completed_cells": len(cells),
+            "visual_review": "pending" if not args.smoke else "not_applicable",
+        },
     )
 
 

@@ -46,3 +46,6 @@ M 是 Pre-Verify 自身 Top-1/Top-2 logit margin。保留当前 correction 后�
 - 每配置当前计划一次满足热图覆盖条件的正式测量，小样本性能差异不等于稳定部署收益。
 
 每个配置保存输出、详细接受计数、策略计数和耗时。完整矩阵结束后才生成审计完成标记。AI assistance was used for implementation, tests, and experiment preparation.
+
+正式启动器跑完后自动执行汇总、生成 report/results.md、PNG/PDF 图及证据包。
+出现失败时保留日志并退出，不生成完成标记；自动生成的图仍需人工目视检查。
