@@ -74,7 +74,7 @@ def plot(root, output):
     axes[0].set_ylabel("Output tokens / s")
     axes[0].set_ylim(bottom=0)
     axes[1].set_ylabel("Accepted candidates (%)")
-    axes[1].set_ylim(0, 102)
+    axes[1].set_ylim(85, 97)
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(
         handles,
@@ -108,6 +108,76 @@ def plot(root, output):
         "verified candidates, excluding Target bonus; AR has no candidate rate. "
         "One warm measurement per cell; no error bars or significance claim. "
         "Output equivalence is reported separately in output_comparisons.csv.\n\n"
+        "The acceptance axis spans 85–97% to resolve differences.\n\n"
+        "Reproduce with `.venv/bin/python -m "
+        "benchmarks.hierarchical.plot_policy_matrix "
+        "<run_directory> <output_directory>`.\n"
+    )
+    fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.3))
+    fields = ("skipped_request_rounds", "batch_round_calls")
+    for mode, label, color, marker in styles[2:]:
+        selected = sorted(
+            (r for r in rows if r["mode"] == mode), key=lambda r: r["batch"]
+        )
+        for ax, field in zip(axes, fields, strict=True):
+            ax.plot(
+                [r["batch"] for r in selected],
+                [r[field] for r in selected],
+                label=label,
+                color=color,
+                marker=marker,
+                linewidth=1.8,
+            )
+    for index, ax in enumerate(axes):
+        ax.set_xscale("log", base=2)
+        ax.set_xticks([1, 4, 8, 16], labels=["1", "4", "8", "16"])
+        ax.set_ylim(bottom=0)
+        ax.set_xlabel("Batch size")
+        ax.set_ylabel(["Skipped request rounds", "Batch round calls"][index])
+        ax.grid(axis="y", alpha=0.2)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.text(
+            0.5,
+            -0.31,
+            ["(a) Policy skips", "(b) Actual inner calls"][index],
+            transform=ax.transAxes,
+            ha="center",
+            va="top",
+            fontsize=13,
+        )
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="upper center",
+        ncol=3,
+        frameon=False,
+        bbox_to_anchor=(0.5, 0.97),
+        columnspacing=1.0,
+        handlelength=1.8,
+    )
+    fig.subplots_adjust(top=0.81, bottom=0.23, left=0.1, right=0.99, wspace=0.38)
+    folder = output / "policy_work"
+    folder.mkdir(parents=True, exist_ok=True)
+    for extension in ("png", "pdf"):
+        fig.savefig(
+            folder / f"policy_work.{extension}",
+            dpi=300,
+            bbox_inches="tight",
+            pad_inches=0.03,
+        )
+    plt.close(fig)
+    (folder / "policy_work.md").write_text(
+        "# h4 stopping and executed work\n\n"
+        f"Source: `{root}/summary.json`, audited 20-cell matrix.\n\n"
+        "Same Gemma h4, D4, four-round, 16×512 protocol as policy_scaling. "
+        "Panel (a) sums remaining request rounds omitted when a policy fires; "
+        "it is neither wall-time saving nor a counterfactual measurement. "
+        "Panel (b) counts executed batch inner rounds, one Pre-Verify per call; "
+        "each call may serve multiple requests. These units differ. "
+        "Counts cover all 16 measured requests, excluding warmup. "
+        "One measurement per cell; no error bars. Output trajectories differ, "
+        "so cross-policy differences do not isolate a causal stopping effect.\n\n"
         "Reproduce with `.venv/bin/python -m "
         "benchmarks.hierarchical.plot_policy_matrix "
         "<run_directory> <output_directory>`.\n"

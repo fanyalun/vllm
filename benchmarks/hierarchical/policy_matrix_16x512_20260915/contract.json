@@ -1,0 +1,106 @@
+{
+  "cells": [
+    [
+      1,
+      "ar"
+    ],
+    [
+      1,
+      "mtp"
+    ],
+    [
+      1,
+      "low_error"
+    ],
+    [
+      1,
+      "balanced"
+    ],
+    [
+      1,
+      "aggressive"
+    ],
+    [
+      4,
+      "ar"
+    ],
+    [
+      4,
+      "mtp"
+    ],
+    [
+      4,
+      "low_error"
+    ],
+    [
+      4,
+      "balanced"
+    ],
+    [
+      4,
+      "aggressive"
+    ],
+    [
+      8,
+      "ar"
+    ],
+    [
+      8,
+      "mtp"
+    ],
+    [
+      8,
+      "low_error"
+    ],
+    [
+      8,
+      "balanced"
+    ],
+    [
+      8,
+      "aggressive"
+    ],
+    [
+      16,
+      "ar"
+    ],
+    [
+      16,
+      "mtp"
+    ],
+    [
+      16,
+      "low_error"
+    ],
+    [
+      16,
+      "balanced"
+    ],
+    [
+      16,
+      "aggressive"
+    ]
+  ],
+  "samples": 16,
+  "output_length": 512,
+  "dataset_sha256": "00f7a6422951bba2c045d276d412ad6c5280d0d6edb19d613c1546dd6d2f8b57",
+  "source_sha256": {
+    "benchmarks/hierarchical/run_policy_matrix.py": "e4d174745f046c7776627055cbbc6c4d61f2cc15551c14653ef601a515718821",
+    "benchmarks/hierarchical/policy_worker.py": "0c3938cfb7d2c80db55dd9407ecdacd4e36ff8e342b4218e6e3f42f20ed8b3d0",
+    "benchmarks/hierarchical/finish_policy_matrix.py": "7b25bd53f9992cc99bd713eef9c9a1735c7310e006e84b956b538bbf9ed1f943",
+    "benchmarks/hierarchical/summarize_policy_matrix.py": "5f84bd8375ac7ffc3c34000b3d7498b5f35586ec42ccbe1d8065017f140779ec",
+    "benchmarks/hierarchical/plot_policy_matrix.py": "0b519b2ef1afcecdfebc4925902465ffcbdc85a25fee7937f1f8d52f58f5c877",
+    "vllm/config/speculative.py": "393ed4a2e7e8c5d4ee86b230f3ff75a7ac39c09c735fba067762722fb7a7134b",
+    "vllm/v1/worker/gpu/spec_decode/hierarchical/speculator.py": "4c297186567f5d0f263cc6fbf74af646c8102f8758ff7e33b37633aef7fb5b13",
+    "vllm/v1/worker/gpu/spec_decode/hierarchical/__init__.py": "e3c55cbb0d7a8bd47df6f3378835644645f5d3bc89b45793b5d5a02d013e5c58",
+    "vllm/v1/worker/gpu/spec_decode/hierarchical/batched.py": "f896298937a8955c15d906d900de5e3722680a2420c1ab5190b8eb2c634d759b",
+    "vllm/v1/worker/gpu/spec_decode/hierarchical/state.py": "05326539f5e4def96997ebcd795222f7c8bd2f802c38281b49388885f08170d7"
+  },
+  "warmup_output_length": 64,
+  "compiler_cache": "isolated by experiment and mode",
+  "model": "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+  "assistant": "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it-assistant",
+  "model_config_sha256": "ed0c1eb3633de771906e9ba004a44cc5635bcc06ee2062077c3d2e88a50707d3",
+  "assistant_config_sha256": "f393dd4bbdbb1de9bfade9de224493de4e728ba020f9078db8de93cc66a551b2",
+  "protocol": "fixed groups, TP1, synchronous scheduling, raw prompt, greedy, ignore_eos"
+}

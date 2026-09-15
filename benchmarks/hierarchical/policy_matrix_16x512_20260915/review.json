@@ -1,0 +1,7 @@
+{
+  "state": "complete",
+  "completed_cells": 20,
+  "visual_review": "passed_png_and_rendered_pdf",
+  "output_equivalence": "not_passed",
+  "measurement_repeats_per_cell": 1
+}
