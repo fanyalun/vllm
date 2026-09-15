@@ -79,6 +79,9 @@ class SpeculativeConfig:
 
     enforce_eager: bool | None = None
     """Override the default enforce_eager from model_config"""
+    dspark_confidence_threshold: float | None = Field(default=None, ge=0, le=1)
+    """Verify the longest DSpark prefix whose individual confidences meet or exceed
+    this threshold. Requires synchronous scheduling; zero drafts are allowed."""
     # General speculative decoding control
     num_speculative_tokens: int = Field(default=None, gt=0)  # type: ignore[assignment]
     """The number of speculative tokens, if provided. It will default to the
@@ -1091,6 +1094,8 @@ class SpeculativeConfig:
 
     @model_validator(mode="after")
     def _verify_args(self) -> Self:
+        if self.dspark_confidence_threshold is not None and self.method != "dspark":
+            raise ValueError("dspark_confidence_threshold requires method='dspark'")
         if self.tensor_parallel_size is not None:
             raise ValueError(
                 "'tensor_parallel_size' is not a valid argument in the "

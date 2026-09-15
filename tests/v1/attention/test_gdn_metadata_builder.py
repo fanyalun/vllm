@@ -221,3 +221,24 @@ def test_full_cudagraph_spec_metadata_uses_request_count():
     assert meta.spec_query_start_loc.shape == (batch.batch_size + 1,)
     assert meta.num_accepted_tokens is not None
     assert meta.num_accepted_tokens.shape == (batch.batch_size,)
+
+
+@pytest.mark.parametrize("draft_lengths", [[0, 0], [0, 2]])
+def test_adaptive_zero_draft_preserves_accepted_state_slot(draft_lengths):
+    builder = _create_gdn_builder(num_speculative_tokens=8)
+    builder.adaptive_spec_decode = True
+    batch = BatchSpec(seq_lens=[80, 96], query_lens=[n + 1 for n in draft_lengths])
+    common = create_common_attn_metadata(batch, BLOCK_SIZE, DEVICE)
+    common.is_prefilling = torch.tensor([False, False])
+    accepted = torch.tensor([4, 2], dtype=torch.int32)
+    meta = builder.build(
+        common_prefix_len=0,
+        common_attn_metadata=common,
+        num_decode_draft_tokens_cpu=torch.tensor(draft_lengths),
+        num_accepted_tokens=accepted,
+    )
+    assert meta.num_spec_decodes == 2
+    assert meta.num_decodes == 0
+    assert meta.num_prefills == 0
+    assert torch.equal(meta.num_accepted_tokens, accepted)
+    assert meta.spec_query_start_loc.tolist() == [0, 1, sum(draft_lengths) + 2]

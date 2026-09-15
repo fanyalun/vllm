@@ -17,13 +17,19 @@ class DraftTokensHandler:
         self.req_ids: list[str] = []
         self.draft_tokens_np: np.ndarray | None = None
         self.num_draft_tokens: int = 0
+        self.draft_lengths_np: np.ndarray | None = None
 
     def set_draft_tokens(
-        self, input_batch: InputBatch, draft_tokens: torch.Tensor
+        self,
+        input_batch: InputBatch,
+        draft_tokens: torch.Tensor,
+        draft_lengths: torch.Tensor | None = None,
     ) -> None:
         self.req_ids = input_batch.req_ids
         self.num_draft_tokens = draft_tokens.shape[1]
-        if not input_batch.has_structured_output_reqs:
+        self.draft_tokens_np = None
+        self.draft_lengths_np = None
+        if not input_batch.has_structured_output_reqs and draft_lengths is None:
             # No draft token validation needs to be performed by
             # the scheduler for this batch.
             self.draft_tokens_np = None
@@ -34,7 +40,13 @@ class DraftTokensHandler:
         current_stream = torch.cuda.current_stream(self.device)
         self.copy_stream.wait_stream(current_stream)
         with torch.cuda.stream(self.copy_stream):
-            self.draft_tokens_np = async_copy_to_np(draft_tokens)
+            if input_batch.has_structured_output_reqs:
+                self.draft_tokens_np = async_copy_to_np(draft_tokens)
+            if draft_lengths is not None:
+                self.draft_lengths_np = async_copy_to_np(
+                    draft_lengths[: input_batch.num_reqs]
+                )
+                draft_lengths.record_stream(self.copy_stream)
             # draft_tokens is a temporary allocation on the main stream and read here on
             # copy_stream; without record_stream, the caching allocator may reuse its
             # memory before the async copy executes.
@@ -42,12 +54,18 @@ class DraftTokensHandler:
             self.copy_event.record()
 
     def get_draft_tokens(self) -> DraftTokenIds | None:
-        if self.draft_tokens_np is not None:
+        if self.draft_tokens_np is not None or self.draft_lengths_np is not None:
             self.copy_event.synchronize()
+        if self.draft_tokens_np is not None:
             draft_token_ids = self.draft_tokens_np.tolist()
         else:
             # This case only happens when async scheduling is disabled.
             draft_token_ids = [[-1] * self.num_draft_tokens for _ in self.req_ids]
+        if self.draft_lengths_np is not None:
+            draft_token_ids = [
+                tokens[: int(length)]
+                for tokens, length in zip(draft_token_ids, self.draft_lengths_np)
+            ]
         return DraftTokenIds(self.req_ids, draft_token_ids)
 
 

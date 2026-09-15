@@ -16,7 +16,7 @@ def test_v2_prefill_lengths_follow_request_order(monkeypatch):
     )
     monkeypatch.setattr(mamba_hybrid, "build_attn_metadata", lambda **kwargs: kwargs)
     state = object.__new__(mamba_hybrid.MambaHybridModelState)
-    state._dual_checkpoint = True
+    state._replayssm_spec = True
     state._align_mode = False
     state._replayssm_prefill_lens = torch.zeros(3, dtype=torch.int32)
     state.num_accepted_tokens_gpu = torch.ones(3, dtype=torch.int32)

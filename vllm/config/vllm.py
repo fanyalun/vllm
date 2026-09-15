@@ -956,6 +956,16 @@ class VllmConfig:
             and self.parallel_config.all2all_backend == "deepep_high_throughput"
         )
 
+        if (
+            self.speculative_config is not None
+            and self.speculative_config.dspark_confidence_threshold is not None
+        ):
+            if self.scheduler_config.async_scheduling:
+                raise ValueError(
+                    "DSpark confidence truncation requires sync scheduling"
+                )
+            self.scheduler_config.async_scheduling = False
+
         if self.scheduler_config.async_scheduling:
             # Async scheduling explicitly enabled, hard fail any incompatibilities.
             # Currently, async scheduling only support eagle speculative

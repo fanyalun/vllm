@@ -87,8 +87,8 @@ class MambaHybridModelState(DefaultModelState):
         self.num_accepted_tokens_gpu = torch.ones(
             self.max_num_reqs, dtype=torch.int32, device=self.device
         )
-        self._dual_checkpoint = self.cache_config.replayssm_spec_dual_checkpoint
-        if self._dual_checkpoint:
+        self._replayssm_spec = self.cache_config.use_replayssm_spec
+        if self._replayssm_spec:
             self._replayssm_prefill_lens = torch.zeros(
                 self.max_num_reqs, dtype=torch.int32
             )
@@ -113,7 +113,7 @@ class MambaHybridModelState(DefaultModelState):
 
     def add_request(self, req_index: int, new_req_data: NewRequestData) -> None:
         super().add_request(req_index, new_req_data)
-        if self._dual_checkpoint:
+        if self._replayssm_spec:
             assert new_req_data.prefill_token_ids is not None
             # Resumed requests may recompute generated tokens as part of prefill.
             self._replayssm_prefill_lens[req_index] = len(
@@ -283,7 +283,7 @@ class MambaHybridModelState(DefaultModelState):
             num_decode_draft_tokens_cpu = torch.from_numpy(num_decode_draft_tokens_np)
 
         num_prompt_tokens_cpu = None
-        if self._dual_checkpoint and not for_capture:
+        if self._replayssm_spec and not for_capture:
             num_prompt_tokens_cpu = torch.zeros(num_reqs, dtype=torch.int32)
             num_prompt_tokens_cpu[: input_batch.num_reqs] = (
                 self._replayssm_prefill_lens[input_batch.idx_mapping_np]

@@ -194,6 +194,10 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
         # allocated lazily on first build (num_gpu_blocks is unknown here), and
         # advanced once per step by commit_gdn_replayssm_spec.
         self.use_cache_spec_kernel: bool = vllm_config.cache_config.use_replayssm_spec
+        self.adaptive_spec_decode = (
+            vllm_config.speculative_config is not None
+            and vllm_config.speculative_config.dspark_confidence_threshold is not None
+        )
         self.max_spec_len: int = 1 + self.num_spec
         # L = B + max_spec_len history window; physical pow2 ring = next_pow2(L).
         self.spec_flush_threshold = self.max_cache_len + self.max_spec_len
@@ -233,7 +237,9 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
         )
 
         spec_sequence_masks_cpu: torch.Tensor | None = None
-        if self.use_cache_spec_kernel and num_accepted_tokens is not None:
+        if (
+            self.use_cache_spec_kernel or self.adaptive_spec_decode
+        ) and num_accepted_tokens is not None:
             # ReplaySSM spec: every post-prefill row must run through the spec
             # kernel (a draft-less row is a T=1 window). The baseline decode /
             # prefill paths read the checkpoint page, which lags the committed
@@ -241,6 +247,8 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             # num_decode_draft_tokens_cpu cannot drive this mask: it is stale
             # on draft-less steps and -1 for decode rows whose drafts were
             # dropped.
+            # Adaptive SD also needs the accepted-slot lookup after a window
+            # shrinks to one token; plain decode would read slot zero instead.
             is_prefilling_cpu = m.is_prefilling
             assert is_prefilling_cpu is not None
             query_lens_cpu_all = query_start_loc_cpu[1:] - query_start_loc_cpu[:-1]

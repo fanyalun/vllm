@@ -34,6 +34,13 @@ from vllm.v1.worker.gpu.spec_decode.dflash.speculator import DFlashSpeculator
 from vllm.v1.worker.gpu.spec_decode.dspark.utils import load_dspark_model
 
 
+def confidence_prefix_lengths(
+    confidence: torch.Tensor, threshold: float
+) -> torch.Tensor:
+    valid = torch.isfinite(confidence) & (confidence >= threshold)
+    return valid.to(torch.int32).cumprod(dim=-1).sum(dim=-1, dtype=torch.int32)
+
+
 class DSparkSpeculator(DFlashSpeculator):
     _speculator_name = "DSpark"
 
@@ -75,6 +82,11 @@ class DSparkSpeculator(DFlashSpeculator):
         self._d2t_scatter_index: torch.Tensor | None = None
         self._draft_scatter_buf: torch.Tensor | None = None
         self.draft_confidence: torch.Tensor | None = None
+        assert vllm_config.speculative_config is not None
+        self.confidence_threshold = (
+            vllm_config.speculative_config.dspark_confidence_threshold
+        )
+        self.draft_lengths: torch.Tensor | None = None
 
     def load_draft_model(
         self,
@@ -82,6 +94,14 @@ class DSparkSpeculator(DFlashSpeculator):
         target_attn_layer_names: set[str],
     ) -> torch.nn.Module:
         model = load_dspark_model(target_model, self.vllm_config)
+        if self.confidence_threshold is not None:
+            if getattr(model.model, "confidence_head", None) is None:
+                raise ValueError(
+                    "Confidence truncation requires a DSpark confidence head"
+                )
+            self.draft_lengths = torch.zeros(
+                self.max_num_reqs, dtype=torch.int32, device=self.device
+            )
         if getattr(model.model, "confidence_head", None) is not None:
             self.draft_confidence = torch.full(
                 (self.max_num_reqs, self.num_speculative_steps),
@@ -178,6 +198,11 @@ class DSparkSpeculator(DFlashSpeculator):
                 torch.stack(confidence_embeddings, dim=1),
             )
             self.draft_confidence[:num_reqs].copy_(confidence)
+            if self.draft_lengths is not None:
+                assert self.confidence_threshold is not None
+                self.draft_lengths[:num_reqs].copy_(
+                    confidence_prefix_lengths(confidence, self.confidence_threshold)
+                )
 
     def _generate_draft(
         self,

@@ -1499,6 +1499,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.draft_tokens_handler.set_draft_tokens(
                 input_batch,
                 self.req_states.draft_tokens[input_batch.idx_mapping],
+                getattr(self.speculator, "draft_lengths", None),
             )
 
         # Post-step KV connector related operations.

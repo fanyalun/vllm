@@ -84,6 +84,7 @@ def test_confidence_sampling_alignment(draft, graph, enabled):
         input_buffers=SimpleNamespace(input_ids=torch.tensor([2, 7], device=device)),
         _anchor_idx=torch.arange(2, device=device),
         draft_logits=None,
+        draft_lengths=None,
         draft_tokens=torch.zeros(3, draft, dtype=torch.int64, device=device),
         draft_confidence=torch.full((3, draft), float("nan"), device=device)
         if enabled
