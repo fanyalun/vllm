@@ -3,7 +3,7 @@
     "pilot": "245984dd1f0b0b55789f64afeac2d2c13b2de2c4b3172127274d0e5a92407ed2",
     "heldout": "70a6eb895ecb2be066747701ca7a3a2dd786b0da8f6546342ea804326242d6ef"
   },
-  "source_sha256": "456cfc4a8a97184a8afc0158bea0b02fe42265d73bfa1baeee535bfe1c34fa9f",
+  "source_sha256": "b450fe0e7bbb3e0c4d58fbdd232833bd2af39efc866512f430d1e2aec101904b",
   "scope": "h4 only; reuse audited pilot4 and heldout16; no new GPU run",
   "selection": "exploratory joint grid after inspecting previous results",
   "semantics": "current round accepted length; correction required; AND",

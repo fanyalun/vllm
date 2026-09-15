@@ -126,6 +126,8 @@ def main():
         ("local_corrections", local),
     ):
         write_csv(args.output / f"{name}.csv", rows)
+        csv_path = args.output / f"{name}.csv"
+        csv_path.write_text(csv_path.read_text())
         write_json(args.output / f"{name}.json", rows)
     write_json(
         args.output / "audit.json",
