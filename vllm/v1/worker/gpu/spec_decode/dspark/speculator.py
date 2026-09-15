@@ -74,6 +74,7 @@ class DSparkSpeculator(DFlashSpeculator):
         # Reduced-vocab probabilistic drafting only; set in load_draft_model.
         self._d2t_scatter_index: torch.Tensor | None = None
         self._draft_scatter_buf: torch.Tensor | None = None
+        self.draft_confidence: torch.Tensor | None = None
 
     def load_draft_model(
         self,
@@ -81,6 +82,13 @@ class DSparkSpeculator(DFlashSpeculator):
         target_attn_layer_names: set[str],
     ) -> torch.nn.Module:
         model = load_dspark_model(target_model, self.vllm_config)
+        if getattr(model.model, "confidence_head", None) is not None:
+            self.draft_confidence = torch.full(
+                (self.max_num_reqs, self.num_speculative_steps),
+                float("nan"),
+                dtype=torch.float32,
+                device=self.device,
+            )
         # Reduced draft vocab: probabilistic rejection sampling indexes draft
         # logits by target id, so precompute the draft->target column map and a
         # scratch buffer to scatter logits into target vocab before sampling.
@@ -99,6 +107,18 @@ class DSparkSpeculator(DFlashSpeculator):
             )
         return model
 
+    def get_draft_confidence(self, num_reqs: int) -> torch.Tensor | None:
+        """Return a GPU view aligned with the latest proposal's rows and tokens.
+
+        Read after propose; clone before the next proposal to retain the values.
+        Only the active num_reqs rows are valid. Models without a head return None.
+        """
+        if not 0 <= num_reqs <= self.max_num_reqs:
+            raise ValueError("num_reqs exceeds the draft confidence buffer")
+        if self.draft_confidence is None:
+            return None
+        return self.draft_confidence[:num_reqs]
+
     def _sample_sequential(self, num_reqs: int, head_hidden: torch.Tensor) -> None:
         # Sequential Markov sampling over the backbone's output hidden states.
         n_spec = self.num_speculative_steps
@@ -116,10 +136,13 @@ class DSparkSpeculator(DFlashSpeculator):
         # Anchor (bonus) token per request = the input id at query offset 0,
         # read via the precomputed persistent index (fixed buffer for capture).
         prev = self.input_buffers.input_ids[self._anchor_idx[:num_reqs]]
+        confidence_embeddings = []
 
         for i in range(n_spec):
             # Sequential stage: Markov bias from the previously sampled token.
             markov_embed = self.model.markov_embed(prev)
+            if self.draft_confidence is not None:
+                confidence_embeddings.append(markov_embed)
             bias = self.model.markov_bias(markov_embed)
             logits_i = base_logits[:, i] + bias
             if self.draft_logits is not None:
@@ -149,6 +172,12 @@ class DSparkSpeculator(DFlashSpeculator):
                 )
             self.draft_tokens[:num_reqs, i] = draft_sampled_i
             prev = draft_sampled_i
+        if self.draft_confidence is not None:
+            confidence = self.model.compute_draft_confidence(
+                sample_hidden.view(num_reqs, n_spec, -1),
+                torch.stack(confidence_embeddings, dim=1),
+            )
+            self.draft_confidence[:num_reqs].copy_(confidence)
 
     def _generate_draft(
         self,

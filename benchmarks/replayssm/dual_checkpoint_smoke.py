@@ -22,7 +22,10 @@ def main():
     parser.add_argument("--dual", action="store_true")
     parser.add_argument("--eager", action="store_true")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--confidence-output")
     args = parser.parse_args()
+    if args.confidence_output and args.method != "dspark":
+        parser.error("--confidence-output requires --method dspark")
 
     from vllm import LLM, SamplingParams
 
@@ -56,6 +59,11 @@ def main():
         kernel_config={"enable_flashinfer_autotune": False},
         disable_log_stats=False,
     )
+    if args.confidence_output:
+        config["worker_extension_cls"] = (
+            "benchmarks.replayssm.dspark_confidence_trace."
+            "DSparkConfidenceTraceWorkerExtension"
+        )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     result = dict(
@@ -68,6 +76,8 @@ def main():
         "vllm/model_executor/layers/fla/ops/gdn_replayssm_dual_checkpoint.py",
         "vllm/v1/attention/backends/gdn_attn.py",
         "vllm/v1/worker/gpu/model_states/mamba_hybrid.py",
+        "vllm/model_executor/models/qwen3_dspark.py",
+        "vllm/v1/worker/gpu/spec_decode/dspark/speculator.py",
     ]
     result["source_sha256"] = {
         path: hashlib.sha256((repo / path).read_bytes()).hexdigest() for path in sources
@@ -92,9 +102,16 @@ def main():
         )
 
     warmup = generate()
+    if args.confidence_output:
+        llm.collective_rpc("install_dspark_confidence_trace")
     started = time.perf_counter()
     outputs = generate()
     elapsed = time.perf_counter() - started
+    if args.confidence_output:
+        trace = llm.collective_rpc("read_dspark_confidence_trace")
+        trace_path = Path(args.confidence_output)
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        trace_path.write_text(json.dumps(trace, indent=2) + "\n")
     result.update(
         elapsed_s=elapsed,
         prompt_token_ids=[list(o.prompt_token_ids) for o in outputs],

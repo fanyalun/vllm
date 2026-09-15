@@ -1,0 +1,44 @@
+[
+  {
+    "draft": 4,
+    "rounds": 36,
+    "requests": 2,
+    "confidence_count": 224,
+    "confidence_min": 0.20055769383907318,
+    "confidence_max": 0.9802808165550232,
+    "first_confidence": [
+      [
+        0.9196425676345825,
+        0.28616926074028015,
+        0.2186693549156189,
+        0.2186693549156189
+      ]
+    ],
+    "loaded_weights_match": true,
+    "repeated_tokens_match": true,
+    "baseline_tokens_match": true
+  },
+  {
+    "draft": 8,
+    "rounds": 39,
+    "requests": 2,
+    "confidence_count": 456,
+    "confidence_min": 0.14318770170211792,
+    "confidence_max": 0.9643214344978333,
+    "first_confidence": [
+      [
+        0.8104788661003113,
+        0.23651622235774994,
+        0.20561504364013672,
+        0.2107662856578827,
+        0.25534364581108093,
+        0.18010666966438293,
+        0.3593641221523285,
+        0.5510905385017395
+      ]
+    ],
+    "loaded_weights_match": true,
+    "repeated_tokens_match": true,
+    "baseline_tokens_match": true
+  }
+]

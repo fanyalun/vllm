@@ -1,0 +1,31 @@
+{
+  "timestamp_utc": "2026-09-15T08:27:23.385143+00:00",
+  "base_commit": "7cf3456113282431ed0a672eaebb36aac59ee9fe",
+  "source_sha256": {
+    "vllm/model_executor/models/qwen3_dspark.py": "cc0199c7112234cf8e06aa452facd1d9ad722a167cb6209f27c1a20d25d56f80",
+    "vllm/v1/worker/gpu/spec_decode/dspark/speculator.py": "87f8d599f23e5df5241d3a625c9341733ec6106b032930fa832451caaea54ee1",
+    "benchmarks/replayssm/dual_checkpoint_smoke.py": "b8182869d0ff1b93cc06d52211b7143c78f4a06e1b8642686380a80e668ece8d",
+    "benchmarks/replayssm/dspark_confidence_trace.py": "887b4274eed8896949fa98eb11366718d10ef14f23e4da6b5c8cd0d1fecfbd1b",
+    "tests/kernels/test_dspark_confidence.py": "179ddd93b5b19da102acfcc1592ca318b2d3a8d0b683b7faccd793367e72a9ca"
+  },
+  "training_source": {
+    "dspark_training_heads.py": {
+      "url": "https://raw.githubusercontent.com/vllm-project/speculators/main/src/speculators/models/dspark/model_definitions.py",
+      "sha256": "30e0b5f2b8ff49fc9b3c2002317011525e7c482e3768fd91d84739ee4ecf890f"
+    },
+    "dspark_training_core.py": {
+      "url": "https://raw.githubusercontent.com/vllm-project/speculators/main/src/speculators/models/dspark/core.py",
+      "sha256": "c50bcf902184d2e859b7797a6378a7ffc154eab85bf99d20f50d1b285f96d960"
+    },
+    "dspark_training_metrics.py": {
+      "url": "https://raw.githubusercontent.com/vllm-project/speculators/main/src/speculators/models/dspark/metrics.py",
+      "sha256": "9bbe3810189279803917d99c54c85a519f63b6561e4a218963390f6e7617fd90"
+    }
+  },
+  "validation_scope": "TP1 A100, V2 DSpark CUDA Graph, D4 and D8, two 64-token requests per D plus identical warmup",
+  "final_runs_gpu": 0,
+  "initial_failures": [
+    "D4 callable RPC serialization rejected; replaced with worker extension and named RPC",
+    "D8 GPU1 memory gate failed due to other process; reran on GPU0"
+  ]
+}

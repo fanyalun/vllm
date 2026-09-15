@@ -33,6 +33,25 @@ from .utils import AutoWeightsLoader, maybe_prefix, process_eagle_weight
 logger = init_logger(__name__)
 
 
+class DSparkConfidenceHead(nn.Module):
+    """Replicated, unquantized per-position acceptance predictor."""
+
+    def __init__(self, hidden_size: int, markov_rank: int = 0) -> None:
+        super().__init__()
+        self.with_markov = markov_rank > 0
+        self.proj = nn.Linear(hidden_size + markov_rank, 1)
+
+    def forward(
+        self, hidden_states: torch.Tensor, markov_embed: torch.Tensor
+    ) -> torch.Tensor:
+        features = hidden_states
+        if self.with_markov:
+            features = torch.cat(
+                (hidden_states, markov_embed.to(hidden_states.dtype)), dim=-1
+            )
+        return self.proj(features).squeeze(-1).float().sigmoid()
+
+
 class DSparkMarkovHead(nn.Module):
     """Sequential transition-bias head (low-rank V x r, r x V).
 
@@ -90,6 +109,14 @@ class Qwen3DSparkModel(DFlashQwen3Model):
             config.markov_rank,
             prefix=maybe_prefix(prefix, "markov_head"),
         )
+        self.confidence_head = None
+        if getattr(config, "enable_confidence_head", False):
+            rank = (
+                config.markov_rank
+                if getattr(config, "confidence_head_with_markov", True)
+                else 0
+            )
+            self.confidence_head = DSparkConfidenceHead(config.hidden_size, rank)
 
 
 class Qwen3DSparkForCausalLM(DFlashQwen3ForCausalLM):
@@ -146,6 +173,12 @@ class Qwen3DSparkForCausalLM(DFlashQwen3ForCausalLM):
     def markov_bias(self, markov_embed: torch.Tensor) -> torch.Tensor:
         return self.model.markov_head.bias(markov_embed, self.logits_processor)
 
+    def compute_draft_confidence(
+        self, hidden_states: torch.Tensor, markov_embed: torch.Tensor
+    ) -> torch.Tensor:
+        assert self.model.confidence_head is not None
+        return self.model.confidence_head(hidden_states, markov_embed)
+
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]):
         model_weights = {}
         includes_embed_tokens = False
@@ -170,10 +203,11 @@ class Qwen3DSparkForCausalLM(DFlashQwen3ForCausalLM):
             process_eagle_weight(self, name)
 
         # mask_embedding is an unused placeholder param; DSpark masks via the vocab row.
-        # confidence_head is not wired into inference yet; skip its weights.
         # embed_tokens / lm_head are optional; when omitted they are shared from
         # the target by load_dspark_model, so skip the unloaded params here.
-        skip_substrs = ["mask_embedding", "confidence_head"]
+        skip_substrs = ["mask_embedding"]
+        if self.model.confidence_head is None:
+            skip_substrs.append("confidence_head")
         if not includes_embed_tokens:
             skip_substrs.append("embed_tokens")
         if not includes_lm_head:
@@ -181,5 +215,14 @@ class Qwen3DSparkForCausalLM(DFlashQwen3ForCausalLM):
         if not includes_draft_id_mapping:
             skip_substrs.append("draft_id_to_target_id")
         loader = AutoWeightsLoader(self, skip_substrs=skip_substrs)
-        loader.load_weights(model_weights.items())
+        loaded = loader.load_weights(model_weights.items())
+        if self.model.confidence_head is not None:
+            required = {
+                "model.confidence_head.proj.weight",
+                "model.confidence_head.proj.bias",
+            }
+            if missing := required - loaded:
+                raise ValueError(
+                    f"Missing DSpark confidence weights: {sorted(missing)}"
+                )
         self.model._build_fused_kv_buffers()
