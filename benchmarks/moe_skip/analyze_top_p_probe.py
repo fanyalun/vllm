@@ -251,7 +251,7 @@ def report(root, rows, parity):
         "Two unsupported aligned-assignment shapes must raise ValueError.",
         "",
         "The eight-slot invalid-expert representation is restricted to naive "
-        "MoE assignment (4 * tokens * 8 <= number of experts), which includes "
+        "MoE assignment (`4 * tokens * 8 <= number of experts`), which includes "
         "the measured B=1 draft path. An unsorted-slot test exposed incorrect "
         "results in the larger aligned-assignment path; it is now rejected. "
         "See unsupported_alignment_probe.log and post_measurement_guard.patch. "
