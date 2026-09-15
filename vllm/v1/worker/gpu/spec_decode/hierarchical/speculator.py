@@ -36,6 +36,17 @@ def accepted_prefix(draft: torch.Tensor, predictions: torch.Tensor) -> int:
     return int(matches.to(torch.int32).cumprod(0).sum().item())
 
 
+def should_stop_inner(policy, accepted, proposed, margin):
+    if accepted >= proposed or policy == "none":
+        return False
+    threshold = {
+        "low_error": 2.0 if accepted == 0 else 0.25,
+        "balanced": 1.0,
+        "aggressive": 2.0,
+    }[policy]
+    return margin < threshold
+
+
 def refresh_graph_metadata(destination, source):
     """Refresh captured tensor addresses without replacing graph-owned buffers."""
     if isinstance(destination, torch.Tensor):
@@ -60,6 +71,8 @@ class HierarchicalSpeculator(BaseSpeculator):
 
     supports_mm_inputs = False
     draft_logits = None
+    last_logits: torch.Tensor
+    last_margins: torch.Tensor
 
     def __init__(self, vllm_config, device):
         from vllm.v1.worker.gpu.spec_decode import init_speculator
@@ -72,8 +85,18 @@ class HierarchicalSpeculator(BaseSpeculator):
         self.rounds = config.inner_num_rounds
         self.capacity = config.num_speculative_tokens
         scheduler = vllm_config.scheduler_config
-        if scheduler.max_num_seqs != 1:
-            raise ValueError("hierarchical currently requires max_num_seqs=1")
+        self.max_num_reqs = scheduler.max_num_seqs
+        architectures = set(
+            getattr(vllm_config.model_config, "architectures", None) or ()
+        )
+        if self.max_num_reqs > 1 and not (
+            architectures
+            and architectures <= {"Gemma4ForCausalLM", "Gemma4ForConditionalGeneration"}
+            and config.inner_method == "mtp"
+        ):
+            raise ValueError(
+                "hierarchical batching requires Gemma4 MTP; otherwise max_num_seqs=1"
+            )
         if scheduler.async_scheduling:
             raise ValueError("hierarchical currently requires async_scheduling=False")
         if vllm_config.cache_config.enable_prefix_caching:
@@ -104,12 +127,20 @@ class HierarchicalSpeculator(BaseSpeculator):
             preverify_gdn_mode="none",
         )
         self.preverify = MoeSkipSpeculator(self.preverify_config, device)
-        self.buffers = InputBuffers(1, scheduler.max_num_batched_tokens, device)
-        self.draft_tokens = torch.full(
-            (1, self.capacity), -1, dtype=torch.int64, device=device
+        self.buffers = InputBuffers(
+            self.max_num_reqs, scheduler.max_num_batched_tokens, device
         )
-        self.draft_lengths = torch.zeros(1, dtype=torch.int32, device=device)
-        self.last_sampled = torch.zeros((1, 1), dtype=torch.int64, device=device)
+        self.draft_tokens = torch.full(
+            (self.max_num_reqs, self.capacity), -1, dtype=torch.int64, device=device
+        )
+        self._draft_lengths = torch.zeros(
+            self.max_num_reqs, dtype=torch.int32, device=device
+        )
+        self.draft_lengths = self._draft_lengths
+        self.last_sampled = torch.zeros(
+            (self.max_num_reqs, 1), dtype=torch.int64, device=device
+        )
+        self.reset_policy_metrics()
         self.last_trace: list[dict[str, int]] = []
         trace_dir = os.environ.get("VLLM_HIERARCHICAL_TRACE_DIR")
         self.trace_path = Path(trace_dir) / "rounds.jsonl" if trace_dir else None
@@ -124,6 +155,17 @@ class HierarchicalSpeculator(BaseSpeculator):
         self.preverify_graphs = {}
         self.use_preverify_graphs = False
         self.preverify_graph_replays = 0
+
+    def reset_policy_metrics(self):
+        self.policy_metrics = dict(
+            proposals=0,
+            inner_rounds=0,
+            inner_proposed=0,
+            inner_accepted=0,
+            early_stops=0,
+            skipped_rounds=0,
+            batch_round_calls=0,
+        )
 
     def load_model(self, target_model):
         self.preverify.load_model(target_model)
@@ -346,9 +388,10 @@ class HierarchicalSpeculator(BaseSpeculator):
 
     def _verify(self, batch, metadata, slots):
         width = batch.num_tokens
+        key = width if batch.num_reqs == 1 else (batch.num_reqs, width)
         if not self.use_preverify_graphs or self.check_preverify:
             return self._verify_eager(batch, metadata, slots)
-        if width not in self.preverify_graphs:
+        if key not in self.preverify_graphs:
             before = self.state.snapshot()
             for _ in range(3):
                 self._verify_eager(batch, metadata, slots)
@@ -357,14 +400,25 @@ class HierarchicalSpeculator(BaseSpeculator):
             with torch.cuda.graph(graph):
                 output = self._verify_eager(batch, metadata, slots)
             self.state.restore(before)
-            self.preverify_graphs[width] = (graph, output, metadata, slots)
+            self.preverify_graphs[key] = (
+                graph,
+                output,
+                metadata,
+                slots,
+                self.last_logits,
+                self.last_margins,
+            )
             logger.info(
                 "Captured hierarchical pre-verifier CUDA graph: width=%d", width
             )
-        graph, output, captured_metadata, captured_slots = self.preverify_graphs[width]
+        graph, output, captured_metadata, captured_slots, logits, margins = (
+            self.preverify_graphs[key]
+        )
         refresh_graph_metadata(captured_metadata, metadata)
         refresh_graph_metadata(captured_slots, slots)
         graph.replay()
+        self.last_logits = logits
+        self.last_margins = margins
         self.preverify_graph_replays += 1
         return output
 
@@ -402,6 +456,8 @@ class HierarchicalSpeculator(BaseSpeculator):
             hidden, aux = output, None
         logits = self.logits_model.compute_logits(hidden)
         self.last_logits = logits
+        top2 = logits.topk(2, dim=-1).values.float()
+        self.last_margins = top2[:, 0] - top2[:, 1]
         return logits.argmax(-1), hidden, aux
 
     @torch.inference_mode()
@@ -424,6 +480,8 @@ class HierarchicalSpeculator(BaseSpeculator):
         mm_inputs=None,
         is_profile=False,
     ):
+        if hasattr(self, "_draft_lengths"):
+            self.draft_lengths = self._draft_lengths[: input_batch.num_reqs]
         self.draft_tokens.fill_(-1)
         self.draft_lengths.zero_()
         if input_batch.req_ids and all(
@@ -455,6 +513,26 @@ class HierarchicalSpeculator(BaseSpeculator):
             return self.draft_tokens[: input_batch.num_reqs]
         if input_batch.num_reqs == 0:
             return self.draft_tokens[:0]
+        if mm_inputs is not None:
+            raise ValueError("hierarchical supports unstructured text requests only")
+        if getattr(self, "max_num_reqs", 1) > 1:
+            from vllm.v1.worker.gpu.spec_decode.hierarchical.batched import (
+                propose_gemma,
+            )
+
+            return propose_gemma(
+                self,
+                input_batch,
+                attn_metadata,
+                slot_mappings,
+                last_hidden_states,
+                num_sampled,
+                num_rejected,
+                last_sampled,
+                next_prefill_tokens,
+                temperature,
+                seeds,
+            )
         if int(num_sampled[0].item()) == 0:
             return self.draft_tokens
         if input_batch.has_structured_output_reqs or mm_inputs is not None:
@@ -466,6 +544,8 @@ class HierarchicalSpeculator(BaseSpeculator):
         batch, metadata, slots = input_batch, attn_metadata, slot_mappings
         hidden, aux = last_hidden_states, aux_hidden_states
         count = 0
+        if hasattr(self, "policy_metrics"):
+            self.policy_metrics["proposals"] += 1
         self.last_trace = []
         for round_idx in range(self.rounds):
             width = min(
@@ -495,6 +575,11 @@ class HierarchicalSpeculator(BaseSpeculator):
             before = self.state.snapshot() if self.check_preverify else None
             predictions, hidden, aux = self._verify(batch, metadata, slots)
             accepted = accepted_prefix(small_tokens, predictions)
+            margin = (
+                float(self.last_margins[accepted].item())
+                if hasattr(self, "last_margins")
+                else float("inf")
+            )
             if before is not None:
                 batch_logits = self.last_logits.clone()
                 batch_layers = self.layer_outputs.copy()
@@ -560,6 +645,20 @@ class HierarchicalSpeculator(BaseSpeculator):
                 }
             )
             count += emitted
+            if hasattr(self, "policy_metrics"):
+                self.policy_metrics["inner_rounds"] += 1
+                self.policy_metrics["batch_round_calls"] += 1
+                self.policy_metrics["inner_proposed"] += width - 1
+                self.policy_metrics["inner_accepted"] += accepted
+            if round_idx < self.rounds - 1 and should_stop_inner(
+                getattr(self.config, "hierarchical_stop_policy", "none"),
+                accepted,
+                width - 1,
+                margin,
+            ):
+                self.policy_metrics["early_stops"] += 1
+                self.policy_metrics["skipped_rounds"] += self.rounds - round_idx - 1
+                break
             anchor = predictions[accepted : accepted + 1].clone()
             position += emitted
             self.state.advance(accepted)

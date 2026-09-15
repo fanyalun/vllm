@@ -33,6 +33,7 @@ llm = LLM(
         "inner_num_rounds": 4,
         "moe_skip_top_h": 4,
         "draft_sample_method": "greedy",
+        "hierarchical_stop_policy": "low_error",
     },
 )
 outputs = llm.generate("Write a Python quicksort function.", SamplingParams(
@@ -47,10 +48,32 @@ Target model instance and parameters; there is no second MoE checkpoint load.
 For Gemma4 MTP, also set the speculative `model` to the Gemma4 assistant
 checkpoint. Gemma4 DSpark uses its own DSpark checkpoint in the same field.
 
-Supported scope: Qwen3.6 MoE and Gemma4 MoE, TP1/PP1/DP1, one active text request, standard
+Supported scope: Qwen3.6 MoE and Gemma4 MoE, TP1/PP1/DP1, standard
 rejection sampling, greedy small drafter, no prefix caching, LoRA, structured
 outputs, RecoverSSM, expert parallelism, or asynchronous scheduling. Target
 sampling can be greedy or stochastic. Unsupported combinations fail closed.
+Gemma4 MTP supports multiple active text requests; other model/drafter pairs
+still require `max_num_seqs=1`. Batched inner rounds compact requests that stop
+independently. Compacted MTP prefill uses fresh eager attention metadata;
+MTP decode and Pre-Verify retain CUDA Graph support.
+
+### Inner stopping policies
+
+`hierarchical_stop_policy` defaults to `low_error`. Each rule is evaluated only
+after a Draft rejection, retaining the Pre-Verify correction before stopping
+the remaining inner rounds. Let L be the current round's accepted Draft count
+and M the Pre-Verify top-1/top-2 logit margin at its correction position:
+
+| Policy | Stop condition |
+| --- | --- |
+| `low_error` | M<2 when L=0, otherwise M<0.25 |
+| `balanced` | M<1 |
+| `aggressive` | M<2 |
+| `none` | Fixed-round diagnostic control |
+
+These names describe candidate operating points, not guaranteed error rates.
+Target still verifies every emitted candidate. Early stopping changes the
+proposal length, not the authoritative Target rejection sampling rule.
 
 ## Execution and ownership
 

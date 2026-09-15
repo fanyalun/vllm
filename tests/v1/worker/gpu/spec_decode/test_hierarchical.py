@@ -13,9 +13,101 @@ from vllm.v1.worker.gpu.spec_decode.hierarchical.speculator import (
     HierarchicalSpeculator,
     accepted_prefix,
     refresh_graph_metadata,
+    should_stop_inner,
 )
 from vllm.v1.worker.gpu.spec_decode.hierarchical.state import PreverifyState
 from vllm.v1.worker.gpu.spec_decode.utils import DraftTokensHandler
+
+
+@pytest.mark.parametrize(
+    "policy,accepted,margin,expected",
+    [
+        ("low_error", 0, 1.5, True),
+        ("low_error", 0, 2.0, False),
+        ("low_error", 1, 0.25, False),
+        ("low_error", 1, 0.125, True),
+        ("balanced", 2, 0.5, True),
+        ("balanced", 0, 1.0, False),
+        ("aggressive", 3, 1.5, True),
+        ("aggressive", 3, 2.0, False),
+        ("aggressive", 4, 0.0, False),
+        ("none", 0, 0.0, False),
+    ],
+)
+def test_stop_policy_requires_correction_and_uses_strict_margin(
+    policy, accepted, margin, expected
+):
+    assert should_stop_inner(policy, accepted, 4, margin) is expected
+
+
+def test_batched_stop_compacts_survivors_and_preserves_request_mapping(monkeypatch):
+    from vllm.v1.worker.gpu.spec_decode.hierarchical.batched import propose_gemma
+
+    spec = SimpleNamespace(
+        depth=4,
+        rounds=2,
+        device=torch.device("cpu"),
+        config=SimpleNamespace(hierarchical_stop_policy="low_error"),
+        vllm_config=SimpleNamespace(model_config=SimpleNamespace(max_model_len=128)),
+        state=SimpleNamespace(layers={}),
+        draft_tokens=torch.full((3, 10), -1, dtype=torch.int64),
+        draft_lengths=torch.zeros(3, dtype=torch.int32),
+        last_sampled=torch.zeros((3, 1), dtype=torch.int64),
+    )
+    HierarchicalSpeculator.reset_policy_metrics(spec)
+    batch = SimpleNamespace(
+        num_reqs=3,
+        idx_mapping=torch.tensor([2, 0, 1]),
+        seq_lens=torch.tensor([10, 20, 30]),
+        has_structured_output_reqs=False,
+    )
+    calls = []
+
+    def make_batch(spec, original, rows, positions, tokens):
+        calls.append((list(rows), list(positions), tokens.clone()))
+        return SimpleNamespace(idx_mapping=original.idx_mapping[rows]), {}, {}
+
+    monkeypatch.setattr(
+        "vllm.v1.worker.gpu.spec_decode.hierarchical.batched.make_batch", make_batch
+    )
+    spec.small = SimpleNamespace(
+        propose=Mock(
+            side_effect=[torch.tensor([[1, 2, 3, 4]] * 3), torch.tensor([[1, 2, 3, 4]])]
+        )
+    )
+
+    def verify(batch, metadata, slots):
+        n = len(batch.idx_mapping)
+        spec.last_margins = torch.tensor([1.5] * (n * 5))
+        predictions = torch.tensor([[9, 2, 3, 4, 8], [1, 2, 9, 4, 8]])
+        if n == 1:
+            predictions = torch.tensor([[1, 2, 3, 4, 8]])
+        return predictions.flatten(), torch.zeros(n * 5, 2), None
+
+    spec._verify = verify
+    output = propose_gemma(
+        spec,
+        batch,
+        {},
+        {},
+        torch.zeros(3, 2),
+        torch.tensor([1, 1, 0]),
+        torch.zeros(3, dtype=torch.int32),
+        torch.tensor([[10], [20], [30]]),
+        None,
+        torch.zeros(3),
+        torch.zeros(3, dtype=torch.int64),
+    )
+    assert calls[0][0] == [0, 1]
+    assert calls[0][2][:, 0].tolist() == [30, 10]
+    assert calls[1][0] == calls[2][0] == [1]
+    assert calls[2][1] == [23]
+    assert spec.draft_lengths.tolist() == [1, 8, 0]
+    assert output[0, :1].tolist() == [9]
+    assert output[1, :8].tolist() == [1, 2, 9, 1, 2, 3, 4, 8]
+    assert output[2].eq(-1).all()
+    assert spec.policy_metrics["early_stops"] == 1
+    assert spec.policy_metrics["skipped_rounds"] == 1
 
 
 @pytest.mark.parametrize(

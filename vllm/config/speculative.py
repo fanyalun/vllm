@@ -615,6 +615,16 @@ class SpeculativeConfig:
     inner_num_rounds: int = Field(default=4, ge=1)
     """Pre-verification rounds before one target verification."""
 
+    hierarchical_stop_policy: Literal["low_error", "balanced", "aggressive", "none"] = (
+        "low_error"
+    )
+    """Stop after a correction with low Pre-Verify top-1/top-2 margin.
+
+    low_error uses margin<2 if the current inner accepted length is zero,
+    otherwise margin<0.25. balanced uses margin<1; aggressive uses margin<2.
+    none retains the fixed number of rounds. Applies only to hierarchical.
+    """
+
     preverify_method: Literal["moe_skip"] = "moe_skip"
     """Shared-weight intermediate verifier for hierarchical decoding."""
 
@@ -664,6 +674,7 @@ class SpeculativeConfig:
                     self.inner_num_rounds,
                     self.moe_skip_top_h,
                     self.preverify_gdn_mode,
+                    self.hierarchical_stop_policy,
                     inner.compute_hash(),
                 )
             )
