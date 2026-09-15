@@ -18,6 +18,11 @@ def main():
         required=True,
     )
     parser.add_argument("--inner-method", choices=("mtp", "dspark"), default="mtp")
+    parser.add_argument(
+        "--gdn-mode",
+        choices=("none", "ssm_mean", "input_mean", "replay_tail"),
+        default="none",
+    )
     parser.add_argument("--model", default="/data1/fanya/Qwen/Qwen3.6-35B-A3B")
     parser.add_argument(
         "--dspark-model",
@@ -45,6 +50,8 @@ def main():
     parser.add_argument("--trace-dir")
     parser.add_argument("--ssm-dtype", choices=("auto", "float32"), default="float32")
     args = parser.parse_args()
+    if args.gdn_mode != "none" and args.method != "hierarchical":
+        parser.error("--gdn-mode requires --method hierarchical")
     if args.log:
         with open(args.log, "w") as log_file:
             os.dup2(log_file.fileno(), 1)
@@ -80,6 +87,7 @@ def main():
                 inner_method=args.inner_method,
                 inner_num_rounds=4,
                 inner_num_speculative_tokens=4,
+                preverify_gdn_mode=args.gdn_mode,
             )
         if args.method == "dspark" or (
             args.method == "hierarchical" and args.inner_method == "dspark"

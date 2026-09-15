@@ -22,6 +22,7 @@ from benchmarks.hierarchical.disagreement_worker import (
 from benchmarks.hierarchical.measurement_worker import MeasurementWorker
 from benchmarks.hierarchical.summarize_forward_stages import partition
 from benchmarks.hierarchical.summarize_policy_matrix import summarize
+from benchmarks.hierarchical.summarize_replay_tail import summarize as summarize_replay
 
 
 def test_policy_matrix_does_not_certify_partial_requested_coverage(tmp_path):
@@ -37,6 +38,38 @@ def test_policy_matrix_does_not_certify_partial_requested_coverage(tmp_path):
     with pytest.raises(AssertionError):
         summarize(tmp_path)
     assert not (tmp_path / "MATRIX_AUDIT_COMPLETE").exists()
+
+
+def test_replay_tail_audit_rejects_duplicate_cells_despite_complete_marker(tmp_path):
+    (tmp_path / "ar.json").write_text(
+        json.dumps({"outputs": [{"sample_index": 0, "token_ids": [1, 2]}]})
+    )
+    folder = tmp_path / "mtp"
+    folder.mkdir()
+    for name, data in {
+        "measurement_complete.json": {"expected": 6},
+        "contract.json": {
+            "samples": [{}],
+            "max_tokens": 2,
+            "repeats": 1,
+            "cases": ["none", "replay_tail", "gates_only", "tail_only"],
+        },
+        "private_state.json": {},
+        "results.json": [
+            {
+                "case": "none",
+                "phase": "e2e",
+                "repeat": 0,
+                "sample": 0,
+                "token_ids": [1, 2],
+            }
+        ]
+        * 6,
+    }.items():
+        (folder / name).write_text(json.dumps(data))
+    with pytest.raises(AssertionError):
+        summarize_replay(tmp_path)
+    assert not (tmp_path / "summary.json").exists()
 
 
 def test_piecewise_stop_uses_earliest_branch_and_keeps_final_round_exclusion():

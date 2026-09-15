@@ -124,6 +124,62 @@ def test_mean_state_update_matches_one_pooled_write_and_token_queries(tokens, ex
             torch.testing.assert_close(actual, single_output[0], rtol=0.01, atol=0.002)
 
 
+@pytest.mark.parametrize("tokens", [1, 2, 3, 4, 5])
+@pytest.mark.parametrize("extreme", [False, True])
+@torch.inference_mode()
+def test_replay_tail_preserves_causal_outputs_and_overwrites_only_final_state(
+    tokens, extreme
+):
+    from vllm.model_executor.layers.mamba.gdn.replay_tail_update import (
+        replay_tail_update,
+    )
+
+    torch.manual_seed(42)
+    h, hv, dim = 16, 32, 128
+    # Packed views exercise the strides used by the real post-conv Q/K/V path.
+    packed = torch.randn(tokens, 2 * h * dim + hv * dim, device="cuda")
+    q, k, v = packed.split([h * dim, h * dim, hv * dim], -1)
+    q, k, v = q.view(tokens, h, dim), k.view(tokens, h, dim), v.view(tokens, hv, dim)
+    a, b = [torch.randn(1, hv, device="cuda") for _ in range(2)]
+    if extreme:
+        a[:, ::2], a[:, 1::2] = 80, -80
+        b[:, ::2], b[:, 1::2] = -80, 80
+    a_log, dt = [torch.randn(hv, device="cuda") for _ in range(2)]
+    pool = torch.randn(3, hv, dim, dim, device="cuda") * 0.05
+    state = pool[1:2]
+    canaries = pool[[0, 2]].clone()
+    reference = state.clone()
+    query = q * (q.square().sum(-1, keepdim=True) + 1e-6).rsqrt() * dim**-0.5
+    key = k * (k.square().sum(-1, keepdim=True) + 1e-6).rsqrt()
+    query, key = [x.repeat_interleave(hv // h, 1) for x in (query, key)]
+    decay = (-a_log.exp() * torch.nn.functional.softplus(a + dt)).exp()
+    beta = b.sigmoid()
+    for _ in range(4):
+        outputs = []
+        for t in range(tokens):
+            reference *= decay[:, :, None, None]
+            delta = beta[0, :, None] * (
+                v[t] - (reference[0] * key[t, :, None, :]).sum(-1)
+            )
+            reference += delta[None, :, :, None] * key[t, None, :, None, :]
+            outputs.append((reference[0] * query[t, :, None, :]).sum(-1))
+        actual = replay_tail_update(q, k, v, a, b, a_log, dt, state)
+        torch.testing.assert_close(actual, torch.stack(outputs), rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(state, reference, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(pool[[0, 2]], canaries, rtol=0, atol=0)
+    before = state.clone()
+    expected = replay_tail_update(q, k, v, a, b, a_log, dt, state).clone()
+    expected_state = state.clone()
+    state.copy_(before)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = replay_tail_update(q, k, v, a, b, a_log, dt, state)
+    state.copy_(before)
+    graph.replay()
+    torch.testing.assert_close(captured, expected, rtol=0, atol=0)
+    torch.testing.assert_close(state, expected_state, rtol=0, atol=0)
+
+
 class _TestGatedNorm:
     def __init__(self, weight: torch.Tensor, activation: str) -> None:
         self.weight = weight

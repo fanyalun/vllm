@@ -224,7 +224,7 @@ def test_scheduler_receives_only_materialized_candidates():
     handler.copy_event.synchronize.assert_called_once()
 
 
-@pytest.mark.parametrize("mode", ["none", "ssm_mean", "input_mean"])
+@pytest.mark.parametrize("mode", ["none", "ssm_mean", "input_mean", "replay_tail"])
 def test_private_candidates_allocate_required_state_slots(monkeypatch, mode):
     class Layer:
         prefix = "layer"
@@ -257,7 +257,7 @@ def test_attention_only_preverify_does_not_access_recurrent_state():
         assert state.snapshot() == {}
 
 
-@pytest.mark.parametrize("mode", ["ssm_mean", "input_mean"])
+@pytest.mark.parametrize("mode", ["ssm_mean", "input_mean", "replay_tail"])
 @pytest.mark.parametrize("accepted", range(5))
 def test_approximate_state_survives_inner_rejection(monkeypatch, mode, accepted):
     monkeypatch.setattr(
@@ -271,7 +271,7 @@ def test_approximate_state_survives_inner_rejection(monkeypatch, mode, accepted)
     state.caches = {"layer": (conv, temporal)}
     state.advance(accepted)
     assert temporal.item() == 42
-    offset = accepted if mode == "ssm_mean" else 0
+    offset = accepted if mode in ("ssm_mean", "replay_tail") else 0
     torch.testing.assert_close(conv[0, :3, 0], torch.arange(offset, offset + 3) * 2.0)
 
 
@@ -323,7 +323,7 @@ def test_preverify_restores_target_cache_bindings_after_forward_failure():
 
 @pytest.mark.parametrize("accepted", [1, 3, 5])
 @pytest.mark.parametrize("dim_first", [False, True])
-@pytest.mark.parametrize("mode", ["none", "ssm_mean", "input_mean"])
+@pytest.mark.parametrize("mode", ["none", "ssm_mean", "input_mean", "replay_tail"])
 def test_outer_reset_copies_only_target_accepted_state(
     monkeypatch, accepted, dim_first, mode
 ):
