@@ -1,0 +1,13 @@
+{
+  "name": "routing60",
+  "h": 8,
+  "pool": "routing",
+  "model_path": "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+  "dataset": "/home/fanya/vllm/benchmark_results/gemma_round_decay_4x128_20260915/dataset.jsonl",
+  "dataset_sha256": "5fd81da0e4f7e224f5c6ab63cace65beb5b84d5391dd57b6d890006779e14136",
+  "source_sha256": {
+    "run_round_decay.py": "d4b25b3814f7b6648b509d9872c971fd221a59cfa48e2f0998237c7a81978b6d",
+    "run_token_importance.py": "5832a49ef32e578fea4e9ff229940aef8ea68bfbc7e6e69b05863d9525c6a880",
+    "token_importance_worker.py": "11a0ec090a70eff4fc55c0dfa2dea78a35b254a740468014283aa5da1d1f002c"
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "status": "passed",
+  "cells": [
+    {
+      "method": "h4",
+      "matched_requests": 4,
+      "verified_cycles": 46,
+      "unverified_rounds_excluded": 16,
+      "unverified_inner_accepted_excluded": 63
+    },
+    {
+      "method": "h6",
+      "matched_requests": 4,
+      "verified_cycles": 40,
+      "unverified_rounds_excluded": 16,
+      "unverified_inner_accepted_excluded": 64
+    },
+    {
+      "method": "h8",
+      "matched_requests": 4,
+      "verified_cycles": 34,
+      "unverified_rounds_excluded": 16,
+      "unverified_inner_accepted_excluded": 61
+    },
+    {
+      "method": "routing60",
+      "matched_requests": 4,
+      "verified_cycles": 46,
+      "unverified_rounds_excluded": 16,
+      "unverified_inner_accepted_excluded": 63
+    },
+    {
+      "method": "attention60",
+      "matched_requests": 4,
+      "verified_cycles": 44,
+      "unverified_rounds_excluded": 16,
+      "unverified_inner_accepted_excluded": 54
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+[
+  "/home/fanya/vllm/.venv/bin/python",
+  "/home/fanya/vllm/benchmark_results/gemma_round_decay_4x128_20260915/run_token_importance.py",
+  "--cell",
+  "/home/fanya/vllm/benchmark_results/gemma_round_decay_4x128_20260915/h8/config.json"
+]

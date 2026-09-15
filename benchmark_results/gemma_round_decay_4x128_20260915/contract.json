@@ -1,0 +1,41 @@
+{
+  "cells": [
+    {
+      "name": "h4",
+      "h": 4,
+      "pool": "none"
+    },
+    {
+      "name": "h6",
+      "h": 6,
+      "pool": "none"
+    },
+    {
+      "name": "h8",
+      "h": 8,
+      "pool": "none"
+    },
+    {
+      "name": "routing60",
+      "h": 8,
+      "pool": "routing"
+    },
+    {
+      "name": "attention60",
+      "h": 8,
+      "pool": "attention"
+    }
+  ],
+  "source_sha256": {
+    "run_round_decay.py": "d4b25b3814f7b6648b509d9872c971fd221a59cfa48e2f0998237c7a81978b6d",
+    "run_token_importance.py": "5832a49ef32e578fea4e9ff229940aef8ea68bfbc7e6e69b05863d9525c6a880",
+    "token_importance_worker.py": "11a0ec090a70eff4fc55c0dfa2dea78a35b254a740468014283aa5da1d1f002c"
+  },
+  "dataset_sha256": "5fd81da0e4f7e224f5c6ab63cace65beb5b84d5391dd57b6d890006779e14136",
+  "model": "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+  "model_config_sha256": "ed0c1eb3633de771906e9ba004a44cc5635bcc06ee2062077c3d2e88a50707d3",
+  "assistant": "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it-assistant",
+  "assistant_config_sha256": "f393dd4bbdbb1de9bfade9de224493de4e728ba020f9078db8de93cc66a551b2",
+  "gpu": "1",
+  "protocol": "B1 greedy, 4 warmup + 4 measured requests x 128; MTP D4, four rounds, outer capacity20; trace timing is diagnostic only"
+}
