@@ -30,6 +30,7 @@ from vllm.model_executor.layers.linear import (
 )
 from vllm.model_executor.layers.mamba.gdn.base import GatedDeltaNetAttention
 from vllm.model_executor.layers.mamba.gdn.mean_update import mean_state_update
+from vllm.model_executor.layers.mamba.gdn.replay_tail_update import replay_tail_update
 from vllm.model_executor.layers.mamba.mamba_mixer2 import mamba_v2_sharded_weight_loader
 from vllm.model_executor.layers.mamba.mamba_utils import (
     MambaStateShapeCalculator,
@@ -1935,8 +1936,11 @@ def qwen_gdn_mean_forward(
     metadata = context.attn_metadata[layer.prefix]
     assert isinstance(metadata, GDNAttentionMetadata)
     assert metadata.spec_state_indices_tensor is not None
-    if mode not in ("ssm_mean", "input_mean") or layer.gqa_interleaved_layout:
-        raise ValueError("Mean GDN requires Qwen3.5 layout and explicit preverify mode")
+    if (
+        mode not in ("ssm_mean", "input_mean", "replay_tail")
+        or layer.gqa_interleaved_layout
+    ):
+        raise ValueError("Approximate GDN requires Qwen3.5 layout and preverify mode")
     conv, state = layer.kv_cache
     if state.shape[0] != 1 or conv.shape[0] != 1 or metadata.num_spec_decodes != 1:
         raise ValueError("Mean GDN requires private single-request state")
@@ -1948,7 +1952,9 @@ def qwen_gdn_mean_forward(
             hidden_states.float().mean(0, keepdim=True).to(hidden_states.dtype)
         )
     qkvz, _ = layer.in_proj_qkvz(hidden_states)
-    ba, _ = layer.in_proj_ba(hidden_states)
+    ba, _ = layer.in_proj_ba(
+        hidden_states[:1] if mode == "replay_tail" else hidden_states
+    )
     qkv_size = layer.key_dim * 2 + layer.value_dim
     qkv, z = qkvz.split([qkv_size, layer.value_dim], dim=-1)
     b, a = layer.split_ba(ba)
@@ -1962,7 +1968,7 @@ def qwen_gdn_mean_forward(
             layer.activation,
             conv_state_indices=metadata.spec_state_indices_tensor[:, 0],
             num_accepted_tokens=metadata.num_accepted_tokens
-            if mode == "ssm_mean"
+            if mode in ("ssm_mean", "replay_tail")
             else None,
             null_block_id=-1,
             validate_data=False,
@@ -1972,7 +1978,8 @@ def qwen_gdn_mean_forward(
     )
     q, k, v = convolved.split([layer.key_dim, layer.key_dim, layer.value_dim], -1)
     n = hidden_states.shape[0]
-    core = mean_state_update(
+    update = replay_tail_update if mode == "replay_tail" else mean_state_update
+    core = update(
         q.reshape(n, layer.num_k_heads, layer.head_k_dim),
         k.reshape(n, layer.num_k_heads, layer.head_k_dim),
         v.reshape(n, layer.num_v_heads, layer.head_v_dim),

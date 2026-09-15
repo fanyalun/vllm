@@ -18,7 +18,9 @@ def main():
     )
     parser.add_argument("--rounds", type=int, default=0)
     parser.add_argument(
-        "--gdn-mode", choices=["none", "ssm_mean", "input_mean"], default="none"
+        "--gdn-mode",
+        choices=["none", "ssm_mean", "input_mean", "replay_tail"],
+        default="none",
     )
     parser.add_argument("--draft-length", type=int, default=4)
     parser.add_argument("--async-scheduling", action="store_true")
@@ -111,10 +113,16 @@ def main():
             "runtime_diff_sha256": hashlib.sha256(
                 subprocess.check_output(["git", "diff", "HEAD", "--", "vllm"])
             ).hexdigest(),
-            "mean_kernel_sha256": (
+            "gdn_kernel_sha256": (
                 hashlib.sha256(
                     (
-                        root / "vllm/model_executor/layers/mamba/gdn/mean_update.py"
+                        root
+                        / "vllm/model_executor/layers/mamba/gdn"
+                        / (
+                            "replay_tail_update.py"
+                            if args.gdn_mode == "replay_tail"
+                            else "mean_update.py"
+                        )
                     ).read_bytes()
                 ).hexdigest()
                 if args.gdn_mode != "none"

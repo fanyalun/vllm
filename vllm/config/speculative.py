@@ -628,11 +628,14 @@ class SpeculativeConfig:
     preverify_method: Literal["moe_skip"] = "moe_skip"
     """Shared-weight intermediate verifier for hierarchical decoding."""
 
-    preverify_gdn_mode: Literal["none", "ssm_mean", "input_mean"] = "none"
-    """Experimental Qwen preverify mean update, reset from Target each cycle.
+    preverify_gdn_mode: Literal["none", "ssm_mean", "input_mean", "replay_tail"] = (
+        "none"
+    )
+    """Experimental Qwen preverify update, reset from Target each cycle.
 
     ssm_mean pools recurrent writes; input_mean pools the entire GDN input.
-    Both keep one private SSM state and retain it after inner rejection.
+    replay_tail preserves causal updates with first-token gates shared across
+    the window. Approximate modes retain one private SSM state after rejection.
     """
 
     def make_inner_config(self) -> "SpeculativeConfig":
@@ -1641,9 +1644,9 @@ class SpeculativeConfig:
                 "Qwen3_5MoeForCausalLM",
                 "Qwen3_5MoeForConditionalGeneration",
             }:
-                raise ValueError("Mean GDN preverify requires Qwen3.6 MoE")
+                raise ValueError("Approximate GDN preverify requires Qwen3.6 MoE")
             if self.inner_num_speculative_tokens != 4:
-                raise ValueError("Mean GDN preverify currently requires inner D=4")
+                raise ValueError("Approximate GDN preverify requires inner D=4")
         inner = self.make_inner_config()
         self.model = inner.model
         self.draft_model_config = inner.draft_model_config

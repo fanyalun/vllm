@@ -69,6 +69,7 @@ def test_graph_hash_distinguishes_inner_method_depth_rounds_and_top_h(monkeypatc
             {"moe_skip_top_h": 2},
             {"preverify_gdn_mode": "ssm_mean"},
             {"preverify_gdn_mode": "input_mean"},
+            {"preverify_gdn_mode": "replay_tail"},
             {"hierarchical_stop_policy": "balanced"},
             {"hierarchical_stop_policy": "aggressive"},
             {"hierarchical_stop_policy": "none"},
@@ -93,7 +94,7 @@ def test_unsupported_hierarchical_semantics_fail_closed(monkeypatch, kwargs, mes
         make_config(monkeypatch, **kwargs)
 
 
-@pytest.mark.parametrize("mode", ["ssm_mean", "input_mean"])
+@pytest.mark.parametrize("mode", ["ssm_mean", "input_mean", "replay_tail"])
 def test_mean_gdn_rejects_other_models_and_depths(monkeypatch, mode):
     with pytest.raises(ValueError, match="Qwen3.6"):
         make_config(monkeypatch, family="gemma4", preverify_gdn_mode=mode)

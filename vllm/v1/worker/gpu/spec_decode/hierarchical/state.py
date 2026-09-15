@@ -17,7 +17,7 @@ class PreverifyState:
     def __init__(self, model, width: int, device: torch.device, mode="none"):
         self.width = width
         self.mode = mode
-        if mode not in ("none", "ssm_mean", "input_mean"):
+        if mode not in ("none", "ssm_mean", "input_mean", "replay_tail"):
             raise ValueError(f"Unknown preverify GDN mode: {mode}")
         self.layers = {
             layer.prefix: layer
@@ -31,7 +31,7 @@ class PreverifyState:
                 conv_shape = list(shapes[0])
                 axis = 1 if is_conv_state_dim_first() else 0
                 conv_shape[axis] = layer.conv_kernel_size - 1
-                if mode == "ssm_mean":
+                if mode in ("ssm_mean", "replay_tail"):
                     conv_shape[axis] += width
                 shapes[0] = tuple(conv_shape)
             self.caches[name] = tuple(
@@ -89,7 +89,7 @@ class PreverifyState:
         if mode == "input_mean":
             return
         for conv, temporal in self.caches.values():
-            if mode == "ssm_mean":
+            if mode in ("ssm_mean", "replay_tail"):
                 self._copy_conv(conv, conv, accepted_drafts)
                 continue
             self._copy_conv(conv[1:2], conv[1:2], accepted_drafts)
