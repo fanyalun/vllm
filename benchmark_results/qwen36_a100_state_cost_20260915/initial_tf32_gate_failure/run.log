@@ -1,0 +1,30 @@
+1 4 warm {'store_only': 5.12, 'copy': 5.12, 'reconstruct': 6.144}
+1 4 evicted {'store_only': 6.144, 'copy': 7.168, 'reconstruct': 9.216}
+1 8 warm {'store_only': 5.12, 'copy': 5.12, 'reconstruct': 7.168}
+1 8 evicted {'store_only': 5.12, 'copy': 8.192, 'reconstruct': 9.216}
+1 16 warm {'store_only': 5.12, 'copy': 5.12, 'reconstruct': 7.168}
+1 16 evicted {'store_only': 5.12, 'copy': 8.192, 'reconstruct': 9.216}
+1 32 warm {'store_only': 5.12, 'copy': 5.12, 'reconstruct': 7.168}
+1 32 evicted {'store_only': 6.144, 'copy': 8.192, 'reconstruct': 10.24}
+4 4 warm {'store_only': 8.192, 'copy': 9.216, 'reconstruct': 10.24}
+4 4 evicted {'store_only': 9.216, 'copy': 17.408, 'reconstruct': 17.408}
+4 8 warm {'store_only': 8.192, 'copy': 8.192, 'reconstruct': 10.24}
+4 8 evicted {'store_only': 9.216, 'copy': 15.36, 'reconstruct': 16.384}
+4 16 warm {'store_only': 8.192, 'copy': 8.192, 'reconstruct': 11.264}
+4 16 evicted {'store_only': 8.192, 'copy': 16.384, 'reconstruct': 17.408}
+4 32 warm {'store_only': 8.192, 'copy': 9.216, 'reconstruct': 13.312}
+4 32 evicted {'store_only': 8.192, 'copy': 15.36, 'reconstruct': 19.456}
+Traceback (most recent call last):
+  File "/home/fanya/vllm-replayssm-pr47576/benchmarks/replayssm/qwen36_state_cost.py", line 247, in <module>
+    main()
+  File "/home/fanya/vllm-replayssm-pr47576/benchmarks/replayssm/qwen36_state_cost.py", line 243, in main
+    benchmark(Path(args.output))
+  File "/home/fanya/vllm-replayssm-pr47576/benchmarks/replayssm/qwen36_state_cost.py", line 177, in benchmark
+    torch.testing.assert_close(out.double(), oracle, rtol=0.002, atol=0.0002)
+  File "/home/fanya/vllm-replayssm-pr47576/.venv/lib/python3.12/site-packages/torch/testing/_comparison.py", line 1600, in assert_close
+    raise error_metas[0].to_error(msg)
+AssertionError: Tensor-likes are not close!
+
+Mismatched elements: 1 / 4194304 (0.0%)
+Greatest absolute difference: 0.00029120406586219394 at index (0, 10, 82, 65) (up to 0.0002 allowed)
+Greatest relative difference: 0.0093488006225018 at index (0, 10, 82, 65) (up to 0.002 allowed)

@@ -1,0 +1,248 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""Small-sample full-state store, copy and checkpoint-reconstruction comparison."""
+
+import argparse
+import gc
+import hashlib
+import random
+import statistics
+import subprocess
+from pathlib import Path
+
+import torch
+from qwen36_flush_crossover import Inputs, capture, save
+
+from vllm.triton_utils import tl, triton
+
+
+@triton.jit
+def state_store(out, N: tl.constexpr, BLOCK: tl.constexpr):
+    i = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    # Synthetic register values; no source load. Not a model flush kernel.
+    bits = i.to(tl.uint32) * 1664525 + 1013904223
+    bits = bits ^ (bits >> 13)
+    values = ((bits & 0x007FFFFF) | 0x3F800000).to(tl.float32, bitcast=True)
+    tl.store(out + i, values, mask=i < N)
+
+
+@triton.jit
+def state_copy(source, out, N: tl.constexpr, BLOCK: tl.constexpr):
+    i = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    value = tl.load(source + i, mask=i < N, other=0)
+    tl.store(out + i, value, mask=i < N)
+
+
+@triton.jit
+def reconstruct(s0, d, k, g, out, HISTORY: tl.constexpr, BC: tl.constexpr):
+    batch = tl.program_id(0)
+    head = tl.program_id(1)
+    tile = tl.program_id(2)
+    ov = (tile // 4) * 32 + tl.arange(0, 32)
+    ok = (tile % 4) * 32 + tl.arange(0, 32)
+    oh = tl.arange(0, BC)
+    gates = tl.load(
+        g + (batch * 32 + head) * HISTORY + oh, mask=oh < HISTORY, other=0.0
+    )
+    prefix = tl.cumsum(gates, 0)
+    total = tl.sum(gates, 0)
+    decay = tl.where(oh < HISTORY, tl.exp(total - prefix), 0.0)
+    delta = tl.load(
+        d + ((batch * 32 + head) * HISTORY + oh[None, :]) * 128 + ov[:, None],
+        mask=oh[None, :] < HISTORY,
+        other=0.0,
+    )
+    keys = tl.load(
+        k + ((batch * 16 + head // 2) * HISTORY + oh[:, None]) * 128 + ok[None, :],
+        mask=oh[:, None] < HISTORY,
+        other=0.0,
+    )
+    offsets = (batch * 32 + head) * 128 * 128 + ov[:, None] * 128 + ok[None, :]
+    initial = tl.load(s0 + offsets)
+    result = tl.dot(
+        delta.to(tl.float32) * decay[None, :],
+        keys.to(tl.float32),
+        acc=tl.exp(total) * initial,
+        input_precision="tf32x3",
+    )
+    tl.store(out + offsets, result)
+
+
+def benchmark(root):
+    root.mkdir(parents=True, exist_ok=True)
+    source = Path(__file__).read_bytes()
+    (root / "source.py.txt").write_bytes(source)
+    helper = Path(__file__).with_name("qwen36_flush_crossover.py").read_bytes()
+    (root / "input_helper.py.txt").write_bytes(helper)
+    save(
+        root / "environment.json",
+        dict(
+            gpu=subprocess.check_output(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=index,name,uuid,driver_version,memory.total",
+                    "--format=csv",
+                ],
+                text=True,
+            ),
+            source_head=subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], text=True
+            ).strip(),
+            source_sha256=hashlib.sha256(source).hexdigest(),
+            helper_sha256=hashlib.sha256(helper).hexdigest(),
+            batches=[1, 4, 8, 16, 32],
+            histories=[4, 8, 16, 32],
+            seed=0,
+            repeats=7,
+            state_shape_per_request=[32, 128, 128],
+            state_dtype="float32",
+            history_dk_dtype="float16",
+            history_g_dtype="float32",
+            dot_precision="tf32x3",
+            history_tile="max(16,next_pow2(h))",
+            output_includes_final_state_store=True,
+            store_reference=(
+                "synthetic register pattern stores; no input load; not a full flush"
+            ),
+            copy_reference=(
+                "read existing current state and write it to a second buffer"
+            ),
+            cold_protocol=(
+                "write 256 MiB unrelated buffer before each timed launch; "
+                "not hardware-counter verified"
+            ),
+            hot_protocol=(
+                "after eviction, replay graph three times before timed launch"
+            ),
+        ),
+    )
+    # Eviction is outside the timed interval; no privileged profiler is required.
+    eviction = torch.empty(256 * 1024 * 1024 // 4, device="cuda", dtype=torch.float32)
+    clear_graph = capture(
+        lambda: state_store[(triton.cdiv(eviction.numel(), 1024),)](
+            eviction, eviction.numel(), 1024, num_warps=4
+        )
+    )
+    results = []
+    for batch in (1, 4, 8, 16, 32):
+        x = Inputs(batch, 0, 0)
+        current = x.states[32][1:].contiguous()
+        out = torch.empty_like(current)
+        count = current.numel()
+
+        def store_call(out=out, count=count):
+            state_store[(triton.cdiv(count, 1024),)](out, count, 1024, num_warps=4)
+
+        def copy_call(current=current, out=out, count=count):
+            state_copy[(triton.cdiv(count, 1024),)](
+                current, out, count, 1024, num_warps=4
+            )
+
+        for h in (4, 8, 16, 32):
+            initial = x.states[32 - h][1:].contiguous()
+            d = x.history_d[1:, :, 32 - h : 32].contiguous()
+            k = x.history_k[1:, :, 32 - h : 32].contiguous()
+            g = x.history_g[1:, :, 32 - h : 32].contiguous()
+
+            def replay_call(initial=initial, d=d, k=k, g=g, out=out, h=h, batch=batch):
+                reconstruct[(batch, 32, 16)](
+                    initial,
+                    d,
+                    k,
+                    g,
+                    out,
+                    h,
+                    max(16, triton.next_power_of_2(h)),
+                    num_warps=4,
+                )
+
+            graphs = {
+                name: capture(fn)
+                for name, fn in (
+                    ("store_only", store_call),
+                    ("copy", copy_call),
+                    ("reconstruct", replay_call),
+                )
+            }
+            replay_call()
+            torch.testing.assert_close(out, current, rtol=0.02, atol=0.002)
+            maximum_error = (out - current).abs().max().item()
+            # Independent FP64 reference from the exact cached FP16 vectors.
+            gd = g.double()
+            weights = (gd.sum(-1, keepdim=True) - gd.cumsum(-1)).exp()
+            expanded_k = k.double().repeat_interleave(2, dim=1)
+            oracle = initial.double() * gd.sum(-1).exp()[..., None, None]
+            oracle += torch.einsum(
+                "bhiv,bhik->bhvk", d.double() * weights[..., None], expanded_k
+            )
+            torch.testing.assert_close(out.double(), oracle, rtol=0.002, atol=0.0002)
+            oracle_error = (out.double() - oracle).abs().max().item()
+            copy_call()
+            torch.testing.assert_close(out, current, rtol=0, atol=0)
+            store_call()
+            assert (
+                out.isfinite().all().item()
+                and (out >= 1).all().item()
+                and (out < 2).all().item()
+            )
+            for cache in ("warm", "evicted"):
+                values = {name: [] for name in graphs}
+                for repeat in range(7):
+                    names = list(graphs)
+                    random.Random(batch * 1000 + h * 10 + repeat).shuffle(names)
+                    for name in names:
+                        graph = graphs[name]
+                        start = torch.Event(device="cuda", enable_timing=True)
+                        end = torch.Event(device="cuda", enable_timing=True)
+                        clear_graph.replay()
+                        if cache == "warm":
+                            for _ in range(3):
+                                graph.replay()
+                        start.record()
+                        graph.replay()
+                        end.record()
+                        end.synchronize()
+                        values[name].append(start.elapsed_time(end) * 1000)
+                row = dict(
+                    batch=batch,
+                    history=h,
+                    cache=cache,
+                    us=values,
+                    state_bytes=count * 4,
+                    correctness=True,
+                    max_abs_error=maximum_error,
+                    fp64_oracle_max_abs_error=oracle_error,
+                )
+                results.append(row)
+                save(root / "raw.json", results)
+                print(
+                    batch,
+                    h,
+                    cache,
+                    {k: round(statistics.median(v), 3) for k, v in values.items()},
+                    flush=True,
+                )
+            del graphs, initial, d, k, g, gd, weights, expanded_k, oracle
+        del x, current, out
+        gc.collect()
+    save(
+        root / "measurement_complete.json",
+        dict(
+            points=40,
+            repetitions=7,
+            timed_values=840,
+            correctness=True,
+            figures_validated=False,
+        ),
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+    benchmark(Path(args.output))
+
+
+if __name__ == "__main__":
+    main()

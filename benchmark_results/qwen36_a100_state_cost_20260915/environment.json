@@ -1,0 +1,36 @@
+{
+  "gpu": "index, name, uuid, driver_version, memory.total [MiB]\n0, NVIDIA A100 80GB PCIe, GPU-92c316af-729a-d2b2-87e6-f49f1ee62b4a, 580.95.05, 81920 MiB\n1, NVIDIA A100 80GB PCIe, GPU-c7954c39-6588-4e28-8636-b460b8346ef8, 580.95.05, 81920 MiB\n",
+  "source_head": "63d523955d417c6533715d25aa13dde5918d584c",
+  "source_sha256": "d4219acef8f43e3ec1e550fa1bea28bf014ac4e800c1399a2236b3fed1ccd3ed",
+  "helper_sha256": "862360f33216aeda58d131116338c7f5442ec5ee7907f7d83206d321172478ed",
+  "batches": [
+    1,
+    4,
+    8,
+    16,
+    32
+  ],
+  "histories": [
+    4,
+    8,
+    16,
+    32
+  ],
+  "seed": 0,
+  "repeats": 7,
+  "state_shape_per_request": [
+    32,
+    128,
+    128
+  ],
+  "state_dtype": "float32",
+  "history_dk_dtype": "float16",
+  "history_g_dtype": "float32",
+  "dot_precision": "tf32x3",
+  "history_tile": "max(16,next_pow2(h))",
+  "output_includes_final_state_store": true,
+  "store_reference": "synthetic register pattern stores; no input load; not a full flush",
+  "copy_reference": "read existing current state and write it to a second buffer",
+  "cold_protocol": "write 256 MiB unrelated buffer before each timed launch; not hardware-counter verified",
+  "hot_protocol": "after eviction, replay graph three times before timed launch"
+}

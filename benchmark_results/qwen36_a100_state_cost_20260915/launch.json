@@ -1,0 +1,11 @@
+{
+  "command": [
+    ".venv/bin/python",
+    "benchmarks/replayssm/qwen36_state_cost.py",
+    "--output",
+    "benchmark_results/qwen36_a100_state_cost_20260915"
+  ],
+  "env": {
+    "CUDA_VISIBLE_DEVICES": "0"
+  }
+}
