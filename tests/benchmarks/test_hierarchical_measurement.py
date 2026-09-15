@@ -11,8 +11,38 @@ from benchmarks.hierarchical.analyze_failure import round_survival
 from benchmarks.hierarchical.analyze_forward_kernels import map_graph
 from benchmarks.hierarchical.analyze_gdn_mean import steady_cycles
 from benchmarks.hierarchical.cycle_worker import CycleWorker, pair_cycles
+from benchmarks.hierarchical.disagreement_worker import (
+    distribution_pair,
+    rejection_outcome,
+)
 from benchmarks.hierarchical.measurement_worker import MeasurementWorker
 from benchmarks.hierarchical.summarize_forward_stages import partition
+
+
+def test_distribution_comparison_preserves_shift_invariance_and_mutual_ranks():
+    left = torch.tensor([3.0, 2.5, -1.0])
+    same = distribution_pair(left, left + 100)
+    assert same["js_nats"] == pytest.approx(0, abs=1e-12)
+    assert same["tv"] == pytest.approx(0, abs=1e-12)
+    flipped = distribution_pair(left, torch.tensor([2.5, 3.0, -1.0]))
+    assert flipped["left"]["other_top1_rank"] == 2
+    assert flipped["right"]["other_top1_rank"] == 2
+    assert 0 < flipped["js_nats"] < 0.7
+    assert flipped["left"]["other_top1_logit_gap"] == 0.5
+
+
+def test_inner_rejection_outcomes_exclude_unreached_and_count_suffix_after_correction():
+    earlier = rejection_outcome(5, 1, 3, 10)
+    assert not earlier["target_reached"]
+    assert earlier["correction_accepted"] is None
+    assert earlier["suffix_accepted"] is None
+    rejected = rejection_outcome(5, 1, 6, 10)
+    assert rejected["target_reached"]
+    assert rejected["correction_accepted"] is False
+    corrected = rejection_outcome(5, 1, 9, 10)
+    assert corrected["correction_accepted"] is True
+    assert corrected["suffix_scheduled"] == 3
+    assert corrected["suffix_accepted"] == 2
 
 
 def test_cycle_yield_counts_only_tokens_returned_before_output_limit():
