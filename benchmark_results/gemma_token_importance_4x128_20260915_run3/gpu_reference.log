@@ -1,0 +1,2 @@
+WARNING 09-15 02:49:57 [fused_moe.py:1167] Using default MoE config. Performance might be sub-optimal! Config file not found at /home/fanya/vllm/vllm/model_executor/layers/fused_moe/configs/E=128,N=32,device_name=NVIDIA_A100_80GB_PCIe.json
+{"attention_cases": 24, "expert_cases": 8, "status": "passed", "cuda_graph": "passed"}

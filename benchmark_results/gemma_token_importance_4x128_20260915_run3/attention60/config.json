@@ -1,0 +1,12 @@
+{
+  "name": "attention60",
+  "pool": "attention",
+  "h": 8,
+  "model_path": "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+  "dataset": "/home/fanya/vllm/benchmark_results/gemma_token_importance_4x128_20260915_run3/dataset.jsonl",
+  "dataset_sha256": "5fd81da0e4f7e224f5c6ab63cace65beb5b84d5391dd57b6d890006779e14136",
+  "source_sha256": {
+    "run_token_importance.py": "5832a49ef32e578fea4e9ff229940aef8ea68bfbc7e6e69b05863d9525c6a880",
+    "token_importance_worker.py": "11a0ec090a70eff4fc55c0dfa2dea78a35b254a740468014283aa5da1d1f002c"
+  }
+}

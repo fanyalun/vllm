@@ -1,0 +1,122 @@
+{
+  "measurement_contract": "passed",
+  "cells": 7,
+  "timing": [
+    {
+      "method": "attention60",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "method": "ar_start",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "method": "routing60",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "method": "h4",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "method": "h6",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "method": "h8",
+      "post_warmup_jit_warnings": []
+    },
+    {
+      "method": "ar_end",
+      "post_warmup_jit_warnings": []
+    }
+  ],
+  "parity": [
+    {
+      "method": "attention60",
+      "reference": "ar_start",
+      "exact_matches": 0,
+      "requests": 4
+    },
+    {
+      "method": "attention60",
+      "reference": "h8",
+      "exact_matches": 0,
+      "requests": 4
+    },
+    {
+      "method": "ar_start",
+      "reference": "ar_start",
+      "exact_matches": 4,
+      "requests": 4
+    },
+    {
+      "method": "ar_start",
+      "reference": "h8",
+      "exact_matches": 0,
+      "requests": 4
+    },
+    {
+      "method": "routing60",
+      "reference": "ar_start",
+      "exact_matches": 0,
+      "requests": 4
+    },
+    {
+      "method": "routing60",
+      "reference": "h8",
+      "exact_matches": 1,
+      "requests": 4
+    },
+    {
+      "method": "h4",
+      "reference": "ar_start",
+      "exact_matches": 0,
+      "requests": 4
+    },
+    {
+      "method": "h4",
+      "reference": "h8",
+      "exact_matches": 0,
+      "requests": 4
+    },
+    {
+      "method": "h6",
+      "reference": "ar_start",
+      "exact_matches": 0,
+      "requests": 4
+    },
+    {
+      "method": "h6",
+      "reference": "h8",
+      "exact_matches": 1,
+      "requests": 4
+    },
+    {
+      "method": "h8",
+      "reference": "ar_start",
+      "exact_matches": 0,
+      "requests": 4
+    },
+    {
+      "method": "h8",
+      "reference": "h8",
+      "exact_matches": 4,
+      "requests": 4
+    },
+    {
+      "method": "ar_end",
+      "reference": "ar_start",
+      "exact_matches": 0,
+      "requests": 4
+    },
+    {
+      "method": "ar_end",
+      "reference": "h8",
+      "exact_matches": 1,
+      "requests": 4
+    }
+  ],
+  "strict_output_parity": "failed",
+  "jit_gate": "passed"
+}
