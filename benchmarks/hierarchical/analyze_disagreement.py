@@ -125,11 +125,13 @@ def main():
             row = json.loads(text)
             row["line"] = line
             groups[row["request_id"]].append(row)
-        assert len(groups) == len(result["outputs"]) == 4
+        assert len(groups) == len(result["outputs"]) == len(dataset)
         for sample, ((req, cycles), output) in enumerate(
             zip(groups.items(), result["outputs"], strict=True)
         ):
-            assert int(req.split("-")[0]) == sample + 4
+            assert int(req.split("-")[0]) == sample + contract.get(
+                "warmup_requests", len(dataset)
+            )
             assert output["prompt_sha256"] == dataset[sample]["prompt_sha256"]
             assert [r["outer_accepted"] for r in cycles] == output[
                 "spec_decode_metrics"

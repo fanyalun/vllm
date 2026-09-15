@@ -18,6 +18,7 @@ def worker(path):
     config = json.loads(path.read_text())
     samples = [json.loads(s) for s in Path(config["dataset"]).read_text().splitlines()]
     assert digest(Path(config["dataset"])) == config["dataset_sha256"]
+    assert config["h"] == 4 and samples
     llm = LLM(
         model=MODEL,
         tensor_parallel_size=1,
@@ -42,30 +43,54 @@ def worker(path):
         per_request_spec_decode_metrics="detailed",
         disable_log_stats=True,
         seed=0,
-        worker_extension_cls="disagreement_worker.DisagreementWorker",
+        worker_extension_cls=config.get(
+            "worker_extension_cls", "disagreement_worker.DisagreementWorker"
+        ),
     )
     params = SamplingParams(temperature=0, max_tokens=128, ignore_eos=True, seed=0)
     for sample in samples:
         llm.generate([sample["prompt"]], params, use_tqdm=False)
-    llm.collective_rpc("begin_disagreement", args=(str(path.parent / "trace"),))
     print("WARMUP_COMPLETE", flush=True)
-    outputs = []
-    for sample in samples:
-        result = llm.generate([sample["prompt"]], params, use_tqdm=False)[0]
-        assert len(result.outputs[0].token_ids) == 128
-        assert len(result.prompt_token_ids) == sample["prompt_token_count"]
-        outputs.append(
-            {
-                "category": sample["category"],
-                "prompt_sha256": sample["prompt_sha256"],
-                "token_ids": list(result.outputs[0].token_ids),
-                "spec_decode_metrics": result.outputs[0].spec_decode_metrics.to_dict(),
-            }
+
+    def generate(directory):
+        outputs = []
+        for sample in samples:
+            result = llm.generate([sample["prompt"]], params, use_tqdm=False)[0]
+            assert len(result.outputs[0].token_ids) == 128
+            assert len(result.prompt_token_ids) == sample["prompt_token_count"]
+            outputs.append(
+                {
+                    "category": sample["category"],
+                    "prompt_sha256": sample["prompt_sha256"],
+                    "token_ids": list(result.outputs[0].token_ids),
+                    "spec_decode_metrics": result.outputs[
+                        0
+                    ].spec_decode_metrics.to_dict(),
+                }
+            )
+            write_json(directory / "progress.json", outputs)
+            print(
+                f"{directory.name} SAMPLE_COMPLETE {len(outputs)}/{len(samples)}",
+                flush=True,
+            )
+        return outputs
+
+    if config.get("confidence_only"):
+        control = path.parent.parent / "h4_control"
+        control.mkdir(exist_ok=False)
+        reference = generate(control)
+        write_json(
+            control / "result.json",
+            {**config, "instrumented": False, "outputs": reference},
         )
-        write_json(path.parent / "progress.json", outputs)
-        print(f"SAMPLE_COMPLETE {len(outputs)}/4", flush=True)
+        (control / "CELL_COMPLETE").write_text(f"{len(samples)}x128 uninstrumented\n")
+    rpc = "begin_confidence" if config.get("confidence_only") else "begin_disagreement"
+    llm.collective_rpc(rpc, args=(str(path.parent / "trace"),))
+    outputs = generate(path.parent)
     write_json(path.parent / "result.json", {**config, "outputs": outputs})
-    (path.parent / "CELL_COMPLETE").write_text("4x128; distribution audit pending\n")
+    (path.parent / "CELL_COMPLETE").write_text(
+        f"{len(samples)}x128; distribution audit pending\n"
+    )
 
 
 def main():
@@ -73,6 +98,8 @@ def main():
     parser.add_argument("root", type=Path, nargs="?")
     parser.add_argument("--gpu", default="0")
     parser.add_argument("--cell", type=Path)
+    parser.add_argument("--dataset", type=Path)
+    parser.add_argument("--confidence-only", action="store_true")
     args = parser.parse_args()
     if args.cell:
         worker(args.cell)
@@ -80,13 +107,20 @@ def main():
     root = args.root.resolve()
     root.mkdir(exist_ok=False)
     prior = ROOT / "benchmark_results/gemma_round_decay_4x128_20260915"
-    (root / "dataset.jsonl").write_bytes((prior / "dataset.jsonl").read_bytes())
+    dataset = args.dataset or prior / "dataset.jsonl"
+    (root / "dataset.jsonl").write_bytes(dataset.read_bytes())
+    hypotheses = dataset.with_name("hypotheses.json")
+    if hypotheses.exists():
+        (root / "hypotheses.json").write_bytes(hypotheses.read_bytes())
+    num_samples = len(dataset.read_text().splitlines())
     sources = {}
     for name in (
         "run_disagreement.py",
         "disagreement_worker.py",
         "run_token_importance.py",
         "analyze_disagreement.py",
+        "confidence_worker.py",
+        "analyze_confidence.py",
     ):
         source = Path(__file__).parent / name
         (root / name).write_bytes(source.read_bytes())
@@ -105,8 +139,13 @@ def main():
             "source_sha256": sources,
             "runtime_sha256": runtime,
             "dataset_sha256": digest(root / "dataset.jsonl"),
+            "warmup_requests": num_samples * (2 if args.confidence_only else 1),
+            "warmup_only_requests": num_samples,
+            "in_process_control_requests": num_samples if args.confidence_only else 0,
+            "measured_requests": num_samples,
+            "confidence_only": args.confidence_only,
             "protocol": "Gemma B1 TP1 greedy MTP D4 N4; "
-            "4 warmup + 4 measured x128; h4 and h4 control",
+            f"{num_samples} warmup + {num_samples} measured x128; h4 and h4 control",
             "probability_temperature": 1,
             "near_definition": "mutual top2 and both opposing-top1 logit gaps <= 1 nat",
             "far_definition": "either opposing-top1 rank > 8 or logit gap > 2 nats",
@@ -116,6 +155,11 @@ def main():
     )
     (root / "git_head.txt").write_bytes(
         subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT)
+    )
+    (root / "gpu.txt").write_bytes(
+        subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=index,name,uuid,driver_version", "--format=csv"]
+        )
     )
     env = os.environ.copy()
     for key in list(env):
@@ -142,10 +186,12 @@ def main():
         + os.pathsep
         + env.get("PYTHONPATH", ""),
     )
-    for name, h, trace in (
-        ("h4_control", 4, False),
-        ("h4", 4, True),
-    ):
+    cells = (
+        [("h4", 4, True)]
+        if args.confidence_only
+        else [("h4_control", 4, False), ("h4", 4, True)]
+    )
+    for name, h, trace in cells:
         folder = root / name
         folder.mkdir()
         config = {
@@ -153,10 +199,13 @@ def main():
             "instrumented": trace,
             "dataset": str(root / "dataset.jsonl"),
             "dataset_sha256": digest(root / "dataset.jsonl"),
+            "confidence_only": args.confidence_only,
         }
         write_json(folder / "config.json", config)
         env["VLLM_HIERARCHICAL_TRACE_DIR"] = str(folder / "trace")
-        env["HIERARCHICAL_DISAGREEMENT"] = "1" if trace else "0"
+        env["HIERARCHICAL_DISAGREEMENT"] = (
+            "1" if trace and not args.confidence_only else "0"
+        )
         command = [
             sys.executable,
             str(Path(__file__).resolve()),

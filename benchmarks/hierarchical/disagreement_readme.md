@@ -88,3 +88,26 @@ unresolved. Descriptive association, an independently tested predictor, and a
 measured early-stop speedup are separate results.
 
 AI assistance was used.
+
+## Confidence-only held-out validation
+
+Use `--dataset <dataset.jsonl> --confidence-only` to test new h4 prompts with
+Pre-Verify confidence capture. Each request still generates 128 tokens. A sibling
+`hypotheses.json` is copied with the dataset when present.
+
+This mode warms up the model, runs the uninstrumented control, then installs a
+CPU-reading hook through RPC in the same engine. It reads existing logits after
+graph replay without modifying Draft sampling or captured CUDA graphs. The
+analysis requires exact output and per-step counter parity with that control.
+
+```bash
+.venv/bin/python benchmarks/hierarchical/run_disagreement.py <fresh_directory> \
+  --gpu 1 --dataset <dataset.jsonl> --confidence-only
+.venv/bin/python benchmarks/hierarchical/analyze_confidence.py \
+  <pilot_directory> <fresh_directory>
+```
+
+The confidence analyzer checks disjoint prompt identities, fixed thresholds,
+token-source rejection rates, correction margin groups, request-cluster bootstrap
+intervals, and first-trigger stopping rules on the original trajectories. Offline
+suffix cuts are not measured speedups or guarantees about shortened Target calls.

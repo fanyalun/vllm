@@ -57,6 +57,14 @@ def rejection_outcome(offset, local_accepted, outer_accepted, scheduled):
 
 
 class DisagreementWorker:
+    def begin_confidence(self, directory):
+        from confidence_worker import install
+
+        if not getattr(self, "confidence_capture_installed", False):
+            install()
+            self.confidence_capture_installed = True
+        self.begin_disagreement(directory)
+
     def begin_disagreement(self, directory):
         spec = self.model_runner.speculator
         spec.disagreement_directory = Path(directory)

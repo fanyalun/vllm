@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 import torch
 
+from benchmarks.hierarchical.analyze_confidence import auc, policy_trigger
 from benchmarks.hierarchical.analyze_failure import round_survival
 from benchmarks.hierarchical.analyze_forward_kernels import map_graph
 from benchmarks.hierarchical.analyze_gdn_mean import steady_cycles
@@ -17,6 +18,31 @@ from benchmarks.hierarchical.disagreement_worker import (
 )
 from benchmarks.hierarchical.measurement_worker import MeasurementWorker
 from benchmarks.hierarchical.summarize_forward_stages import partition
+
+
+def test_confidence_policy_uses_first_strict_threshold_and_excludes_final_round():
+    rounds = [
+        {"accepted": 1, "proposed": 4, "draft_preverify": {"right": {"margin": gap}}}
+        for gap in (0.5, 0.25, 0.0, 0.0)
+    ]
+    assert policy_trigger(rounds, "correction_margin_lt0.5") is rounds[1]
+    assert policy_trigger(rounds, "inner_accept_le1") is rounds[0]
+    assert policy_trigger(rounds[-1:], "correction_margin_lt0.5") is None
+    minimal = [
+        {"accepted": 1, "proposed": 4, "correction_margin": gap}
+        for gap in (0.5, 0.25, 0.0, 0.0)
+    ]
+    assert policy_trigger(minimal, "correction_margin_lt0.5") is minimal[1]
+
+
+def test_confidence_auc_counts_ties_as_half_without_inventing_missing_classes():
+    rows = [
+        {"margin": 2.0, "accepted": True},
+        {"margin": 1.0, "accepted": True},
+        {"margin": 1.0, "accepted": False},
+    ]
+    assert auc(rows) == 0.75
+    assert auc(rows[:2]) is None
 
 
 def test_distribution_comparison_preserves_shift_invariance_and_mutual_ranks():
