@@ -1,0 +1,35 @@
+{
+  "source_head": "008ecc3720f22c75c8105a288fd1480a197ecef4",
+  "sources": {
+    "qwen36_ar_buffer_cost.py": "03c12c2756ff7dac7940c465ace43ba79486fddb61020e490b928a13b294c87f",
+    "qwen36_flush_crossover.py": "862360f33216aeda58d131116338c7f5442ec5ee7907f7d83206d321172478ed",
+    "qwen36_state_cost.py": "d4219acef8f43e3ec1e550fa1bea28bf014ac4e800c1399a2236b3fed1ccd3ed",
+    "qwen36_ar_no_state_write.py": "50221ccbb87b9d72c36ae668a5a9ce3c63bbed7cb44b932c739ae6a54a32a302"
+  },
+  "batch": [
+    1,
+    4,
+    8,
+    16,
+    32
+  ],
+  "buffer_size": [
+    4,
+    8,
+    16,
+    32
+  ],
+  "checkpoint_to_output_distance": "h",
+  "cached_history": "h-1",
+  "current_token_count": 1,
+  "state_dtype": "float32",
+  "cache_dk_dtype": "float16",
+  "cache_g_dtype": "float32",
+  "input_dtype": "bfloat16",
+  "repeats": 7,
+  "seed": 0,
+  "kernel_configuration": "production defaults; benchmark forces non-flush",
+  "full_state_writeback": false,
+  "history_cache_writes": true,
+  "gpu": "index, name, uuid, driver_version\n0, NVIDIA A100 80GB PCIe, GPU-92c316af-729a-d2b2-87e6-f49f1ee62b4a, 580.95.05\n1, NVIDIA A100 80GB PCIe, GPU-c7954c39-6588-4e28-8636-b460b8346ef8, 580.95.05\n"
+}

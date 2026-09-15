@@ -1,0 +1,7 @@
+{
+  "kernel_ast_only_change": "b_is_flush=False",
+  "png_checked": true,
+  "pdf_render_checked": true,
+  "pdf_info": "Creator:         Matplotlib v3.11.1, https://matplotlib.org\nProducer:        Matplotlib pdf backend v3.11.1\nCreationDate:    Tue Sep 15 05:02:46 2026 UTC\nCustom Metadata: no\nMetadata Stream: no\nTagged:          no\nUserProperties:  no\nSuspects:        no\nForm:            none\nJavaScript:      no\nPages:           1\nEncrypted:       no\nPage size:       980.4 x 470.9 pts\nPage rot:        0\nFile size:       17954 bytes\nOptimized:       no\nPDF version:     1.4\n",
+  "pdf_fonts": "name                                 type              encoding         emb sub uni object ID\n------------------------------------ ----------------- ---------------- --- --- --- ---------\nFPCFTA+STIXGeneral-Regular           CID TrueType      Identity-H       yes yes yes     25  0\nFHSVDR+STIXGeneral-Regular           CID TrueType      Identity-H       yes yes yes     32  0\n"
+}

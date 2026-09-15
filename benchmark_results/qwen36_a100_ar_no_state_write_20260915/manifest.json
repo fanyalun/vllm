@@ -1,0 +1,17 @@
+{
+  "ar_buffer_cost/ar_buffer_cost.md": "e2dd3e38b1f9447db0f4317a5a9efb1f33ffe5db03dbdbbe78c0387fb05aa4ce",
+  "ar_buffer_cost/ar_buffer_cost.pdf": "48288959088bb319d7f70d3bea179ef5ee15c414f341cb208001a8d8bad76a93",
+  "ar_buffer_cost/ar_buffer_cost.png": "4a7c5d808732e5036f6bc444dd718c52101dadd868c5ef289f7d97174d350a90",
+  "environment.json": "7ce6acfdd04d8e83023d178b38cd1196f70574eaebec8bed707fa373573d2d19",
+  "lint.log": "014475a241f615f114ff388d07026a71c4a3b93e91233130fc9f5bbb0fb6863f",
+  "measurement_complete.json": "e6bcf836d6a08f944a6cd565df67b2efb7221fb5548e69a9987cf8820f2cd7b8",
+  "qwen36_ar_buffer_cost.py.txt": "03c12c2756ff7dac7940c465ace43ba79486fddb61020e490b928a13b294c87f",
+  "qwen36_ar_no_state_write.py.txt": "50221ccbb87b9d72c36ae668a5a9ce3c63bbed7cb44b932c739ae6a54a32a302",
+  "qwen36_flush_crossover.py.txt": "862360f33216aeda58d131116338c7f5442ec5ee7907f7d83206d321172478ed",
+  "qwen36_state_cost.py.txt": "d4219acef8f43e3ec1e550fa1bea28bf014ac4e800c1399a2236b3fed1ccd3ed",
+  "raw.json": "a7556d4c536d9a8291362548d5d6e86e5aa59b356e5cc23df58a62bb42cc0b7b",
+  "readme.md": "3280ad6a6119ed74afe51a48173db62e61ca47d4e658bc67ababbe273b337d2d",
+  "run.log": "714ae21a917ba4e10c00622712d86d7b7ee851a361d1ac09c14b72e2a147fd5c",
+  "summary.csv": "40d6a44b6d6add376d568d880f4532f7ac5b39d69e07ffc7ccf14a6d79a661a7",
+  "validation.json": "be35d62feb2586f96287cf7a2aaedc8d52b8255d8e78e0d50c1b96c8436ed0c4"
+}
