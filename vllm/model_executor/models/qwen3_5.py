@@ -519,6 +519,7 @@ class Qwen3_5ForConditionalGeneration(Qwen3VLForConditionalGeneration, IsHybrid)
                 vllm_config.model_config.dtype,
                 vllm_config.cache_config.mamba_cache_dtype,
                 vllm_config.cache_config.mamba_ssm_cache_dtype,
+                dual_checkpoint=vllm_config.cache_config.replayssm_spec_dual_checkpoint,
             )
         elif vllm_config.cache_config.use_replayssm:
             return MambaStateDtypeCalculator.gated_delta_net_replayssm_state_dtype(
@@ -554,6 +555,7 @@ class Qwen3_5ForConditionalGeneration(Qwen3VLForConditionalGeneration, IsHybrid)
                 hf_config.linear_conv_kernel_dim,
                 vllm_config.cache_config.replayssm_buffer_len,
                 num_spec,
+                dual_checkpoint=vllm_config.cache_config.replayssm_spec_dual_checkpoint,
             )
         elif vllm_config.cache_config.use_replayssm:
             return MambaStateShapeCalculator.gated_delta_net_replayssm_state_shape(

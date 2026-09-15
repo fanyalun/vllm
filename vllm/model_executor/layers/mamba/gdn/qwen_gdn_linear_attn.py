@@ -432,6 +432,7 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 self.conv_kernel_size,
                 self.cache_config.replayssm_buffer_len,
                 self.num_spec,
+                dual_checkpoint=self.cache_config.replayssm_spec_dual_checkpoint,
             )
         elif self.cache_config.use_replayssm:
             return MambaStateShapeCalculator.gated_delta_net_replayssm_state_shape(
@@ -1512,8 +1513,8 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             # Cached circular spec verify: reuse the post-conv packed
             # ``mixed_qkv_spec`` (q|k|v) + raw ``a``/``b`` (read per-request via
             # spec_query_start_loc, same as the baseline kernel). The d/k/g ring
-            # caches + fp32 checkpoint live in the grown 5-tuple page; cursors
-            # are block-keyed in the metadata.
+            # caches + fp32 checkpoint live in the page, with an optional
+            # second checkpoint. Cursors are block-keyed in the metadata.
             from vllm.model_executor.layers.fla.ops.gdn_replayssm_spec_decode import (
                 gdn_replayssm_spec_decode,
             )
@@ -1555,6 +1556,17 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 max_spec_len=self.max_spec_len,
                 scale=self.head_k_dim**-0.5,
                 use_qk_l2norm_in_kernel=True,
+                alternate_checkpoint=(
+                    self_kv_cache[5]
+                    if self.cache_config.replayssm_spec_dual_checkpoint
+                    else None
+                ),
+                head_slot=attn_metadata.spec_head_slot_d,
+                hard_cap=(
+                    self.max_cache_len
+                    if self.cache_config.replayssm_spec_dual_checkpoint
+                    else None
+                ),
             )
             core_attn_out_spec = cs_out.unsqueeze(0)
             last_recurrent_state = None

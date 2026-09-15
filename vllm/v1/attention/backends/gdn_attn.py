@@ -76,6 +76,7 @@ class GDNAttentionMetadata:
     spec_write_pos_d: torch.Tensor | None = None
     spec_cache_base_d: torch.Tensor | None = None
     spec_is_flush_d: torch.Tensor | None = None
+    spec_head_slot_d: torch.Tensor | None = None
 
     # Pre-computed FLA chunk metadata (avoids GPU->CPU sync in prepare_chunk_indices)
     chunk_indices: torch.Tensor | None = None
@@ -196,6 +197,9 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
         self.max_spec_len: int = 1 + self.num_spec
         # L = B + max_spec_len history window; physical pow2 ring = next_pow2(L).
         self.spec_flush_threshold = self.max_cache_len + self.max_spec_len
+        self.dual_checkpoint = vllm_config.cache_config.replayssm_spec_dual_checkpoint
+        if self.dual_checkpoint:
+            self.spec_flush_threshold = self.max_cache_len
         self.spec_flush_interval = (
             vllm_config.cache_config.replayssm_spec_flush_interval
         )
@@ -204,6 +208,8 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
         self.spec_write_pos: torch.Tensor | None = None
         self.spec_cache_base: torch.Tensor | None = None
         self.spec_is_flush: torch.Tensor | None = None
+        self.spec_head_slot: torch.Tensor | None = None
+        self.spec_previous_len: torch.Tensor | None = None
 
     def build(  # type: ignore[override]
         self,
@@ -280,7 +286,9 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                 split_decodes_and_prefills(
                     m,
                     decode_threshold=1,
-                    treat_short_extends_as_decodes=not self.use_cached_kernel,
+                    treat_short_extends_as_decodes=not (
+                        self.use_cached_kernel or self.dual_checkpoint
+                    ),
                 )
             )
             num_spec_decode_tokens = 0
@@ -554,23 +562,28 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                 self.spec_is_flush = torch.zeros(
                     n_blocks, dtype=torch.int8, device=self.cursor_device
                 )
+                if self.dual_checkpoint:
+                    self.spec_head_slot = torch.zeros_like(self.spec_write_pos)
+                    self.spec_previous_len = torch.zeros_like(self.spec_write_pos)
             sbi = spec_state_indices_tensor[:, 0]
-            commit_gdn_replayssm_spec(
-                self.spec_write_pos,
-                self.spec_cache_base,
-                self.spec_is_flush,
-                num_accepted_tokens.to(torch.int32),
-                sbi,
-                max_cache_len=self.spec_flush_threshold,
-                max_spec_len=self.max_spec_len,
-                cache_buf_len=self.spec_cache_buf_len,
-                flush_interval=self.spec_flush_interval,
-            )
+            if not self.dual_checkpoint:
+                commit_gdn_replayssm_spec(
+                    self.spec_write_pos,
+                    self.spec_cache_base,
+                    self.spec_is_flush,
+                    num_accepted_tokens.to(torch.int32),
+                    sbi,
+                    max_cache_len=self.spec_flush_threshold,
+                    max_spec_len=self.max_spec_len,
+                    cache_buf_len=self.spec_cache_buf_len,
+                    flush_interval=self.spec_flush_interval,
+                )
             # prefill->decode reset for first-decode rows (cursors only; conv
             # context lives in conv_state). A request's first spec verify has
             # num_computed_tokens == num_prompt_tokens; that resets its (possibly
             # recycled) block's cursors to write_pos=0.
             num_prompt_tokens_cpu = m.num_prompt_tokens_cpu
+            first_decode_d = None
             if num_prompt_tokens_cpu is not None:
                 num_prompt_d = num_prompt_tokens_cpu.to(
                     context_lens_tensor.device, non_blocking=True
@@ -580,18 +593,58 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                     query_start_loc.device, non_blocking=True
                 )
                 first_decode_d = first_decode_full.index_select(0, spec_row_idx)
-                reset_gdn_replayssm_spec_cursors(
+                if not self.dual_checkpoint:
+                    reset_gdn_replayssm_spec_cursors(
+                        self.spec_write_pos,
+                        self.spec_cache_base,
+                        self.spec_is_flush,
+                        first_decode_d,
+                        sbi,
+                        max_cache_len=self.spec_flush_threshold,
+                        max_spec_len=self.max_spec_len,
+                    )
+            if self.dual_checkpoint:
+                from vllm.model_executor.layers.fla.ops.gdn_replayssm_dual_checkpoint import (  # noqa: E501
+                    commit_gdn_dual_checkpoint,
+                )
+
+                assert spec_query_start_loc is not None
+                assert self.spec_head_slot is not None
+                assert self.spec_previous_len is not None
+                if first_decode_d is None:
+                    first_decode_d = torch.zeros_like(sbi, dtype=torch.int8)
+                commit_gdn_dual_checkpoint(
                     self.spec_write_pos,
                     self.spec_cache_base,
                     self.spec_is_flush,
-                    first_decode_d,
+                    self.spec_head_slot,
+                    self.spec_previous_len,
+                    num_accepted_tokens.to(torch.int32),
                     sbi,
-                    max_cache_len=self.spec_flush_threshold,
-                    max_spec_len=self.max_spec_len,
+                    spec_query_start_loc,
+                    first_decode_d,
+                    self.max_cache_len,
                 )
             spec_write_pos_d = self.spec_write_pos
             spec_cache_base_d = self.spec_cache_base
             spec_is_flush_d = self.spec_is_flush
+
+        if self.dual_checkpoint and self.spec_head_slot is not None and num_prefills:
+            from vllm.model_executor.layers.fla.ops.gdn_replayssm_dual_checkpoint import (  # noqa: E501
+                reset_gdn_dual_checkpoint,
+            )
+
+            assert prefill_state_indices is not None
+            assert prefill_query_start_loc is not None
+            reset_gdn_dual_checkpoint(
+                self.spec_write_pos,
+                self.spec_cache_base,
+                self.spec_is_flush,
+                self.spec_head_slot,
+                self.spec_previous_len,
+                prefill_state_indices,
+                prefill_query_start_loc,
+            )
 
         # Prepare per-request tensors for cudagraph. m.num_actual_tokens is
         # token-padded for FULL graph replay, but the GDN state/query/accepted
@@ -701,6 +754,7 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             spec_write_pos_d=spec_write_pos_d,
             spec_cache_base_d=spec_cache_base_d,
             spec_is_flush_d=spec_is_flush_d,
+            spec_head_slot_d=self.spec_head_slot,
             nums_dict=nums_dict,
             batch_ptr=batch_ptr,
             token_chunk_offset_ptr=token_chunk_offset_ptr,

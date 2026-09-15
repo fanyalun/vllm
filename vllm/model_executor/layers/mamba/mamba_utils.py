@@ -181,12 +181,14 @@ class MambaStateDtypeCalculator:
         model_dtype: ModelDType | torch.dtype,
         mamba_cache_dtype: MambaDType,
         mamba_ssm_cache_dtype: MambaDType,
+        dual_checkpoint: bool = False,
     ) -> tuple[torch.dtype, ...]:
         """GDN ReplaySSM state dtypes for the SPECULATIVE-decode kernel.
 
         The ``ssm`` checkpoint is forced to ``float32``; the ``d``/``k`` ring
         caches use fp16 for bf16 activations (same rule as the non-spec path).
         Call only when use_replayssm_spec is on.
+        Dual checkpoint appends a second fp32 state.
         """
         conv_dtype, ssm_dtype = cls._mamba_state_dtype(
             model_dtype, mamba_cache_dtype, mamba_ssm_cache_dtype
@@ -195,13 +197,14 @@ class MambaStateDtypeCalculator:
         cache_dtype = (
             torch.float16 if activation_dtype == torch.bfloat16 else activation_dtype
         )
-        return (
+        dtypes = (
             conv_dtype,
             torch.float32,  # fp32 checkpoint
             cache_dtype,  # d_cache
             cache_dtype,  # k_cache
             torch.float32,  # g_cache
         )
+        return (*dtypes, torch.float32) if dual_checkpoint else dtypes
 
     @classmethod
     def kda_state_dtype(
@@ -467,6 +470,7 @@ class MambaStateShapeCalculator:
         conv_kernel_size: int,
         replayssm_buffer_len: int,
         num_spec: int = 0,
+        dual_checkpoint: bool = False,
     ) -> tuple[tuple[int, ...], ...]:
         """GDN ReplaySSM state shapes for the SPECULATIVE-decode kernel.
 
@@ -474,6 +478,8 @@ class MambaStateShapeCalculator:
         history window: a power-of-two buffer ``next_pow2(replayssm_buffer_len + 1 +
         num_spec)``. Call only when use_replayssm_spec is on. The block-keyed
         cursors live in the GDN metadata builder, not the page.
+        Dual checkpoint uses next_pow2(replayssm_buffer_len) ring entries and
+        appends a second temporal state with the same shape as the first.
         """
         conv_state_shape, temporal_state_shape = cls.gated_delta_net_state_shape(
             tp_world_size,
@@ -484,19 +490,25 @@ class MambaStateShapeCalculator:
             conv_kernel_size,
             num_spec,
         )
-        cache_buf_len = 1 << (replayssm_buffer_len + num_spec).bit_length()
+        logical_len = (
+            replayssm_buffer_len
+            if dual_checkpoint
+            else replayssm_buffer_len + 1 + num_spec
+        )
+        cache_buf_len = 1 << (logical_len - 1).bit_length()
         local_v_heads = divide(num_v_heads, tp_world_size)
         local_k_heads = divide(num_k_heads, tp_world_size)
         d_cache_shape = (local_v_heads, cache_buf_len, head_v_dim)
         k_cache_shape = (local_k_heads, cache_buf_len, head_k_dim)
         g_cache_shape = (local_v_heads, cache_buf_len)
-        return (
+        shapes = (
             conv_state_shape,
             temporal_state_shape,
             d_cache_shape,
             k_cache_shape,
             g_cache_shape,
         )
+        return (*shapes, temporal_state_shape) if dual_checkpoint else shapes
 
     @classmethod
     def kda_state_shape(

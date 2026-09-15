@@ -28,6 +28,8 @@ def gdn_replayssm_spec_circular_kernel(
     write_pos,  # [num_slots] int32  block-keyed
     cache_base,  # [num_slots] int32  block-keyed circular origin
     is_flush_flags,  # [num_slots] int8  block-keyed
+    alternate_checkpoint,
+    head_slot,
     scale,
     stride_mqkv_t: tl.constexpr,  # per-token stride of mixed_qkv
     stride_a_t: tl.constexpr,
@@ -55,6 +57,7 @@ def gdn_replayssm_spec_circular_kernel(
     IS_FLUSH: tl.constexpr,
     NULL_BLOCK_ID: tl.constexpr,
     DOT_PRECISION: tl.constexpr,
+    DUAL_CHECKPOINT: tl.constexpr,
 ):
     i_v = tl.program_id(0)
     i_n = tl.program_id(1)
@@ -76,7 +79,18 @@ def gdn_replayssm_spec_circular_kernel(
     # output pointer (packed): token (bos + o_s), value-head i_hv, dim o_v
     p_o = o + (bos + o_s[:, None]) * stride_o_t + i_hv * V + o_v[None, :]
 
-    if IS_FLUSH:
+    if DUAL_CHECKPOINT:
+        if state_idx <= NULL_BLOCK_ID or spec_len == 0:
+            full_mask = (o_s < spec_len)[:, None] & mask_v[None, :]
+            tl.store(p_o, tl.zeros([BS, BV], tl.float32), full_mask)
+            return
+        b_is_flush = tl.load(is_flush_flags + state_idx) != 0
+        selected = tl.load(head_slot + state_idx)
+        ht = alternate_checkpoint
+        if selected != 0:
+            ht = h0
+            h0 = alternate_checkpoint
+    elif IS_FLUSH:
         if state_idx <= NULL_BLOCK_ID:
             return
         b_is_flush = tl.load(is_flush_flags + state_idx) != 0
@@ -97,6 +111,13 @@ def gdn_replayssm_spec_circular_kernel(
 
     b_write_pos = tl.load(write_pos + state_idx).to(tl.int64)
     b_cache_base = tl.load(cache_base + state_idx).to(tl.int32)
+    if DUAL_CHECKPOINT:
+        b_cache_base = tl.where(
+            b_is_flush,
+            (b_cache_base + b_write_pos) & (MAX_CACHE_LEN - 1),
+            b_cache_base,
+        ).to(tl.int32)
+        b_write_pos = tl.where(b_is_flush, 0, b_write_pos)
 
     mask_s = o_s < spec_len
     out_mask = mask_s[:, None] & mask_v[None, :]
@@ -321,6 +342,62 @@ def gdn_replayssm_spec_circular_kernel(
         Tj = tl.sum(tl.where((o_s == j)[None, :], T_mat, 0.0), axis=1)
         D_spec += Rj[:, None] * Tj[None, :]
 
+    if DUAL_CHECKPOINT:
+        final_g = tl.sum(g_s, axis=0)
+        d_tail = D_spec * tl.where(mask_s, tl.exp(final_g - G_s), 0.0)[None, :]
+        for kk in range(NK):
+            o_kt = kk * BKT + tl.arange(0, BKT)
+            mask_kt = o_kt < K
+            state_offset = (
+                state_idx * stride_state_slot
+                + i_hv * V * K
+                + o_v[:, None] * K
+                + o_kt[None, :]
+            )
+            sc = tl.load(h0 + state_offset, mask_v[:, None] & mask_kt[None, :], 0.0).to(
+                tl.float32
+            )
+            khist = tl.load(
+                k_cache
+                + state_idx * stride_k_slot
+                + (i_h * MAX_CACHE_LEN + phys_c[:, None]) * K
+                + o_kt[None, :],
+                cache_valid[:, None] & mask_kt[None, :],
+                0.0,
+            ).to(tl.float32)
+            start = tl.dot(
+                b_d_scaled,
+                khist,
+                acc=b_total_decay * sc,
+                input_precision=DOT_PRECISION,
+            )
+            keys = (
+                tl.load(
+                    mixed_qkv
+                    + (bos + o_s[:, None]) * stride_mqkv_t
+                    + H * K
+                    + i_h * K
+                    + o_kt[None, :],
+                    mask_s[:, None] & mask_kt[None, :],
+                    0.0,
+                ).to(tl.float32)
+                * k_rnorm[:, None]
+            )
+            if BS >= 16:
+                tail = tl.dot(
+                    d_tail,
+                    keys,
+                    acc=tl.exp(final_g) * start,
+                    input_precision=DOT_PRECISION,
+                )
+            else:
+                tail = tl.exp(final_g) * start
+                for j in tl.static_range(BS):
+                    dj = tl.sum(tl.where((o_s == j)[None, :], d_tail, 0.0), 1)
+                    kj = tl.sum(tl.where((o_s == j)[:, None], keys, 0.0), 0)
+                    tail += dj[:, None] * kj[None, :]
+            tl.store(ht + state_offset, tail, mask_v[:, None] & mask_kt[None, :])
+
     # ------------------------------------------------------------------
     # outputs.
     # ------------------------------------------------------------------
@@ -470,6 +547,8 @@ def _launch_gdn_spec(
     nk,
     null_block_id,
     dot_precision,
+    alternate_checkpoint=None,
+    head_slot=None,
 ):
     num_slots, HV, V, K = checkpoint_state.shape
     qkv_dim = mixed_qkv.shape[1]
@@ -495,6 +574,8 @@ def _launch_gdn_spec(
     # committed history never exceeds L - max_spec_len, so BC covers it while
     # staying small (the L=B+T win).
     BC = max(16, triton.next_power_of_2(max(1, max_cache_len - max_spec_len)))
+    if alternate_checkpoint is not None:
+        BC = max(16, buf)
 
     grid = (triton.cdiv(V, BV), B, HV)
     gdn_replayssm_spec_circular_kernel[grid](
@@ -514,6 +595,8 @@ def _launch_gdn_spec(
         write_pos,
         cache_base,
         is_flush,
+        alternate_checkpoint,
+        head_slot,
         scale,
         mixed_qkv.stride(0),
         a.stride(0),
@@ -541,6 +624,7 @@ def _launch_gdn_spec(
         IS_FLUSH=is_flush_kernel,
         NULL_BLOCK_ID=null_block_id,
         DOT_PRECISION=dot_precision,
+        DUAL_CHECKPOINT=alternate_checkpoint is not None,
         num_warps=num_warps,
         num_stages=num_stages,
     )
@@ -570,6 +654,9 @@ def gdn_replayssm_spec_decode(
     launch_mode: str = "both",
     dot_precision: str = "tf32",
     dot_precision_flush: str | None = None,
+    alternate_checkpoint: torch.Tensor | None = None,
+    head_slot: torch.Tensor | None = None,
+    hard_cap: int | None = None,
 ):
     """GDN cached speculative-decode on a CIRCULAR d/k/g cache (vLLM packed varlen).
 
@@ -578,6 +665,11 @@ def gdn_replayssm_spec_decode(
     block ``BC = next_pow2(L - max_spec_len)``. Two launches (verify + flush
     ``IS_FLUSH`` specializations) with device-side per-row routing keep the step
     CUDA-graph capturable. Cursors are advanced by ``commit_gdn_replayssm_spec``.
+
+    With ``alternate_checkpoint``, ``head_slot`` selects the committed state;
+    the other state receives the candidate tail. A separate flush launch runs
+    before verify when history plus the actual window exceeds ``hard_cap``.
+    Cursors are then managed by ``commit_gdn_dual_checkpoint`` instead.
     """
     if scale is None:
         scale = checkpoint_state.shape[-1] ** -0.5
@@ -585,6 +677,30 @@ def gdn_replayssm_spec_decode(
         is_flush = is_flush.to(torch.int8)
     if dot_precision_flush is None:
         dot_precision_flush = dot_precision
+    if alternate_checkpoint is not None:
+        from .gdn_replayssm_dual_checkpoint import flush_gdn_dual_checkpoint
+
+        assert head_slot is not None and hard_cap is not None
+        assert hard_cap >= max_spec_len
+        assert d_cache.shape[2] == triton.next_power_of_2(hard_cap)
+        assert alternate_checkpoint.shape == checkpoint_state.shape
+        assert alternate_checkpoint.stride() == checkpoint_state.stride()
+        if launch_mode != "both":
+            raise ValueError("dual checkpoint requires launch_mode='both'")
+        flush_gdn_dual_checkpoint(
+            checkpoint_state,
+            alternate_checkpoint,
+            d_cache,
+            k_cache,
+            g_cache,
+            ssm_state_indices,
+            write_pos,
+            cache_base,
+            is_flush,
+            head_slot,
+            dot_precision_flush,
+        )
+        max_cache_len = hard_cap
     vb, vw, vnk, vns = get_replayssm_config(
         "gdn_spec_verify",
         max_spec_len=max_spec_len,
@@ -595,6 +711,9 @@ def gdn_replayssm_spec_decode(
         max_spec_len=max_spec_len,
         head_k_dim=checkpoint_state.shape[-1],
     )
+    if alternate_checkpoint is not None:
+        # Tail reconstruction keeps a state tile live in addition to verify.
+        vb, vw = 32, 4
 
     if launch_mode in ("both", "verify"):
         _launch_gdn_spec(
@@ -624,8 +743,10 @@ def gdn_replayssm_spec_decode(
             vnk,
             null_block_id,
             dot_precision,
+            alternate_checkpoint,
+            head_slot,
         )
-    if launch_mode in ("both", "flush"):
+    if alternate_checkpoint is None and launch_mode in ("both", "flush"):
         _launch_gdn_spec(
             mixed_qkv,
             a,

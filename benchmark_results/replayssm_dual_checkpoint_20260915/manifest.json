@@ -1,0 +1,25 @@
+{
+  "timestamp_utc": "2026-09-15T07:35:06.557956+00:00",
+  "base_commit": "e5de48043041ca382bf1488e6689b17bfaedec3d",
+  "branch": "feat/replayssm-dual-checkpoint",
+  "python": "/home/fanya/vllm-replayssm-pr47576/.venv/bin/python",
+  "source_sha256": {
+    "benchmarks/replayssm/dual_checkpoint_kernel.py": "80c3607a0b22e239203d102437cd51b00a9f480a526f0a98871e376cf978fb64",
+    "benchmarks/replayssm/dual_checkpoint_smoke.py": "994ab7b5ea68c743bab6d3d83fe78f482d8eb8256fea46a91226311e428795cb",
+    "docs/design/replayssm_dual_checkpoint.md": "d98fd9daa09d58a4d9ca43674637a1449b5f02708b3bee0fe029e84c088c53f5",
+    "tests/config/test_replayssm_dual_checkpoint.py": "cedab1cd8311b9dcb1a11518a99315c846bea42d20d792d2ae3ddb082a92dc50",
+    "tests/kernels/test_replayssm_dual_checkpoint_gdn.py": "6292ec3403814112f4edb1b6baa2699d51729a90e3c08ae6a988857a01fd66da",
+    "tests/v1/worker/test_gdn_dual_checkpoint_metadata.py": "45c9de3816f8e524f096517a63ae410aba12ddfbc2d52bd7855e5865a8b48032",
+    "vllm/config/cache.py": "16a23ce6b8c1e0812e1950e5d9f59a18556cd719ef820db563ffb339edb7511b",
+    "vllm/config/vllm.py": "93fdee8f52134772f8c13af2fdcaa2bcc467bb507ea1af20caab705d3144f49a",
+    "vllm/engine/arg_utils.py": "5633c911fc3583813a7c4cd5701bba85891be40bcd901e183ce9c5029b8bf792",
+    "vllm/model_executor/layers/fla/ops/gdn_replayssm_dual_checkpoint.py": "8233a2dc5d95ff37a5002d19ded4b0324307db413ef2ab075c84db4f7e25c783",
+    "vllm/model_executor/layers/fla/ops/gdn_replayssm_spec_decode.py": "0d99552628256f72dccafae13aea9e53dff85404497b96091b190dde3e8b96ab",
+    "vllm/model_executor/layers/mamba/gdn/base.py": "9a87c99d4bf21912ec0c28ec6fc347d10acb9896c3d997b938dbc00171958af9",
+    "vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py": "cf0ab6763720c9114b2bb98b5258a29356fbf04c9e678822ca51aab3b30e5f69",
+    "vllm/model_executor/layers/mamba/mamba_utils.py": "fc61fb340f6f84d909c9fd0ca5c2c90e9dd85d16622904c552727162088a5b4e",
+    "vllm/model_executor/models/qwen3_5.py": "5341d108d7e32fc11efeec1d975c3eea9ed98aa247ae6662b409f6aab7b8a3f5",
+    "vllm/v1/attention/backends/gdn_attn.py": "696cba267e7d98ba8fba6568603cc23e3d328483678d4d39faa70def0d7a54c2",
+    "vllm/v1/worker/gpu/model_states/mamba_hybrid.py": "e5463e15869e48f57b890bdd73505dc69ba9a07a1ff91d7cd28469fa99871367"
+  }
+}

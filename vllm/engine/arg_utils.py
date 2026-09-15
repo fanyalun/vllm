@@ -695,6 +695,7 @@ class EngineArgs:
     use_replayssm: bool = CacheConfig.use_replayssm
     replayssm_route: ReplaySSMRoute = CacheConfig.replayssm_route
     use_replayssm_spec: bool = CacheConfig.use_replayssm_spec
+    replayssm_spec_dual_checkpoint: bool = CacheConfig.replayssm_spec_dual_checkpoint
 
     mamba_backend: MambaBackendEnum = MambaBackendEnum.TRITON
     enable_mamba_cache_stochastic_rounding: bool = (
@@ -1210,6 +1211,10 @@ class EngineArgs:
         cache_group.add_argument(
             "--use-replayssm-spec",
             **cache_kwargs["use_replayssm_spec"],
+        )
+        cache_group.add_argument(
+            "--replayssm-spec-dual-checkpoint",
+            **cache_kwargs["replayssm_spec_dual_checkpoint"],
         )
         cache_group.add_argument(
             "--kv-offloading-size", **cache_kwargs["kv_offloading_size"]
@@ -1911,6 +1916,7 @@ class EngineArgs:
             use_replayssm=self.use_replayssm,
             replayssm_route=self.replayssm_route,
             use_replayssm_spec=self.use_replayssm_spec,
+            replayssm_spec_dual_checkpoint=self.replayssm_spec_dual_checkpoint,
             kv_offloading_size=self.kv_offloading_size,
             kv_offloading_backend=self.kv_offloading_backend,
         )

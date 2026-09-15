@@ -145,11 +145,18 @@ class CacheConfig:
     """ReplaySSM history block B. Autoregressive decode (use_replayssm) flushes
     the checkpoint every B steps. Speculative decode (use_replayssm_spec) keeps a
     L = B + 1 + num_speculative_tokens history window (usable committed history
-    B - 1 - num_speculative_tokens) in a power-of-two next_pow2(L) ring buffer."""
+    B - 1 - num_speculative_tokens) in a power-of-two next_pow2(L) ring buffer.
+    With replayssm_spec_dual_checkpoint, B instead limits history plus the
+    actual verify length, and the physical ring has next_pow2(B) entries."""
     replayssm_spec_flush_interval: int | None = Field(default=None, gt=0)
     """Optional GDN speculative early-flush interval in committed tokens.
     Preserves the allocated history buffer and the existing overflow guard.
     None retains the default flush policy."""
+    replayssm_spec_dual_checkpoint: bool = False
+    """Keep a candidate tail checkpoint for Qwen GDN speculative decode.
+    When enabled, replayssm_buffer_len is the hard limit on committed history
+    plus the actual verification window, and full acceptance promotes the tail.
+    """
     use_replayssm: bool = False
     """Use the ReplaySSM Mamba2 decode kernel (cache recent SSM inputs instead
     of writing the recurrent state back to HBM each step). Only supported for
@@ -267,6 +274,16 @@ class CacheConfig:
 
     @model_validator(mode="after")
     def _validate_spec_flush_interval(self) -> "CacheConfig":
+        if self.replayssm_spec_dual_checkpoint:
+            if not self.use_replayssm_spec:
+                raise ValueError(
+                    "replayssm_spec_dual_checkpoint requires use_replayssm_spec"
+                )
+            if self.replayssm_spec_flush_interval is not None:
+                raise ValueError(
+                    "replayssm_spec_dual_checkpoint cannot be combined with "
+                    "replayssm_spec_flush_interval"
+                )
         if (
             self.replayssm_spec_flush_interval is not None
             and not self.use_replayssm_spec

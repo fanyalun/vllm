@@ -2236,6 +2236,19 @@ class VllmConfig:
     def validate_mamba_cached_spec_kernel(self) -> "VllmConfig":
         if not self.cache_config.use_replayssm_spec:
             return self
+        if self.cache_config.replayssm_spec_dual_checkpoint and (
+            self.model_config is None
+            or self.model_config.hf_text_config.model_type
+            not in (
+                "qwen3_5_text",
+                "qwen3_5_moe_text",
+                "qwen3_6_text",
+                "qwen3_6_moe_text",
+            )
+        ):
+            raise ValueError(
+                "replayssm_spec_dual_checkpoint requires a Qwen3.5/3.6 GDN model"
+            )
         if self.cache_config.replayssm_spec_flush_interval is not None and (
             self.model_config is None
             or not hasattr(self.model_config.hf_text_config, "linear_key_head_dim")

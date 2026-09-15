@@ -36,13 +36,21 @@ class MambaHybridAttnMetadata(ModelSpecificAttnMetadata):
     is_prefilling: torch.Tensor
     num_accepted_tokens: torch.Tensor | None = None
     num_decode_draft_tokens_cpu: torch.Tensor | None = None
+    num_prompt_tokens_cpu: torch.Tensor | None = None
 
     def get_extra_common_attn_kwargs(
         self,
         kv_cache_group_id: int,
         num_reqs: int,
     ) -> dict[str, Any]:
-        return {"is_prefilling": self.is_prefilling[:num_reqs]}
+        return {
+            "is_prefilling": self.is_prefilling[:num_reqs],
+            "num_prompt_tokens_cpu": (
+                self.num_prompt_tokens_cpu[:num_reqs]
+                if self.num_prompt_tokens_cpu is not None
+                else None
+            ),
+        }
 
     def get_extra_attn_kwargs(
         self,
@@ -79,6 +87,11 @@ class MambaHybridModelState(DefaultModelState):
         self.num_accepted_tokens_gpu = torch.ones(
             self.max_num_reqs, dtype=torch.int32, device=self.device
         )
+        self._dual_checkpoint = self.cache_config.replayssm_spec_dual_checkpoint
+        if self._dual_checkpoint:
+            self._replayssm_prefill_lens = torch.zeros(
+                self.max_num_reqs, dtype=torch.int32
+            )
         # Pre-copy "align" prefix-cache state (V2). The migration of each
         # request's mamba state across block boundaries runs as a fused GPU
         # kernel reusing the postprocess copy machinery, so the per-step src
@@ -100,6 +113,12 @@ class MambaHybridModelState(DefaultModelState):
 
     def add_request(self, req_index: int, new_req_data: NewRequestData) -> None:
         super().add_request(req_index, new_req_data)
+        if self._dual_checkpoint:
+            assert new_req_data.prefill_token_ids is not None
+            # Resumed requests may recompute generated tokens as part of prefill.
+            self._replayssm_prefill_lens[req_index] = len(
+                new_req_data.prefill_token_ids
+            )
         if self._align_mode:
             # Seed the running state block from the resumed/prefilled position.
             self._mamba_state_idx_gpu[req_index] = (
@@ -263,10 +282,17 @@ class MambaHybridModelState(DefaultModelState):
                 )
             num_decode_draft_tokens_cpu = torch.from_numpy(num_decode_draft_tokens_np)
 
+        num_prompt_tokens_cpu = None
+        if self._dual_checkpoint and not for_capture:
+            num_prompt_tokens_cpu = torch.zeros(num_reqs, dtype=torch.int32)
+            num_prompt_tokens_cpu[: input_batch.num_reqs] = (
+                self._replayssm_prefill_lens[input_batch.idx_mapping_np]
+            )
         mamba_attn_metadata = MambaHybridAttnMetadata(
             is_prefilling=is_prefilling,
             num_accepted_tokens=num_accepted_tokens,
             num_decode_draft_tokens_cpu=num_decode_draft_tokens_cpu,
+            num_prompt_tokens_cpu=num_prompt_tokens_cpu,
         )
         return build_attn_metadata(
             attn_groups=attn_groups,

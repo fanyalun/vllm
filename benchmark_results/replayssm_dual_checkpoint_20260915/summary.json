@@ -1,0 +1,195 @@
+{
+  "tests_passed": 47,
+  "precommit_passed": true,
+  "kernel": [
+    {
+      "mode": "original",
+      "trajectory": "all",
+      "batch": 1,
+      "draft": 4,
+      "buffer_setting": 16,
+      "logical_cap": 21,
+      "physical_ring_len": 32,
+      "cycle_us": 18.795199692249298,
+      "mean_history": 9.921875,
+      "flush_rate": 0.328125,
+      "promotion_rate": 0.0,
+      "state_and_ring_bytes_per_request": 2494464
+    },
+    {
+      "mode": "dual",
+      "trajectory": "all",
+      "batch": 1,
+      "draft": 4,
+      "buffer_setting": 16,
+      "logical_cap": 16,
+      "physical_ring_len": 16,
+      "cycle_us": 30.99519908428192,
+      "mean_history": 0.0,
+      "flush_rate": 0.0,
+      "promotion_rate": 1.0,
+      "state_and_ring_bytes_per_request": 4392960
+    },
+    {
+      "mode": "original",
+      "trajectory": "reject",
+      "batch": 1,
+      "draft": 4,
+      "buffer_setting": 16,
+      "logical_cap": 21,
+      "physical_ring_len": 32,
+      "cycle_us": 18.249599635601044,
+      "mean_history": 6.25,
+      "flush_rate": 0.078125,
+      "promotion_rate": 0.0,
+      "state_and_ring_bytes_per_request": 2494464
+    },
+    {
+      "mode": "dual",
+      "trajectory": "reject",
+      "batch": 1,
+      "draft": 4,
+      "buffer_setting": 16,
+      "logical_cap": 16,
+      "physical_ring_len": 16,
+      "cycle_us": 31.34399950504303,
+      "mean_history": 6.375,
+      "flush_rate": 0.09375,
+      "promotion_rate": 0.0,
+      "state_and_ring_bytes_per_request": 4392960
+    },
+    {
+      "mode": "original",
+      "trajectory": "mixed",
+      "batch": 1,
+      "draft": 4,
+      "buffer_setting": 16,
+      "logical_cap": 21,
+      "physical_ring_len": 32,
+      "cycle_us": 18.598400056362152,
+      "mean_history": 8.5,
+      "flush_rate": 0.25,
+      "promotion_rate": 0.0,
+      "state_and_ring_bytes_per_request": 2494464
+    },
+    {
+      "mode": "dual",
+      "trajectory": "mixed",
+      "batch": 1,
+      "draft": 4,
+      "buffer_setting": 16,
+      "logical_cap": 16,
+      "physical_ring_len": 16,
+      "cycle_us": 31.02400004863739,
+      "mean_history": 0.5,
+      "flush_rate": 0.0,
+      "promotion_rate": 0.5,
+      "state_and_ring_bytes_per_request": 4392960
+    }
+  ],
+  "smoke": {
+    "v1_mtp_dual_eager_logprobs": {
+      "execution_complete": true,
+      "output_counts": [
+        64,
+        64
+      ],
+      "elapsed_s": 2.5506555680185556,
+      "repeat_equal": [
+        true,
+        true
+      ],
+      "usable_for_speedup_claim": false
+    },
+    "v1_mtp_original_eager_logprobs": {
+      "execution_complete": true,
+      "output_counts": [
+        64,
+        64
+      ],
+      "elapsed_s": 2.539893191307783,
+      "repeat_equal": [
+        true,
+        true
+      ],
+      "usable_for_speedup_claim": false
+    },
+    "v1_mtp_dual_graph_verified": {
+      "execution_complete": true,
+      "output_counts": [
+        64,
+        64
+      ],
+      "elapsed_s": 0.6357682328671217,
+      "repeat_equal": [
+        true,
+        true
+      ],
+      "usable_for_speedup_claim": false
+    },
+    "v2_dspark_dual_eager": {
+      "execution_complete": true,
+      "output_counts": [
+        64,
+        64
+      ],
+      "elapsed_s": 3.1122578643262386,
+      "repeat_equal": [],
+      "usable_for_speedup_claim": false
+    },
+    "v2_dspark_dual_graph_verified": {
+      "execution_complete": true,
+      "output_counts": [
+        64,
+        64
+      ],
+      "elapsed_s": 0.6943823844194412,
+      "repeat_equal": [
+        true,
+        true
+      ],
+      "usable_for_speedup_claim": false
+    },
+    "v2_dspark_original_graph": {
+      "execution_complete": true,
+      "output_counts": [
+        64,
+        64
+      ],
+      "elapsed_s": 1.458699470385909,
+      "repeat_equal": [
+        false,
+        false
+      ],
+      "usable_for_speedup_claim": false
+    }
+  },
+  "first_v1_divergence": {
+    "request_index": 0,
+    "token_index": 35,
+    "dual_token": 369,
+    "original_token": 35742,
+    "dual_logprobs": {
+      "369": -1.2617555856704712,
+      "35742": -1.2617555856704712,
+      "24057": -2.3867554664611816,
+      "23037": -2.3867554664611816,
+      "1817": -3.5117554664611816
+    },
+    "original_logprobs": {
+      "35742": -1.1672983169555664,
+      "369": -1.2922983169555664,
+      "24057": -2.5422983169555664,
+      "23037": -2.5422983169555664,
+      "6946": -3.4172983169555664
+    }
+  },
+  "limitations": [
+    "No serving-scale performance claim; controlled GDN cycles are slower.",
+    "V1 original/dual tokens differ on one of two prompts; first difference at zero-based token 35 is a tie in dual mode.",
+    "Original V2 ReplaySSM fails repeated-request output stability and is excluded as a performance baseline.",
+    "V2 eager/graph differ on one of two prompts; cross-mode bitwise parity is not established.",
+    "Confidence-based DSpark length selection is not implemented.",
+    "Integration scope is TP1, two prompts, 64 output tokens each."
+  ]
+}

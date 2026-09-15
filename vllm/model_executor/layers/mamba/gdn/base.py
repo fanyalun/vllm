@@ -56,6 +56,7 @@ class GatedDeltaNetAttention(PluggableLayer, MambaBase):
                 self.model_config.dtype,
                 self.cache_config.mamba_cache_dtype,
                 self.cache_config.mamba_ssm_cache_dtype,
+                dual_checkpoint=self.cache_config.replayssm_spec_dual_checkpoint,
             )
         elif self.cache_config.use_replayssm:
             return MambaStateDtypeCalculator.gated_delta_net_replayssm_state_dtype(
