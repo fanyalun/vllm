@@ -11,6 +11,7 @@ from benchmarks.hierarchical.analyze_confidence import auc, policy_trigger
 from benchmarks.hierarchical.analyze_failure import round_survival
 from benchmarks.hierarchical.analyze_forward_kernels import map_graph
 from benchmarks.hierarchical.analyze_gdn_mean import steady_cycles
+from benchmarks.hierarchical.analyze_joint_confidence import trigger
 from benchmarks.hierarchical.cycle_worker import CycleWorker, pair_cycles
 from benchmarks.hierarchical.disagreement_worker import (
     distribution_pair,
@@ -18,6 +19,16 @@ from benchmarks.hierarchical.disagreement_worker import (
 )
 from benchmarks.hierarchical.measurement_worker import MeasurementWorker
 from benchmarks.hierarchical.summarize_forward_stages import partition
+
+
+def test_joint_stop_requires_both_features_in_the_same_nonfinal_round():
+    rounds = [
+        {"accepted": a, "proposed": 4, "correction_margin": m}
+        for a, m in ((2, 0.125), (0, 0.5), (1, 0.25), (0, 0.0))
+    ]
+    assert trigger(rounds, 1, 0.5) is rounds[2]
+    assert trigger(rounds, 0, 0.5) is None
+    assert trigger(rounds, 1, 0.25) is None
 
 
 def test_confidence_policy_uses_first_strict_threshold_and_excludes_final_round():
