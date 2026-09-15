@@ -1,0 +1,15 @@
+{
+  "commit": "14a21936d27d827c5c44aa9671746469ed5f8b92",
+  "gpu": "NVIDIA A100 80GB PCIe",
+  "torch": "2.11.0+cu130",
+  "triton": "3.6.0",
+  "cuda": "13.0",
+  "source_sha256": {
+    "benchmarks/replayssm/dual_checkpoint_kernel.py": "80c3607a0b22e239203d102437cd51b00a9f480a526f0a98871e376cf978fb64",
+    "vllm/model_executor/layers/fla/ops/gdn_replayssm_spec_decode.py": "c81a493c39b52e460fa03635d45e55e7aecfff041e4c653a85d9f3942b6a55be",
+    "vllm/model_executor/layers/fla/ops/gdn_replayssm_dual_checkpoint.py": "8233a2dc5d95ff37a5002d19ded4b0324307db413ef2ab075c84db4f7e25c783",
+    "benchmark_results/replayssm_dual_vs_original_d4_d8_20260915/compare.py": "b3c2633ab0af7f497acf9689d4f18bf1cdf50990dcfe21eada553bab84097625"
+  },
+  "measurements": 72,
+  "gpu_id": 0
+}
