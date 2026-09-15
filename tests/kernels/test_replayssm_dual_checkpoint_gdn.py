@@ -35,7 +35,10 @@ def _oracle(state, qkv, a, b, a_log, bias, h, hv, k, v):
 
 @pytest.mark.parametrize("graph", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-@pytest.mark.parametrize("hard_cap,max_t", [(7, 7), (9, 7), (16, 7), (17, 17)])
+@pytest.mark.parametrize(
+    "hard_cap,max_t",
+    [(5, 5), (16, 5), (9, 9), (16, 9), (7, 7), (9, 7), (16, 7), (17, 17)],
+)
 def test_dual_checkpoint_trajectory(graph, dtype, hard_cap, max_t):
     torch.manual_seed(42)
     device = "cuda"

@@ -76,8 +76,14 @@ The tail is computed inside verify from the current full-precision window
 deltas and the checkpoint/history reconstruction. This adds compute and a
 full-state write every round. High full-acceptance frequency reduces history
 and flush frequency but does not guarantee faster decoding. The initial A100
-B=1, D=4 comparison remains slower at the GDN kernel level; see the associated
-benchmark artifacts before enabling this mode for performance.
+B=1, D=4 comparison was slower at the GDN kernel level. The optimized path
+skips history reconstruction when the device history length is zero, including
+after promotion and flush. It still writes current-window intermediates for
+possible rejection. Short windows pad only the tail reduction to 16 positions
+for a matrix multiply, retaining the original verify width. Windows of at most
+nine inputs use BV=64, NK=2 and four warps. See
+`benchmark_results/replayssm_dual_checkpoint_opt_d4_d8_20260915/report.md`
+for the bounded A100 before/after measurements.
 
 ## Validation
 

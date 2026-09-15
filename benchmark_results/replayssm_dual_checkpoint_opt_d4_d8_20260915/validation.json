@@ -1,0 +1,38 @@
+{
+  "kernel_tests_passed": 16,
+  "config_metadata_tests_passed": 10,
+  "legacy_regression_tests_passed": 5,
+  "matching_performance_pairs": 36,
+  "smoke": [
+    {
+      "draft": 4,
+      "complete": true,
+      "repeated_request_equal": true,
+      "output_lengths": [
+        64,
+        64
+      ],
+      "metrics_include_warmup": true,
+      "metrics": {
+        "vllm:spec_decode_num_drafts": 106,
+        "vllm:spec_decode_num_draft_tokens": 424,
+        "vllm:spec_decode_num_accepted_tokens": 150
+      }
+    },
+    {
+      "draft": 8,
+      "complete": true,
+      "repeated_request_equal": true,
+      "output_lengths": [
+        64,
+        64
+      ],
+      "metrics_include_warmup": true,
+      "metrics": {
+        "vllm:spec_decode_num_drafts": 108,
+        "vllm:spec_decode_num_draft_tokens": 864,
+        "vllm:spec_decode_num_accepted_tokens": 152
+      }
+    }
+  ]
+}

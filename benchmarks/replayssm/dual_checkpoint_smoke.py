@@ -18,6 +18,7 @@ def main():
         default=("/data1/fanya/models/Qwen3.6-35B-A3B-speculator.dspark"),
     )
     parser.add_argument("--method", choices=["mtp", "dspark"], default="mtp")
+    parser.add_argument("--draft", type=int, choices=[4, 8], default=4)
     parser.add_argument("--dual", action="store_true")
     parser.add_argument("--eager", action="store_true")
     parser.add_argument("--output", required=True)
@@ -25,7 +26,7 @@ def main():
 
     from vllm import LLM, SamplingParams
 
-    spec = {"method": args.method, "num_speculative_tokens": 4}
+    spec = {"method": args.method, "num_speculative_tokens": args.draft}
     if args.method == "dspark":
         spec["model"] = args.draft_model
     config = dict(
@@ -49,8 +50,8 @@ def main():
         speculative_config=spec,
         additional_config={"gdn_prefill_backend": "triton"},
         compilation_config={
-            "cudagraph_capture_sizes": [5, 10],
-            "max_cudagraph_capture_size": 10,
+            "cudagraph_capture_sizes": [args.draft + 1, 2 * (args.draft + 1)],
+            "max_cudagraph_capture_size": 2 * (args.draft + 1),
         },
         kernel_config={"enable_flashinfer_autotune": False},
         disable_log_stats=False,

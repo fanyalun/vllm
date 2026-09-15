@@ -1,0 +1,23 @@
+{
+  "timestamp_utc": "2026-09-15T07:59:32.800507+00:00",
+  "base_commit": "b7af59348121e4e3ab9992612ba7c713d304c6aa",
+  "torch": "2.11.0+cu130",
+  "triton": "3.6.0",
+  "cuda": "13.0",
+  "gpu": "NVIDIA A100 80GB PCIe",
+  "source_sha256": {
+    "vllm/model_executor/layers/fla/ops/gdn_replayssm_spec_decode.py": "c81a493c39b52e460fa03635d45e55e7aecfff041e4c653a85d9f3942b6a55be",
+    "vllm/model_executor/layers/fla/ops/gdn_replayssm_dual_checkpoint.py": "8233a2dc5d95ff37a5002d19ded4b0324307db413ef2ab075c84db4f7e25c783",
+    "benchmarks/replayssm/dual_checkpoint_kernel.py": "80c3607a0b22e239203d102437cd51b00a9f480a526f0a98871e376cf978fb64",
+    "benchmarks/replayssm/dual_checkpoint_smoke.py": "6d6d0a0c00d982d254d397e9ac75eac157134493475720582b8dc7fd279338b8",
+    "tests/kernels/test_replayssm_dual_checkpoint_gdn.py": "8a4a5ce0c28c54a380273a685def3e15c919c7ba2c8f98666e44be8cad703c09",
+    "benchmark_results/replayssm_dual_checkpoint_opt_d4_d8_20260915/compare.py": "9a76f5e532de330227be5416734479ad2eda1082d0234ff12f45e33aeb015cb8",
+    "benchmark_results/replayssm_dual_checkpoint_opt_d4_d8_20260915/report.md": "09c8a0fad000af2d44b19b635300baa4abc96e27237ca6180fb586f317542105"
+  },
+  "before_snapshot_sha256": "0d99552628256f72dccafae13aea9e53dff85404497b96091b190dde3e8b96ab",
+  "measurement_count": 72,
+  "gpu_assignment": {
+    "kernel": 0,
+    "dspark_smoke": 1
+  }
+}
