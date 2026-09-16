@@ -50,6 +50,26 @@ Both fresh h4 controls match the previous eager outputs and acceptance counters
 (8/8 samples). No independent autoregressive baseline was run. Every observed
 threshold routing event retains at least one expert without a fallback.
 
+## Follow-up: h4, p=0.125, and h3
+
+The follow-up comparison retains h4, p=0.125, and h3 only, using the same
+four prompts, D=16, and 128 output tokens per model. h4 and p=0.125 are reused
+from the preceding measurements; h3 is newly measured with `--top-h 3`.
+
+| Model | Method | Acceptance | Mean length | Mean kept | Mean skipped |
+| --- | --- | --- | --- | --- | --- |
+| Qwen3.6 | h4 | 79.97% | 13.795 | 4.000 | 4.000 |
+| Qwen3.6 | p=0.125 | 75.61% | 13.098 | 2.838 | 5.162 |
+| Qwen3.6 | h3 | 71.95% | 12.512 | 3.000 | 5.000 |
+| Gemma4 | h4 | 66.85% | 11.696 | 4.000 | 4.000 |
+| Gemma4 | p=0.125 | 65.03% | 11.404 | 2.913 | 5.087 |
+| Gemma4 | h3 | 57.29% | 10.167 | 3.000 | 5.000 |
+
+All eight new h3 outputs match h4. The threshold retains slightly fewer experts
+on average than h3 while improving acceptance in this smoke. This does not
+establish a runtime advantage. The selected comparison and its provenance are
+in `benchmark_results/moe_skip_h3_h4_threshold0125_4x128_d16_20260916/`.
+
 ## Reproduction
 
 Use the existing local model paths from `run_static_budget.py` and the frozen

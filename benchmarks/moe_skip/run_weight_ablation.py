@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--samples", type=int, default=4)
     parser.add_argument("--draft-length", type=int, default=4)
     routing = parser.add_mutually_exclusive_group()
+    routing.add_argument("--top-h", type=int, choices=range(1, 9))
     routing.add_argument("--expert-top-p", type=float)
     routing.add_argument("--expert-min-weight", type=float)
     parser.add_argument("--track-expert-counts", action="store_true")
@@ -31,6 +32,7 @@ def main():
     if args.expert_min_weight is not None and not 0 < args.expert_min_weight <= 1:
         parser.error("--expert-min-weight must be in (0, 1]")
     adaptive = args.expert_top_p is not None or args.expert_min_weight is not None
+    top_h = args.top_h if args.top_h is not None else 4
     count_experts = adaptive or args.track_expert_counts
     os.environ["MOE_SKIP_WEIGHT_MODE"] = args.mode
     for key in (
@@ -62,7 +64,7 @@ def main():
     config = {
         "model": args.model,
         "mode": args.mode,
-        "h": None if adaptive else 4,
+        "h": None if adaptive else top_h,
         "expert_top_p": args.expert_top_p,
         "expert_min_weight": args.expert_min_weight,
         "threshold_fallback": "none",
@@ -90,7 +92,7 @@ def main():
         async_scheduling=False,
         speculative_config={
             "method": "moe_skip",
-            "moe_skip_top_h": 8 if adaptive else 4,
+            "moe_skip_top_h": 8 if adaptive else top_h,
             "moe_skip_weight_mode": args.mode,
             "num_speculative_tokens": args.draft_length,
         },
