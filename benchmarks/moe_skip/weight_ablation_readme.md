@@ -1,0 +1,81 @@
+# MoE-Skip routing weight smoke test
+
+On 2026-09-16, preserving native top-8 weights improved acceptance for
+Qwen3.6-35B-A3B, but slightly reduced aggregate acceptance for Gemma-4-26B-A4B-it.
+This four-prompt smoke test does not establish a universal winner.
+
+## Contract
+
+- Four fixed prompts per model: HumanEval, Alpaca, GSM8K, UltraFeedback.
+- 128 generated tokens per prompt; greedy, seed 0, ignore EOS.
+- Native top-k=8, retained top-h=4, speculative length D=4.
+- B=1, TP=1, eager mode, prefix caching off, synchronous scheduling.
+- Both methods share Target parameters; only draft routing changes.
+- `renormalize`: existing routing normalized over the retained four experts.
+- `preserve`: native top-8 routing, then gather the four highest-logit experts
+  without changing their weights. Gemma expert scales remain intact.
+- No latency comparison, independent AR run, or general losslessness claim.
+
+Acceptance is total accepted draft tokens divided by total proposed draft tokens.
+Mean acceptance length is `1 + accepted / verification_steps` and includes the
+Target token. Counters include the final speculative cycle at the output limit.
+
+## Results
+
+| Model | Method | Accepted / proposed | Acceptance | Mean acceptance length |
+| --- | --- | --- | --- | --- |
+| Qwen3.6 | Renormalize | 402 / 460 | 87.39% | 4.496 |
+| Qwen3.6 | Preserve | 408 / 432 | 94.44% | 4.778 |
+| Gemma4 | Renormalize | 402 / 448 | 89.73% | 4.589 |
+| Gemma4 | Preserve | 401 / 452 | 88.72% | 4.549 |
+
+Preserving weights changes acceptance by +7.05 percentage points on Qwen3.6
+and -1.02 percentage points on Gemma4.
+
+| Model | Prompt category | Renormalize | Preserve |
+| --- | --- | --- | --- |
+| Qwen3.6 | HumanEval | 83.33% | 97.12% |
+| Qwen3.6 | Alpaca | 82.50% | 91.07% |
+| Qwen3.6 | GSM8K | 97.12% | 100.00% |
+| Qwen3.6 | UltraFeedback | 87.93% | 90.18% |
+| Gemma4 | HumanEval | 93.52% | 89.29% |
+| Gemma4 | Alpaca | 89.29% | 98.08% |
+| Gemma4 | GSM8K | 89.29% | 89.29% |
+| Gemma4 | UltraFeedback | 87.07% | 79.84% |
+
+All eight paired final outputs match token for token. Each of the 16 requests
+emitted 128 tokens. Detailed per-cycle counters were validated with the existing
+`validate_metrics` helper.
+
+The actual fused and Gemma custom routers passed a synthetic GPU audit: same
+expert sets, exactly preserved native weights, unchanged full-width Target
+routing, and the expected retained-mass relationship between the two methods.
+Pre-commit checks passed for both Python files.
+
+## Reproduction and artifacts
+
+The runner uses the local four-prompt datasets at
+`benchmark_results/moe_skip_top_p_4x128_20260915/{model}/dataset.jsonl` and model
+paths from `run_static_budget.py`. Those local datasets and checkpoints are
+required and are not bundled with these scripts.
+
+```bash
+export PATH="$PWD/.venv/bin:$PATH"
+export PYTHONPATH="$PWD/benchmarks/moe_skip:$PWD"
+export VLLM_USE_V2_MODEL_RUNNER=1
+export HF_HUB_OFFLINE=1
+export CUDA_VISIBLE_DEVICES=0
+for mode in renormalize preserve; do
+    .venv/bin/python benchmarks/moe_skip/run_weight_ablation.py \
+        --model qwen36 --mode "$mode" \
+        --output "benchmark_results/weight_ablation_repeat/qwen36/$mode"
+done
+```
+
+Use `--model gemma4` and a corresponding output directory for Gemma4.
+Original local artifacts are in
+`benchmark_results/moe_skip_weight_ablation_4x128_20260916/`: `summary.csv`,
+`paired_samples.csv`, router audit, dataset copies, source snapshots, manifest,
+per-cell configs, logs, token IDs, detailed counters, and completion markers.
+
+AI assistance was used to implement and run this benchmark and write this report.
