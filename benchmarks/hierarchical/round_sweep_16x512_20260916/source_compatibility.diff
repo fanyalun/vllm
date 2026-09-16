@@ -2,52 +2,30 @@ diff --git a/vllm/config/speculative.py b/vllm/config/speculative.py
 index fbb3ce9de4..4b1c74f7ec 100644
 --- a/vllm/config/speculative.py
 +++ b/vllm/config/speculative.py
-@@ -628,11 +628,14 @@ class SpeculativeConfig:
-     preverify_method: Literal["moe_skip"] = "moe_skip"
-     """Shared-weight intermediate verifier for hierarchical decoding."""
- 
+@@ -631,2 +631,4 @@ class SpeculativeConfig:
 -    preverify_gdn_mode: Literal["none", "ssm_mean", "input_mean"] = "none"
 -    """Experimental Qwen preverify mean update, reset from Target each cycle.
 +    preverify_gdn_mode: Literal["none", "ssm_mean", "input_mean", "replay_tail"] = (
 +        "none"
 +    )
 +    """Experimental Qwen preverify update, reset from Target each cycle.
- 
-     ssm_mean pools recurrent writes; input_mean pools the entire GDN input.
+@@ -635 +637,2 @@ class SpeculativeConfig:
 -    Both keep one private SSM state and retain it after inner rejection.
 +    replay_tail uses per-token gates and writes only the full window tail.
 +    Approximate modes retain one private SSM state after rejection.
-     """
- 
-     def make_inner_config(self) -> "SpeculativeConfig":
-@@ -1641,9 +1644,9 @@ class SpeculativeConfig:
-                 "Qwen3_5MoeForCausalLM",
-                 "Qwen3_5MoeForConditionalGeneration",
-             }:
+@@ -1644 +1647 @@ class SpeculativeConfig:
 -                raise ValueError("Mean GDN preverify requires Qwen3.6 MoE")
 +                raise ValueError("Approximate GDN preverify requires Qwen3.6 MoE")
-             if self.inner_num_speculative_tokens != 4:
+@@ -1646 +1649 @@ class SpeculativeConfig:
 -                raise ValueError("Mean GDN preverify currently requires inner D=4")
 +                raise ValueError("Approximate GDN preverify requires inner D=4")
-         inner = self.make_inner_config()
-         self.model = inner.model
-         self.draft_model_config = inner.draft_model_config
 diff --git a/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py b/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py
 index 8fae17b06c..b6a2e8a4dd 100644
 --- a/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py
 +++ b/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py
-@@ -30,6 +30,7 @@ from vllm.model_executor.layers.linear import (
- )
- from vllm.model_executor.layers.mamba.gdn.base import GatedDeltaNetAttention
- from vllm.model_executor.layers.mamba.gdn.mean_update import mean_state_update
+@@ -32,0 +33 @@ from vllm.model_executor.layers.mamba.gdn.mean_update import mean_state_update
 +from vllm.model_executor.layers.mamba.gdn.replay_tail_update import replay_tail_update
- from vllm.model_executor.layers.mamba.mamba_mixer2 import mamba_v2_sharded_weight_loader
- from vllm.model_executor.layers.mamba.mamba_utils import (
-     MambaStateShapeCalculator,
-@@ -1935,8 +1936,11 @@ def qwen_gdn_mean_forward(
-     metadata = context.attn_metadata[layer.prefix]
-     assert isinstance(metadata, GDNAttentionMetadata)
-     assert metadata.spec_state_indices_tensor is not None
+@@ -1938,2 +1939,5 @@ def qwen_gdn_mean_forward(
 -    if mode not in ("ssm_mean", "input_mean") or layer.gqa_interleaved_layout:
 -        raise ValueError("Mean GDN requires Qwen3.5 layout and explicit preverify mode")
 +    if (
@@ -55,32 +33,14 @@ index 8fae17b06c..b6a2e8a4dd 100644
 +        or layer.gqa_interleaved_layout
 +    ):
 +        raise ValueError("Approximate GDN requires Qwen3.5 layout and preverify mode")
-     conv, state = layer.kv_cache
-     if state.shape[0] != 1 or conv.shape[0] != 1 or metadata.num_spec_decodes != 1:
-         raise ValueError("Mean GDN requires private single-request state")
-@@ -1962,7 +1966,7 @@ def qwen_gdn_mean_forward(
-             layer.activation,
-             conv_state_indices=metadata.spec_state_indices_tensor[:, 0],
-             num_accepted_tokens=metadata.num_accepted_tokens
+@@ -1965 +1969 @@ def qwen_gdn_mean_forward(
 -            if mode == "ssm_mean"
 +            if mode in ("ssm_mean", "replay_tail")
-             else None,
-             null_block_id=-1,
-             validate_data=False,
-@@ -1972,7 +1976,8 @@ def qwen_gdn_mean_forward(
-     )
-     q, k, v = convolved.split([layer.key_dim, layer.key_dim, layer.value_dim], -1)
-     n = hidden_states.shape[0]
+@@ -1975 +1979,2 @@ def qwen_gdn_mean_forward(
 -    core = mean_state_update(
 +    update = replay_tail_update if mode == "replay_tail" else mean_state_update
 +    core = update(
-         q.reshape(n, layer.num_k_heads, layer.head_k_dim),
-         k.reshape(n, layer.num_k_heads, layer.head_k_dim),
-         v.reshape(n, layer.num_v_heads, layer.head_v_dim),
-@@ -1982,9 +1987,13 @@ def qwen_gdn_mean_forward(
-         layer.dt_bias,
-         state,
-     )
+@@ -1985,3 +1990,7 @@ def qwen_gdn_mean_forward(
 -    projected = layer._output_projection(
 -        core, z.reshape(n, layer.num_v_heads, layer.head_v_dim)
 -    )
@@ -91,9 +51,6 @@ index 8fae17b06c..b6a2e8a4dd 100644
 +        projected, _ = layer.out_proj(core.flatten(-2))
 +    else:
 +        projected = layer._output_projection(core, output_gate)
-     output.copy_(projected.expand(tokens, -1))
- 
- 
 diff --git a/vllm/model_executor/layers/mamba/gdn/replay_tail_update.py b/vllm/model_executor/layers/mamba/gdn/replay_tail_update.py
 new file mode 100644
 index 0000000000..104632bc34
@@ -249,38 +206,17 @@ diff --git a/vllm/v1/worker/gpu/spec_decode/hierarchical/state.py b/vllm/v1/work
 index ee0e4a8db7..3bef8738a6 100644
 --- a/vllm/v1/worker/gpu/spec_decode/hierarchical/state.py
 +++ b/vllm/v1/worker/gpu/spec_decode/hierarchical/state.py
-@@ -8,6 +8,9 @@ import torch
- from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
-     QwenGatedDeltaNetAttention,
- )
+@@ -10,0 +11,3 @@ from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
 +from vllm.model_executor.layers.mamba.gdn.replay_tail_update import (
 +    advance_replay_tail_conv,
 +)
- from vllm.model_executor.layers.mamba.mamba_utils import is_conv_state_dim_first
- 
- 
-@@ -17,7 +20,7 @@ class PreverifyState:
-     def __init__(self, model, width: int, device: torch.device, mode="none"):
-         self.width = width
-         self.mode = mode
+@@ -20 +23 @@ class PreverifyState:
 -        if mode not in ("none", "ssm_mean", "input_mean"):
 +        if mode not in ("none", "ssm_mean", "input_mean", "replay_tail"):
-             raise ValueError(f"Unknown preverify GDN mode: {mode}")
-         self.layers = {
-             layer.prefix: layer
-@@ -31,7 +34,7 @@ class PreverifyState:
-                 conv_shape = list(shapes[0])
-                 axis = 1 if is_conv_state_dim_first() else 0
-                 conv_shape[axis] = layer.conv_kernel_size - 1
+@@ -34 +37 @@ class PreverifyState:
 -                if mode == "ssm_mean":
 +                if mode in ("ssm_mean", "replay_tail"):
-                     conv_shape[axis] += width
-                 shapes[0] = tuple(conv_shape)
-             self.caches[name] = tuple(
-@@ -89,7 +92,12 @@ class PreverifyState:
-         if mode == "input_mean":
-             return
-         for conv, temporal in self.caches.values():
+@@ -92 +95,6 @@ class PreverifyState:
 -            if mode == "ssm_mean":
 +            if mode == "replay_tail" and conv.is_cuda:
 +                advance_replay_tail_conv(
@@ -288,6 +224,3 @@ index ee0e4a8db7..3bef8738a6 100644
 +                )
 +                continue
 +            if mode in ("ssm_mean", "replay_tail"):
-                 self._copy_conv(conv, conv, accepted_drafts)
-                 continue
-             self._copy_conv(conv[1:2], conv[1:2], accepted_drafts)
