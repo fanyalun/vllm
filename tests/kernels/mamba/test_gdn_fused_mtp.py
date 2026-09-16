@@ -394,6 +394,9 @@ def test_fused_forward_uses_packed_entrypoint() -> None:
     layer._forward_cuda_exact = types.MethodType(
         QwenGatedDeltaNetAttention._forward_cuda_exact, layer
     )
+    layer.forward_cuda_projected = types.MethodType(
+        QwenGatedDeltaNetAttention.forward_cuda_projected, layer
+    )
 
     def packed_op(
         actual_qkvz: torch.Tensor,
@@ -576,3 +579,175 @@ def test_fused_model_path_matches_reference(
         atol=3e-2,
         rtol=3e-2,
     )
+
+
+@pytest.mark.parametrize("tokens", [1, 2, 3, 4, 5])
+def test_grouped_gdn_projection_keeps_distinct_layer_weights(tokens):
+    from vllm.model_executor.layers.mamba.gdn.grouped_input import (
+        grouped_linear,
+        grouped_norm,
+    )
+
+    torch.manual_seed(17)
+    x = torch.randn(tokens, 2048, device="cuda", dtype=torch.bfloat16)
+    norms = [torch.randn(2048, device="cuda", dtype=torch.bfloat16) for _ in range(3)]
+    actual = grouped_norm(x, norms, 1e-6)
+    xf = x.float()
+    expected = torch.stack(
+        [
+            (
+                xf
+                * torch.rsqrt(xf.square().mean(-1, keepdim=True) + 1e-6)
+                * (1 + w.float())
+            ).to(x.dtype)
+            for w in norms
+        ]
+    )
+    torch.testing.assert_close(actual, expected, atol=1e-3, rtol=1e-3)
+    for width in (64, 12288):
+        weights = [
+            torch.randn(width, 2048, device="cuda", dtype=x.dtype) / 45
+            for _ in range(3)
+        ]
+        result = grouped_linear(actual, weights)
+        reference = torch.stack(
+            [torch.nn.functional.linear(actual[i], weights[i]) for i in range(3)]
+        )
+        # Different GEMM reduction orders can round to adjacent BF16 values.
+        torch.testing.assert_close(result, reference, atol=1e-3, rtol=8e-3)
+
+
+@pytest.mark.parametrize("tokens", [1, 5])
+def test_grouped_gdn_fused_norm_retains_unrounded_sum(tokens):
+    from vllm.model_executor.layers.mamba.gdn.grouped_input import fused_add_norm
+
+    torch.manual_seed(101)
+    x, residual = [
+        torch.randn(tokens, 2048, device="cuda", dtype=torch.bfloat16) for _ in range(2)
+    ]
+    weight = torch.randn(2048, device="cuda", dtype=torch.bfloat16)
+    result, combined = fused_add_norm(x, residual, weight, 1e-6)
+    full = x.float() + residual.float()
+    expected = full * torch.rsqrt(full.square().mean(-1, keepdim=True) + 1e-6)
+    expected *= 1 + weight.float()
+    torch.testing.assert_close(combined, full.to(x.dtype), atol=0, rtol=0)
+    torch.testing.assert_close(result, expected.to(x.dtype), atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.parametrize("tokens", [1, 2, 3, 4, 5])
+@pytest.mark.parametrize("tail", [False, True])
+@pytest.mark.parametrize("dim_first", [False, True])
+def test_grouped_gdn_conv_and_checkpoints_match_independent_layers(
+    tokens, tail, dim_first
+):
+    from vllm.model_executor.layers.mamba.gdn.grouped_input import (
+        grouped_conv,
+        grouped_gated_norm,
+        grouped_recurrent,
+    )
+    from vllm.model_executor.layers.mamba.gdn.replay_tail_update import (
+        replay_tail_update,
+    )
+    from vllm.model_executor.layers.mamba.ops.causal_conv1d import causal_conv1d_update
+
+    torch.manual_seed(27)
+    h, hv, dk, dv = 2, 4, 128, 128
+    d, p = 2 * h * dk + hv * dv, 2 * h * dk + 2 * hv * dv
+    slot = 0 if tail else 1
+    qkvz = torch.randn(3, tokens, p, device="cuda", dtype=torch.bfloat16)
+    ba = torch.randn(3, tokens, 2 * hv, device="cuda", dtype=torch.bfloat16)
+    convs = [
+        torch.randn(1 if tail else 6, d, 8, device="cuda", dtype=qkvz.dtype)
+        for _ in range(3)
+    ]
+    if not dim_first:
+        convs = [c.transpose(1, 2).contiguous() for c in convs]
+    refs = [c.clone() for c in convs]
+    original_convs = [c.clone() for c in convs]
+    weights = [torch.randn(d, 4, device="cuda", dtype=qkvz.dtype) for _ in range(3)]
+    indices = torch.tensor([slot], device="cuda", dtype=torch.int32)
+    accepted = torch.ones_like(indices)
+    actual_qkv = grouped_conv(qkvz, convs, weights, d, slot, dim_first)
+    for i in range(3):
+        ref = causal_conv1d_update(
+            qkvz[i, :, :d].clone().T.unsqueeze(0),
+            refs[i] if dim_first else refs[i].transpose(1, 2),
+            weights[i],
+            activation="silu",
+            conv_state_indices=indices,
+            num_accepted_tokens=accepted,
+            null_block_id=-1,
+            validate_data=False,
+        )
+        torch.testing.assert_close(
+            actual_qkv[i], ref.squeeze(0).T, atol=1e-3, rtol=1e-3
+        )
+        torch.testing.assert_close(convs[i], refs[i], atol=0, rtol=0)
+    states = [
+        torch.randn(1 if tail else 6, hv, dv, dk, device="cuda") for _ in range(3)
+    ]
+    initial = [s.clone() for s in states]
+    al = [torch.randn(hv, device="cuda") for _ in range(3)]
+    dt = [torch.randn(hv, device="cuda", dtype=qkvz.dtype) for _ in range(3)]
+    out = grouped_recurrent(actual_qkv, ba, al, dt, states, h, hv, dk, dv, tail)
+    for i in range(3):
+        state = initial[i][slot : slot + 1].clone()
+        q, k, v = actual_qkv[i].split((h * dk, h * dk, hv * dv), -1)
+        b, a = ba[i].chunk(2, -1)
+        outputs = []
+        for t in range(tokens):
+            outputs.append(
+                replay_tail_update(
+                    q[t : t + 1].reshape(1, h, dk),
+                    k[t : t + 1].reshape(1, h, dk),
+                    v[t : t + 1].reshape(1, hv, dv),
+                    a[t : t + 1],
+                    b[t : t + 1],
+                    al[i],
+                    dt[i],
+                    state,
+                )
+            )
+            if not tail:
+                torch.testing.assert_close(
+                    states[i][t + 1 : t + 2], state, atol=1e-3, rtol=1e-3
+                )
+        torch.testing.assert_close(
+            out[i], torch.cat(outputs).flatten(1), atol=1e-3, rtol=1e-3
+        )
+        if tail:
+            torch.testing.assert_close(states[i], state, atol=1e-3, rtol=1e-3)
+        else:
+            torch.testing.assert_close(states[i][0], initial[i][0], atol=0, rtol=0)
+            torch.testing.assert_close(
+                states[i][tokens + 1 :], initial[i][tokens + 1 :], atol=0, rtol=0
+            )
+    nw = [torch.randn(dv, device="cuda") for _ in range(3)]
+    norm = grouped_gated_norm(out, qkvz, nw, hv, dv, 1e-6)
+    xf = out.float().reshape(3, tokens, hv, dv)
+    z = qkvz[:, :, d:].float().reshape_as(xf)
+    expected = xf * torch.rsqrt(xf.square().mean(-1, keepdim=True) + 1e-6)
+    expected *= torch.stack(nw)[:, None, None, :]
+    expected *= torch.nn.functional.silu(z)
+    torch.testing.assert_close(
+        norm, expected.flatten(2).to(norm.dtype), atol=1e-3, rtol=1e-3
+    )
+    final_states = [s.clone() for s in states]
+
+    def execute():
+        qkv = grouped_conv(qkvz, convs, weights, d, slot, dim_first)
+        core = grouped_recurrent(qkv, ba, al, dt, states, h, hv, dk, dv, tail)
+        return grouped_gated_norm(core, qkvz, nw, hv, dv, 1e-6)
+
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = execute()
+    for _ in range(2):
+        for i in range(3):
+            convs[i].copy_(original_convs[i])
+            states[i].copy_(initial[i])
+        graph.replay()
+        torch.testing.assert_close(captured, norm, atol=0, rtol=0)
+        for i in range(3):
+            torch.testing.assert_close(convs[i], refs[i], atol=0, rtol=0)
+            torch.testing.assert_close(states[i], final_states[i], atol=0, rtol=0)

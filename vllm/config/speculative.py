@@ -628,6 +628,13 @@ class SpeculativeConfig:
     preverify_method: Literal["moe_skip"] = "moe_skip"
     """Shared-weight intermediate verifier for hierarchical decoding."""
 
+    preverify_gdn_group_mode: Literal["none", "projection", "full"] = "none"
+    """Share pre-norm inputs within Qwen GDN groups 3 through 9.
+
+    projection batches input projections; full also batches the GDN branches.
+    Residuals and MoE remain sequential. Applies only to hierarchical preverify.
+    """
+
     preverify_gdn_mode: Literal["none", "ssm_mean", "input_mean", "replay_tail"] = (
         "none"
     )
@@ -647,6 +654,7 @@ class SpeculativeConfig:
             inner_method=None,
             moe_skip_top_h=None,
             preverify_gdn_mode="none",
+            preverify_gdn_group_mode="none",
             num_speculative_tokens=self.inner_num_speculative_tokens,
         )
 
@@ -677,6 +685,7 @@ class SpeculativeConfig:
                     self.inner_num_rounds,
                     self.moe_skip_top_h,
                     self.preverify_gdn_mode,
+                    self.preverify_gdn_group_mode,
                     self.hierarchical_stop_policy,
                     inner.compute_hash(),
                 )
@@ -1156,6 +1165,8 @@ class SpeculativeConfig:
             raise ValueError("inner_method requires method='hierarchical'")
         if self.preverify_gdn_mode != "none":
             raise ValueError("preverify_gdn_mode requires method='hierarchical'")
+        if self.preverify_gdn_group_mode != "none":
+            raise ValueError("preverify_gdn_group_mode requires method='hierarchical'")
         # Note: "method" is a new parameter that helps to extend the
         # configuration of non-model-based proposers, and the "model" parameter
         # will be used to set the draft model, eagle head, or additional weight
@@ -1629,6 +1640,7 @@ class SpeculativeConfig:
             dspark_draft_topk=None,
             num_speculative_tokens=max(2, self.inner_num_speculative_tokens),
             preverify_gdn_mode="none",
+            preverify_gdn_group_mode="none",
         )
         if not set(self.target_model_config.architectures or ()) <= {
             "Qwen3_5MoeForCausalLM",
@@ -1638,7 +1650,14 @@ class SpeculativeConfig:
         }:
             raise ValueError("hierarchical supports Qwen3.6 MoE and Gemma4 MoE only")
         self.moe_skip_top_h = preverify.moe_skip_top_h
-        if self.preverify_gdn_mode != "none":
+        if self.preverify_gdn_group_mode not in ("none", "projection", "full"):
+            raise ValueError("Unknown preverify_gdn_group_mode")
+        if self.preverify_gdn_group_mode != "none" and self.preverify_gdn_mode not in (
+            "none",
+            "replay_tail",
+        ):
+            raise ValueError("Grouped GDN requires none or replay_tail state policy")
+        if self.preverify_gdn_mode != "none" or self.preverify_gdn_group_mode != "none":
             architectures = set(self.target_model_config.architectures or ())
             if not architectures or not architectures <= {
                 "Qwen3_5MoeForCausalLM",

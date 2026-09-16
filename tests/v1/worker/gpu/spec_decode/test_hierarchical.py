@@ -367,6 +367,93 @@ def test_outer_reset_copies_only_target_accepted_state(
     torch.testing.assert_close(temporal, canonical[1])
 
 
+@pytest.mark.parametrize("mode", ["projection", "full"])
+def test_grouped_gdn_preserves_sequential_residual_and_moe(mode):
+    from vllm.v1.worker.gpu.spec_decode.hierarchical.grouped_gdn import (
+        GroupedGDNPreverify,
+    )
+
+    class Norm:
+        def __call__(self, hidden, residual):
+            combined = hidden + residual
+            return combined, combined
+
+    class Decoder:
+        def __init__(self, index):
+            self.linear_attn = index
+            self.post_attention_layernorm = Norm()
+            self.mlp = lambda x: x * (index + 2)
+
+    layers = [Decoder(i) for i in range(3)]
+    model = SimpleNamespace(
+        layers=layers,
+        embed_input_ids=lambda ids: ids[:, None].to(torch.bfloat16),
+        _maybe_add_hidden_state=lambda aux, *args: aux,
+        norm=Norm(),
+    )
+    plan = object.__new__(GroupedGDNPreverify)
+    plan.model, plan.by_start = model, {0: (0, 1, 2)}
+    plan.normalize = lambda module, hidden, residual: module(hidden, residual)
+    anchors = []
+
+    def projections(group, anchor, serial):
+        anchors.append(anchor.clone())
+        return torch.stack([anchor * i for i in (1, 2, 3)]).to(torch.bfloat16), None
+
+    plan.projections = projections
+    plan.branches = lambda group, qkvz, ba, state: qkvz
+    plan.branch = lambda layer, qkvz, ba, state: qkvz
+    # Projection mode indexes the BA tensor even though this fake branch ignores it.
+    if mode == "projection":
+        plan.projections = lambda group, anchor, serial: (
+            projections(group, anchor, serial)[0],
+            torch.zeros(3),
+        )
+    ids = torch.tensor([1, 2])
+    result = plan(ids, ids, mode, "replay_tail")
+    anchor = ids[:, None].to(torch.bfloat16)
+    current = anchor
+    for i in range(3):
+        residual = current + anchor * (i + 1)
+        current = residual + layers[i].mlp(residual)
+    torch.testing.assert_close(result, current)
+    assert len(anchors) == 1
+    torch.testing.assert_close(anchors[0], anchor.float())
+
+
+def test_grouped_gdn_selects_middle_groups_and_rejects_short_layout():
+    from vllm.v1.worker.gpu.spec_decode.hierarchical.grouped_gdn import selected_groups
+
+    layout = ["linear_attention"] * 3 + ["full_attention"]
+    assert selected_groups(layout * 10) == tuple(
+        (4 * group, 4 * group + 1, 4 * group + 2) for group in range(2, 9)
+    )
+    with pytest.raises(ValueError, match="three-layer"):
+        selected_groups(layout * 8)
+    with pytest.raises(ValueError, match="three-layer"):
+        selected_groups((layout * 10)[:10] + ["full_attention"] + (layout * 10)[11:])
+
+
+def test_grouped_gdn_rejects_float32_conv_before_kernel_setup(monkeypatch):
+    from vllm.v1.worker.gpu.spec_decode.hierarchical import speculator as impl
+
+    proposer = object.__new__(HierarchicalSpeculator)
+    proposer.preverify = SimpleNamespace(
+        load_model=lambda target: None, model=object(), model_family="qwen3_6"
+    )
+    proposer.config = SimpleNamespace(
+        preverify_gdn_mode="none", preverify_gdn_group_mode="full"
+    )
+    proposer.depth, proposer.device = 4, torch.device("cuda")
+    proposer.vllm_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(tensor_parallel_size=1), quant_config=None
+    )
+    state = SimpleNamespace(caches={"gdn": (torch.zeros(1), torch.zeros(1))})
+    monkeypatch.setattr(impl, "PreverifyState", lambda *args: state)
+    with pytest.raises(ValueError, match="BF16 Conv"):
+        proposer.load_model(object())
+
+
 def test_four_rounds_compact_recoveries_and_start_after_computed_prefix():
     proposer = object.__new__(HierarchicalSpeculator)
     proposer.device = torch.device("cpu")

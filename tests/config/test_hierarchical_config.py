@@ -70,6 +70,8 @@ def test_graph_hash_distinguishes_inner_method_depth_rounds_and_top_h(monkeypatc
             {"preverify_gdn_mode": "ssm_mean"},
             {"preverify_gdn_mode": "input_mean"},
             {"preverify_gdn_mode": "replay_tail"},
+            {"preverify_gdn_group_mode": "projection"},
+            {"preverify_gdn_group_mode": "full"},
             {"hierarchical_stop_policy": "balanced"},
             {"hierarchical_stop_policy": "aggressive"},
             {"hierarchical_stop_policy": "none"},
@@ -102,3 +104,23 @@ def test_mean_gdn_rejects_other_models_and_depths(monkeypatch, mode):
         make_config(
             monkeypatch, inner_num_speculative_tokens=2, preverify_gdn_mode=mode
         )
+
+
+@pytest.mark.parametrize("group", ["projection", "full"])
+def test_grouped_gdn_is_independent_but_rejects_incompatible_modes(monkeypatch, group):
+    assert (
+        make_config(monkeypatch, preverify_gdn_group_mode=group).preverify_gdn_mode
+        == "none"
+    )
+    config = make_config(
+        monkeypatch, preverify_gdn_group_mode=group, preverify_gdn_mode="replay_tail"
+    )
+    assert config.preverify_gdn_group_mode == group
+    for kwargs, error in (
+        ({"family": "gemma4"}, "Qwen3.6"),
+        ({"inner_num_speculative_tokens": 2}, "D=4"),
+        ({"preverify_gdn_mode": "ssm_mean"}, "state policy"),
+        ({"preverify_gdn_mode": "input_mean"}, "state policy"),
+    ):
+        with pytest.raises(ValueError, match=error):
+            make_config(monkeypatch, preverify_gdn_group_mode=group, **kwargs)
