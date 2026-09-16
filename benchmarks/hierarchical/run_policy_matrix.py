@@ -43,8 +43,8 @@ def worker(path):
             "model": ASSISTANT,
             "inner_method": "mtp",
             "inner_num_speculative_tokens": 4,
-            "inner_num_rounds": 4,
-            "num_speculative_tokens": 20,
+            "inner_num_rounds": config.get("inner_rounds", 4),
+            "num_speculative_tokens": 5 * config.get("inner_rounds", 4),
             "moe_skip_top_h": 4,
             "draft_sample_method": "greedy",
             "hierarchical_stop_policy": mode,
@@ -148,6 +148,8 @@ def main():
     parser.add_argument("--cell", type=Path)
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--wait-pid", type=int)
+    parser.add_argument("--inner-rounds", type=int, choices=(4, 6, 8), default=4)
+    parser.add_argument("--hierarchical-only", action="store_true")
     args = parser.parse_args()
     if args.cell:
         worker(args.cell)
@@ -181,6 +183,8 @@ def main():
     ]
     if args.smoke:
         cells = [(4, "low_error"), (16, "low_error")]
+    elif args.hierarchical_only:
+        cells = [(b, m) for b, m in cells if m not in ("ar", "mtp")]
     paths = [
         Path(__file__),
         Path(__file__).with_name("policy_worker.py"),
@@ -207,6 +211,9 @@ def main():
             "cells": cells,
             "samples": 16,
             "output_length": 32 if args.smoke else 512,
+            "inner_rounds": args.inner_rounds,
+            "inner_depth": 4,
+            "candidate_capacity": 5 * args.inner_rounds,
             "dataset_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
             "source_sha256": fingerprints,
             "warmup_output_length": 32 if args.smoke else 64,
@@ -269,6 +276,7 @@ def main():
             "gpu": gpu,
             "dataset": str(root / "dataset.jsonl"),
             "output_length": 32 if args.smoke else 512,
+            "inner_rounds": args.inner_rounds,
             "source_sha256": fingerprints,
         }
         write_json(folder / "config.json", config)
@@ -319,7 +327,7 @@ def main():
     (root / "MEASUREMENTS_COMPLETE").write_text(
         f"{len(cells)} cells completed; analysis pending\n"
     )
-    if not args.smoke:
+    if not args.smoke and not args.hierarchical_only:
         from benchmarks.hierarchical.finish_policy_matrix import finish
 
         finish(root)

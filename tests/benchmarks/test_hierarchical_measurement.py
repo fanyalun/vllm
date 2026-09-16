@@ -13,6 +13,7 @@ from benchmarks.hierarchical.analyze_failure import round_survival
 from benchmarks.hierarchical.analyze_forward_kernels import map_graph
 from benchmarks.hierarchical.analyze_gdn_mean import steady_cycles
 from benchmarks.hierarchical.analyze_joint_confidence import trigger
+from benchmarks.hierarchical.analyze_round_sweep import acceptance_stats
 from benchmarks.hierarchical.compare_signal_tradeoffs import combined_trigger
 from benchmarks.hierarchical.cycle_worker import CycleWorker, pair_cycles
 from benchmarks.hierarchical.disagreement_worker import (
@@ -23,6 +24,25 @@ from benchmarks.hierarchical.measurement_worker import MeasurementWorker
 from benchmarks.hierarchical.summarize_forward_stages import partition
 from benchmarks.hierarchical.summarize_policy_matrix import summarize
 from benchmarks.hierarchical.summarize_replay_tail import summarize as summarize_replay
+
+
+def test_full_acceptance_is_per_nonempty_sequence_not_per_token():
+    result = acceptance_stats(
+        [
+            {
+                "per_step_accepted": [0, 1, 3, 4],
+                "per_step_drafted": [0, 1, 4, 4],
+                "num_spec_steps": 4,
+                "num_accepted_draft_tokens": 8,
+                "num_draft_tokens": 9,
+            }
+        ],
+        4,
+    )
+    assert result["outer_acceptance_rate"] == pytest.approx(8 / 9)
+    assert result["all_accepted_probability"] == pytest.approx(2 / 3)
+    assert result["all_accepted_given_capacity"] == 0.5
+    assert result["capacity_steps"] == 2
 
 
 def test_policy_matrix_does_not_certify_partial_requested_coverage(tmp_path):

@@ -49,3 +49,29 @@ M 是 Pre-Verify 自身 Top-1/Top-2 logit margin。保留当前 correction 后�
 
 正式启动器跑完后自动执行汇总、生成 report/results.md、PNG/PDF 图及证据包。
 出现失败时保留日志并退出，不生成完成标记；自动生成的图仍需人工目视检查。
+
+## 扩展至六轮和八轮
+
+`--inner-rounds 6/8 --hierarchical-only` 保持 h4、D4 与三档信号不变，
+分别将候选容量设为 30/40；每个轮数运行 12 个配置，仍使用原始 16×512 请求。
+用独立目录保存每个轮数的编译缓存、源码快照、配置、日志和结果。
+
+```bash
+.venv/bin/python -m benchmarks.hierarchical.run_policy_matrix \
+  benchmark_results/gemma_h4_round6_16x512_20260916 \
+  --inner-rounds 6 --hierarchical-only
+.venv/bin/python -m benchmarks.hierarchical.run_policy_matrix \
+  benchmark_results/gemma_h4_round8_16x512_20260916 \
+  --inner-rounds 8 --hierarchical-only
+.venv/bin/python -m benchmarks.hierarchical.analyze_round_sweep \
+  benchmark_results/gemma_h4_policy_16x512_20260915_run3 \
+  benchmark_results/gemma_h4_round6_16x512_20260916 \
+  benchmark_results/gemma_h4_round8_16x512_20260916 \
+  benchmark_results/gemma_h4_round_sweep_20260916 --wait
+```
+
+四轮使用历史结果，六/八轮是新测量，不作为同一时段的重复实验。
+分析器要求全部 24 个新增配置完成，核对样本、模型、推理代码指纹和逐步计数后，
+才输出 36 个比较项及四张图。`--wait` 可在实验未结束时启动汇总等待器。
+全接受概率以非空请求级验证为单位统计 A=D，另列 D=5R 时的条件全接受概率，
+避免把 token 接受率、整段接受率、满容量接受率混为一谈。
