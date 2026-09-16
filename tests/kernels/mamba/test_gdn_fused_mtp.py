@@ -126,9 +126,10 @@ def test_mean_state_update_matches_one_pooled_write_and_token_queries(tokens, ex
 
 @pytest.mark.parametrize("tokens", [1, 2, 3, 4, 5])
 @pytest.mark.parametrize("extreme", [False, True])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @torch.inference_mode()
 def test_replay_tail_preserves_causal_outputs_and_overwrites_only_final_state(
-    tokens, extreme
+    tokens, extreme, dtype
 ):
     from vllm.model_executor.layers.mamba.gdn.replay_tail_update import (
         replay_tail_update,
@@ -137,10 +138,14 @@ def test_replay_tail_preserves_causal_outputs_and_overwrites_only_final_state(
     torch.manual_seed(42)
     h, hv, dim = 16, 32, 128
     # Packed views exercise the strides used by the real post-conv Q/K/V path.
-    packed = torch.randn(tokens, 2 * h * dim + hv * dim, device="cuda")
+    packed = torch.randn(tokens, 2 * h * dim + hv * dim, device="cuda", dtype=dtype)
     q, k, v = packed.split([h * dim, h * dim, hv * dim], -1)
     q, k, v = q.view(tokens, h, dim), k.view(tokens, h, dim), v.view(tokens, hv, dim)
-    a, b = [torch.randn(1, hv, device="cuda") for _ in range(2)]
+    gates = torch.randn(tokens, 2 * hv, device="cuda", dtype=dtype)
+    a, b = gates.split(hv, -1)
+    if tokens > 1:
+        with pytest.raises(ValueError, match="per-token gates"):
+            replay_tail_update(q, k, v, a[:1], b[:1], None, None, None)
     if extreme:
         a[:, ::2], a[:, 1::2] = 80, -80
         b[:, ::2], b[:, 1::2] = -80, 80
@@ -149,22 +154,28 @@ def test_replay_tail_preserves_causal_outputs_and_overwrites_only_final_state(
     state = pool[1:2]
     canaries = pool[[0, 2]].clone()
     reference = state.clone()
-    query = q * (q.square().sum(-1, keepdim=True) + 1e-6).rsqrt() * dim**-0.5
-    key = k * (k.square().sum(-1, keepdim=True) + 1e-6).rsqrt()
+    query = (
+        q.float()
+        * (q.float().square().sum(-1, keepdim=True) + 1e-6).rsqrt()
+        * dim**-0.5
+    )
+    key = k.float() * (k.float().square().sum(-1, keepdim=True) + 1e-6).rsqrt()
     query, key = [x.repeat_interleave(hv // h, 1) for x in (query, key)]
-    decay = (-a_log.exp() * torch.nn.functional.softplus(a + dt)).exp()
-    beta = b.sigmoid()
+    decay = (-a_log.exp() * torch.nn.functional.softplus(a.float() + dt)).exp()
+    beta = b.float().sigmoid()
     for _ in range(4):
         outputs = []
         for t in range(tokens):
-            reference *= decay[:, :, None, None]
-            delta = beta[0, :, None] * (
-                v[t] - (reference[0] * key[t, :, None, :]).sum(-1)
+            reference *= decay[t, :, None, None]
+            delta = beta[t, :, None] * (
+                v[t].float() - (reference[0] * key[t, :, None, :]).sum(-1)
             )
             reference += delta[None, :, :, None] * key[t, None, :, None, :]
             outputs.append((reference[0] * query[t, :, None, :]).sum(-1))
         actual = replay_tail_update(q, k, v, a, b, a_log, dt, state)
-        torch.testing.assert_close(actual, torch.stack(outputs), rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(
+            actual, torch.stack(outputs).to(dtype), rtol=1e-3, atol=1e-3
+        )
         torch.testing.assert_close(state, reference, rtol=1e-3, atol=1e-3)
         torch.testing.assert_close(pool[[0, 2]], canaries, rtol=0, atol=0)
     before = state.clone()
@@ -178,6 +189,29 @@ def test_replay_tail_preserves_causal_outputs_and_overwrites_only_final_state(
     graph.replay()
     torch.testing.assert_close(captured, expected, rtol=0, atol=0)
     torch.testing.assert_close(state, expected_state, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("accepted", range(5))
+@pytest.mark.parametrize("dim_first", [False, True])
+def test_replay_tail_conv_shift_matches_overlapping_index_copy(accepted, dim_first):
+    from vllm.model_executor.layers.mamba.gdn.replay_tail_update import (
+        advance_replay_tail_conv,
+    )
+
+    shape = (1, 67, 8) if dim_first else (1, 8, 67)
+    conv = torch.randn(shape, device="cuda", dtype=torch.bfloat16)
+    axis = 2 if dim_first else 1
+    positions = (torch.arange(8, device="cuda") + accepted).clamp(max=7)
+    expected = conv.index_select(axis, positions)
+    before = conv.clone()
+    graph = torch.cuda.CUDAGraph()
+    advance_replay_tail_conv(conv, accepted, dim_first)
+    torch.testing.assert_close(conv, expected, rtol=0, atol=0)
+    with torch.cuda.graph(graph):
+        advance_replay_tail_conv(conv, accepted, dim_first)
+    conv.copy_(before)
+    graph.replay()
+    torch.testing.assert_close(conv, expected, rtol=0, atol=0)
 
 
 class _TestGatedNorm:
@@ -199,6 +233,31 @@ class _TestGatedNorm:
             norm_before_gate=True,
             activation=self.activation,
         )
+
+
+@pytest.mark.parametrize("activation", ["silu", "sigmoid"])
+@pytest.mark.parametrize("weight_dtype", [torch.bfloat16, torch.float32])
+def test_replay_tail_inplace_norm_matches_per_token_reference(activation, weight_dtype):
+    from vllm.model_executor.layers.layernorm import RMSNormGated
+
+    core = torch.randn(5, 32, 128, device="cuda", dtype=torch.bfloat16)
+    packed = torch.randn(5, 64, 128, device="cuda", dtype=torch.bfloat16)
+    gate = packed[:, 32:]
+    weight = torch.randn(128, device="cuda", dtype=weight_dtype)
+    layer = types.SimpleNamespace(norm=_TestGatedNorm(weight, activation))
+    expected = RMSNormGated.forward_static(
+        core.reshape(-1, 128),
+        gate.reshape(-1, 128),
+        weight,
+        EPS,
+        core.dtype,
+        norm_before_gate=True,
+        activation=activation,
+    ).view_as(core)
+    QwenGatedDeltaNetAttention._rms_norm_gated_cuda(
+        cast(QwenGatedDeltaNetAttention, layer), core, gate, core
+    )
+    torch.testing.assert_close(core, expected, rtol=1e-3, atol=1e-3)
 
 
 def _make_vllm_config():

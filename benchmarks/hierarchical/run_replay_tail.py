@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Measure baseline/replay-tail pairs and audit independent gate/tail ablations."""
+"""Measure baseline/replay-tail pairs and audit the native tail-state control."""
 
 import argparse
 import hashlib
@@ -81,7 +81,9 @@ def main():
             "samples": samples,
             "max_tokens": args.max_tokens,
             "repeats": args.repeats,
-            "cases": ["none", "replay_tail", "gates_only", "tail_only"],
+            "cases": ["none", "replay_tail", "tail_only"],
+            "gates": "per_token",
+            "tail_kernel": "register_recurrence_final_store",
             "commit": subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], text=True
             ).strip(),
@@ -141,7 +143,7 @@ def main():
             save("results.json", rows)
         print(f"COMPLETE {case} {phase} {repeat} {index} {elapsed:.3f}s", flush=True)
 
-    for case in ("none", "replay_tail", "gates_only", "tail_only"):
+    for case in ("none", "replay_tail", "tail_only"):
         memory[case] = llm.collective_rpc("set_replay_case", args=(case,))[0]
         for index, sample in enumerate(samples):
             generate(case, "warmup", 0, index, sample)
@@ -155,11 +157,11 @@ def main():
                 generate(case, "e2e", repeat, index, sample)
             after = llm.collective_rpc("set_replay_case", args=(case,))[0]
             assert before["graphs"] == after["graphs"], "new graph in timed run"
-    for case in ("none", "replay_tail", "gates_only", "tail_only"):
+    for case in ("none", "replay_tail", "tail_only"):
         llm.collective_rpc("set_replay_case", args=(case,))
         for index, sample in enumerate(samples):
             generate(case, "audit", 0, index, sample)
-    expected = args.samples * (2 * args.repeats + 4)
+    expected = args.samples * (2 * args.repeats + 3)
     assert len(rows) == expected
     save(
         "measurement_complete.json",

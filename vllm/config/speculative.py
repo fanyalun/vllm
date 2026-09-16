@@ -634,8 +634,8 @@ class SpeculativeConfig:
     """Experimental Qwen preverify update, reset from Target each cycle.
 
     ssm_mean pools recurrent writes; input_mean pools the entire GDN input.
-    replay_tail preserves causal updates with first-token gates shared across
-    the window. Approximate modes retain one private SSM state after rejection.
+    replay_tail uses per-token gates and writes only the full window tail.
+    Approximate modes retain one private SSM state after rejection.
     """
 
     def make_inner_config(self) -> "SpeculativeConfig":

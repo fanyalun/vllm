@@ -42,14 +42,28 @@ def test_policy_matrix_does_not_certify_partial_requested_coverage(tmp_path):
 
 def test_replay_tail_audit_rejects_duplicate_cells_despite_complete_marker(tmp_path):
     (tmp_path / "ar.json").write_text(
-        json.dumps({"outputs": [{"sample_index": 0, "token_ids": [1, 2]}]})
+        json.dumps(
+            {
+                "outputs": [
+                    {
+                        "sample_index": 0,
+                        "token_ids": [1, 2],
+                        "prompt_sha256": "prompt-a",
+                    }
+                ]
+            }
+        )
+    )
+    (tmp_path / "dspark").mkdir()
+    (tmp_path / "dspark" / "contract.json").write_text(
+        json.dumps({"samples": [{"prompt_sha256": "prompt-a"}]})
     )
     folder = tmp_path / "mtp"
     folder.mkdir()
     for name, data in {
         "measurement_complete.json": {"expected": 6},
         "contract.json": {
-            "samples": [{}],
+            "samples": [{"prompt_sha256": "prompt-a"}],
             "max_tokens": 2,
             "repeats": 1,
             "cases": ["none", "replay_tail", "gates_only", "tail_only"],
@@ -70,6 +84,73 @@ def test_replay_tail_audit_rejects_duplicate_cells_despite_complete_marker(tmp_p
     with pytest.raises(AssertionError):
         summarize_replay(tmp_path)
     assert not (tmp_path / "summary.json").exists()
+
+
+@pytest.mark.parametrize(
+    "mismatch", [None, "different", "reordered", "duplicate", "missing", "method"]
+)
+def test_replay_tail_ar_identity_precedes_token_comparison(tmp_path, mismatch):
+    hashes = ["prompt-a", "prompt-b"]
+    ar = [
+        {"sample_index": i, "prompt_sha256": h, "token_ids": [1, 2]}
+        for i, h in enumerate(hashes)
+    ]
+    if mismatch == "different":
+        ar[0]["prompt_sha256"] = "other"
+    elif mismatch == "reordered":
+        ar[0]["prompt_sha256"], ar[1]["prompt_sha256"] = hashes[::-1]
+    elif mismatch == "duplicate":
+        ar[1]["sample_index"] = 0
+    elif mismatch == "missing":
+        del ar[0]["prompt_sha256"]
+    (tmp_path / "ar.json").write_text(json.dumps({"outputs": ar}))
+    cases = ["none", "replay_tail", "tail_only"]
+    for method in ("mtp", "dspark"):
+        folder = tmp_path / method
+        folder.mkdir()
+        identities = (
+            hashes[::-1] if mismatch == "method" and method == "dspark" else hashes
+        )
+        rows = [
+            dict(
+                case=c,
+                phase=phase,
+                repeat=0,
+                sample=i,
+                token_ids=[1, 2],
+                seconds=1,
+                cycles=[
+                    dict(
+                        emitted=2,
+                        scheduled=1,
+                        ms=1,
+                        inner=[dict(proposed=1, accepted=1)],
+                    )
+                ],
+                spans=[dict(phase="preverify", ms=1)],
+            )
+            for c in cases
+            for phase in (["e2e", "audit"] if c != "tail_only" else ["audit"])
+            for i in range(2)
+        ]
+        for name, value in {
+            "contract.json": dict(
+                samples=[dict(prompt_sha256=h) for h in identities],
+                max_tokens=2,
+                repeats=1,
+                cases=cases,
+            ),
+            "measurement_complete.json": dict(expected=10),
+            "private_state.json": {c: dict(ssm_bytes=10) for c in cases},
+            "results.json": rows,
+        }.items():
+            (folder / name).write_text(json.dumps(value))
+    if mismatch is None:
+        assert summarize_replay(tmp_path)["all_ar_equal"]
+    else:
+        with pytest.raises(ValueError):
+            summarize_replay(tmp_path)
+        assert not (tmp_path / "summary.json").exists()
 
 
 def test_piecewise_stop_uses_earliest_branch_and_keeps_final_round_exclusion():

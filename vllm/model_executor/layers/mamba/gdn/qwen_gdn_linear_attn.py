@@ -1952,9 +1952,7 @@ def qwen_gdn_mean_forward(
             hidden_states.float().mean(0, keepdim=True).to(hidden_states.dtype)
         )
     qkvz, _ = layer.in_proj_qkvz(hidden_states)
-    ba, _ = layer.in_proj_ba(
-        hidden_states[:1] if mode == "replay_tail" else hidden_states
-    )
+    ba, _ = layer.in_proj_ba(hidden_states)
     qkv_size = layer.key_dim * 2 + layer.value_dim
     qkv, z = qkvz.split([qkv_size, layer.value_dim], dim=-1)
     b, a = layer.split_ba(ba)
@@ -1989,9 +1987,13 @@ def qwen_gdn_mean_forward(
         layer.dt_bias,
         state,
     )
-    projected = layer._output_projection(
-        core, z.reshape(n, layer.num_v_heads, layer.head_v_dim)
-    )
+    output_gate = z.reshape(n, layer.num_v_heads, layer.head_v_dim)
+    if mode == "replay_tail":
+        # This custom-op body is eager; explicitly use the fused CUDA norm.
+        layer._rms_norm_gated_cuda(core, output_gate, core)
+        projected, _ = layer.out_proj(core.flatten(-2))
+    else:
+        projected = layer._output_projection(core, output_gate)
     output.copy_(projected.expand(tokens, -1))
 
 

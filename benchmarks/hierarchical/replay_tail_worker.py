@@ -19,25 +19,6 @@ class ReplayTailWorker:
             original_propose = spec.propose
             original_record = spec.record_verification
 
-            def eager(*args, **kwargs):
-                saved = []
-                if self._replay_case == "gates_only":
-                    for layer in spec.state.layers.values():
-                        projection = layer.in_proj_ba
-                        forward = projection.forward
-
-                        def frozen(hidden, forward=forward):
-                            value, bias = forward(hidden[:1])
-                            return value.expand(hidden.shape[0], -1), bias
-
-                        saved.append((projection, forward))
-                        projection.forward = frozen
-                try:
-                    return original_eager(*args, **kwargs)
-                finally:
-                    for projection, forward in saved:
-                        projection.forward = forward
-
             def verify(batch, *args):
                 self._replay_width = batch.num_tokens
                 width = batch.num_tokens
@@ -106,11 +87,10 @@ class ReplayTailWorker:
                     self._replay_pending = None
                 return original_record(logits, batch, sampled)
 
-            spec._verify_eager = eager
             spec._verify = verify
             spec.propose = propose
             spec.record_verification = record
-        if case not in ("none", "replay_tail", "gates_only", "tail_only"):
+        if case not in ("none", "replay_tail", "tail_only"):
             raise ValueError(case)
         self._replay_case = case
         mode = "replay_tail" if case == "replay_tail" else "none"

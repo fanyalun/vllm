@@ -18,12 +18,33 @@ def common_prefix(left, right):
 
 def summarize(root):
     ar = json.loads((root / "ar.json").read_text())
-    ar_tokens = {row["sample_index"]: row["token_ids"] for row in ar["outputs"]}
+    ar_rows = {row["sample_index"]: row for row in ar["outputs"]}
+    if len(ar_rows) != len(ar["outputs"]):
+        raise ValueError("Duplicate AR sample index")
+    contracts = {
+        method: json.loads((root / method / "contract.json").read_text())
+        for method in ("mtp", "dspark")
+    }
+    identities = []
+    for method, contract in contracts.items():
+        hashes = [sample.get("prompt_sha256") for sample in contract["samples"]]
+        if not hashes or any(not h for h in hashes):
+            raise ValueError(f"Missing prompt_sha256 in {method} contract")
+        if set(ar_rows) != set(range(len(hashes))):
+            raise ValueError(f"AR sample coverage differs from {method}")
+        for index, prompt_hash in enumerate(hashes):
+            if ar_rows[index].get("prompt_sha256") != prompt_hash:
+                raise ValueError(
+                    f"AR prompt identity mismatch: {method} sample {index}"
+                )
+        identities.append(hashes)
+    if identities[0] != identities[1]:
+        raise ValueError("MTP and DSpark prompt identities or order differ")
     summary, comparisons = [], []
     for method in ("mtp", "dspark"):
         folder = root / method
         marker = json.loads((folder / "measurement_complete.json").read_text())
-        contract = json.loads((folder / "contract.json").read_text())
+        contract = contracts[method]
         memory = json.loads((folder / "private_state.json").read_text())
         rows = json.loads((folder / "results.json").read_text())
         n, length, repeats = (
@@ -31,7 +52,11 @@ def summarize(root):
             contract["max_tokens"],
             contract["repeats"],
         )
-        assert len(rows) == marker["expected"] == len(n) * (2 * repeats + 4)
+        assert (
+            len(rows)
+            == marker["expected"]
+            == len(n) * (2 * repeats + len(contract["cases"]))
+        )
         keys = {(r["case"], r["phase"], r["repeat"], r["sample"]) for r in rows}
         expected = {
             (c, "e2e", r, s)
@@ -58,7 +83,7 @@ def summarize(root):
                     assert 0 <= cycle["emitted"] - 1 <= cycle["scheduled"]
                 assert remaining == 0
                 index = row["sample"]
-                reference = ar_tokens[index]
+                reference = ar_rows[index]["token_ids"]
                 assert len(reference) == length
                 comparisons.append(
                     dict(
