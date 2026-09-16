@@ -602,15 +602,23 @@ class SpeculativeConfig:
     moe_skip_top_h: int | None = Field(default=None, ge=1)
     """Number of routed experts used by each MoE-Skip draft forward.
 
-    Defaults to 4 when ``method='moe_skip'``. The target forward keeps the
-    model's configured routing top-k unchanged.
+    Explicitly selects fixed-h routing instead of the default p=0.125
+    threshold. The target keeps its configured routing top-k.
+    """
+
+    moe_skip_min_weight: float | None = Field(default=None, gt=0, le=1)
+    """Retain native top-k experts with normalized gate probability >= this value.
+
+    Defaults to 0.125 when top-h is unspecified. Thresholding precedes expert
+    scaling and has no top-1 fallback. With a threshold, top-h must be native k.
     """
 
     moe_skip_weight_mode: Literal["preserve", "renormalize"] = "preserve"
     """Weight handling for MoE-Skip drafts and hierarchical pre-verification.
 
     preserve keeps the retained experts' native top-k weights. renormalize
-    uses the model's routing normalization over the retained top-h experts.
+    uses the model's routing normalization over fixed top-h experts, or divides
+    threshold-retained weights by their retained normalized gate mass.
     Target routing and shared experts are unchanged.
     """
 
@@ -661,6 +669,7 @@ class SpeculativeConfig:
             method=self.inner_method,
             inner_method=None,
             moe_skip_top_h=None,
+            moe_skip_min_weight=None,
             moe_skip_weight_mode="preserve",
             preverify_gdn_mode="none",
             preverify_gdn_group_mode="none",
@@ -686,6 +695,7 @@ class SpeculativeConfig:
             inner.inner_method = None
             inner.num_speculative_tokens = self.inner_num_speculative_tokens
             inner.moe_skip_top_h = None
+            inner.moe_skip_min_weight = None
             inner.moe_skip_weight_mode = "preserve"
             factors.extend(
                 (
@@ -694,6 +704,7 @@ class SpeculativeConfig:
                     self.inner_num_speculative_tokens,
                     self.inner_num_rounds,
                     self.moe_skip_top_h,
+                    self.moe_skip_min_weight,
                     self.moe_skip_weight_mode,
                     self.preverify_gdn_mode,
                     self.preverify_gdn_group_mode,
@@ -739,6 +750,7 @@ class SpeculativeConfig:
                     self.method,
                     self.num_speculative_tokens,
                     self.moe_skip_top_h,
+                    self.moe_skip_min_weight,
                     self.moe_skip_weight_mode,
                 )
             )
@@ -1210,6 +1222,8 @@ class SpeculativeConfig:
 
         if self.method != "moe_skip" and self.moe_skip_top_h is not None:
             raise ValueError("moe_skip_top_h is only supported with method='moe_skip'")
+        if self.method != "moe_skip" and self.moe_skip_min_weight is not None:
+            raise ValueError("moe_skip_min_weight requires moe_skip or hierarchical")
         if self.method != "moe_skip" and self.moe_skip_weight_mode != "preserve":
             raise ValueError("moe_skip_weight_mode requires moe_skip or hierarchical")
 
@@ -1668,6 +1682,7 @@ class SpeculativeConfig:
         }:
             raise ValueError("hierarchical supports Qwen3.6 MoE and Gemma4 MoE only")
         self.moe_skip_top_h = preverify.moe_skip_top_h
+        self.moe_skip_min_weight = preverify.moe_skip_min_weight
         if self.preverify_gdn_group_mode not in ("none", "projection", "full"):
             raise ValueError("Unknown preverify_gdn_group_mode")
         if self.preverify_gdn_group_mode != "none" and self.preverify_gdn_mode not in (
@@ -1730,7 +1745,11 @@ class SpeculativeConfig:
         text_config = self.target_model_config.hf_text_config
         top_k_field = "num_experts_per_tok" if is_qwen else "top_k_experts"
         target_top_k = getattr(text_config, top_k_field, None)
-        if not isinstance(target_top_k, int) or isinstance(target_top_k, bool):
+        if (
+            not isinstance(target_top_k, int)
+            or isinstance(target_top_k, bool)
+            or target_top_k < 1
+        ):
             raise ValueError(
                 f"method='moe_skip' requires {top_k_field} in the target text "
                 "configuration"
@@ -1741,7 +1760,13 @@ class SpeculativeConfig:
             raise ValueError("Gemma4 method='moe_skip' requires routed experts")
 
         if self.moe_skip_top_h is None:
-            self.moe_skip_top_h = 4
+            if self.moe_skip_min_weight is None:
+                self.moe_skip_min_weight = 0.125
+            self.moe_skip_top_h = target_top_k
+        if self.moe_skip_min_weight is not None and self.moe_skip_top_h != target_top_k:
+            raise ValueError(
+                "moe_skip_min_weight requires native top-k, not fixed top-h"
+            )
         if self.moe_skip_top_h > target_top_k:
             raise ValueError(
                 "moe_skip_top_h must be no larger than the target routing top-k "
@@ -1999,6 +2024,12 @@ class SpeculativeConfig:
             and self.moe_skip_weight_mode != "preserve"
         ):
             raise ValueError("moe_skip_weight_mode requires moe_skip or hierarchical")
+
+        if (
+            self.method not in ("moe_skip", "hierarchical")
+            and self.moe_skip_min_weight is not None
+        ):
+            raise ValueError("moe_skip_min_weight requires moe_skip or hierarchical")
 
         if self.rejection_sample_method == "synthetic":
             # Consolidate to per-position rates

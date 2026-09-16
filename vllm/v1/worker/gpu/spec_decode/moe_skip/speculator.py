@@ -71,6 +71,7 @@ class MoeSkipSpeculator(BaseSpeculator):
         assert speculative_config.method == "moe_skip"
         assert speculative_config.moe_skip_top_h is not None
         self.top_h = speculative_config.moe_skip_top_h
+        self.min_weight = speculative_config.moe_skip_min_weight
         self.preserve_weights = speculative_config.moe_skip_weight_mode == "preserve"
         self.num_speculative_steps = speculative_config.num_speculative_tokens
 
@@ -378,6 +379,7 @@ class MoeSkipSpeculator(BaseSpeculator):
             is_padding=self.input_buffers.is_padding[:num_tokens],
             additional_forward_kwargs={
                 "routing_top_k": self.top_h,
+                "routing_min_weight": self.min_weight,
                 "routing_preserve_weights": self.preserve_weights,
             },
         ):

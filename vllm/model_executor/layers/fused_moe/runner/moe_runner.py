@@ -625,6 +625,19 @@ class MoERunner(MoERunnerInterface):
             )
         else:
             # Modular kernels: select experts first, then call routed_experts
+            if (
+                get_forward_context().additional_kwargs.get("routing_min_weight")
+                is not None
+            ):
+                from vllm.model_executor.layers.fused_moe.experts.triton_moe import (
+                    TritonExperts,
+                )
+
+                kernel = self._quant_method.moe_kernel
+                if kernel is None or type(kernel.fused_experts) is not TritonExperts:
+                    raise ValueError(
+                        "MoE-Skip threshold routing requires TritonExperts"
+                    )
             topk_weights, topk_ids = self.router.select_experts(
                 hidden_states=hidden_states,
                 router_logits=router_logits,

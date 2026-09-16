@@ -168,6 +168,7 @@ class FusedTopKRouter(BaseRouter):
             topk=(
                 self.top_k
                 if self.get_routing_preserve_weights()
+                or self.get_routing_min_weight() is not None
                 else self.get_routing_top_k()
             ),
             renormalize=self.renormalize,

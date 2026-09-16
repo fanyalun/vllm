@@ -53,7 +53,8 @@ def _make_config(**kwargs) -> SpeculativeConfig:
 def test_moe_skip_defaults_and_has_no_draft_model():
     config = _make_config()
 
-    assert config.moe_skip_top_h == 4
+    assert config.moe_skip_top_h == 8
+    assert config.moe_skip_min_weight == 0.125
     assert config.moe_skip_weight_mode == "preserve"
     assert config.model is None
     assert config.draft_model_config is None
@@ -65,7 +66,9 @@ def test_moe_skip_defaults_and_has_no_draft_model():
 
 @pytest.mark.parametrize("top_h", [1, 4, 8])
 def test_moe_skip_accepts_valid_top_h(top_h: int):
-    assert _make_config(moe_skip_top_h=top_h).moe_skip_top_h == top_h
+    config = _make_config(moe_skip_top_h=top_h)
+    assert config.moe_skip_top_h == top_h
+    assert config.moe_skip_min_weight is None
 
 
 def test_moe_skip_rejects_invalid_top_h():
@@ -73,6 +76,26 @@ def test_moe_skip_rejects_invalid_top_h():
         _make_config(moe_skip_top_h=0)
     with pytest.raises(ValueError, match="no larger than"):
         _make_config(moe_skip_top_h=9)
+    with pytest.raises(ValueError, match="num_experts_per_tok"):
+        _make_config(target_model_config=_target_config(top_k=0))
+
+
+def test_threshold_configuration_and_cli():
+    config = EngineArgs(
+        spec_method="moe_skip", spec_tokens=8, moe_skip_min_weight=0.1
+    ).create_speculative_config(_target_config(), ParallelConfig())
+    assert config is not None
+    assert config.moe_skip_min_weight == 0.1
+    assert config.compute_hash() != _make_config().compute_hash()
+    for p in (0, -0.1, 1.1):
+        with pytest.raises(ValidationError):
+            _make_config(moe_skip_min_weight=p)
+    with pytest.raises(ValueError, match="native top-k"):
+        _make_config(moe_skip_top_h=3, moe_skip_min_weight=0.125)
+    with pytest.raises(ValueError, match="moe_skip_min_weight"):
+        SpeculativeConfig(
+            method="ngram", num_speculative_tokens=4, moe_skip_min_weight=0.125
+        )
 
 
 def test_moe_skip_weight_mode_changes_graph_hash_and_rejects_unknown_modes():
@@ -121,7 +144,8 @@ def test_gemma4_moe_skip_uses_native_top_k_without_shared_expert(architecture: s
         target_model_config=_gemma4_target_config(architecture),
     )
 
-    assert config.moe_skip_top_h == 4
+    assert config.moe_skip_top_h == 8
+    assert config.moe_skip_min_weight == 0.125
     assert config.num_speculative_tokens == 1
     assert config.draft_model_config is None
 

@@ -1555,6 +1555,20 @@ def _prepare_expert_assignment(
     ignore_invalid_experts: bool = False,
 ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor]:
     """Prepare expert assignments for the aligned and low-latency Triton paths."""
+    from vllm.forward_context import get_forward_context, is_forward_context_available
+
+    if (
+        is_forward_context_available()
+        and get_forward_context().additional_kwargs.get("routing_min_weight")
+        is not None
+    ):
+        from .threshold_assignment import threshold_expert_assignment
+
+        if expert_map is not None:
+            raise ValueError("MoE-Skip threshold assignment does not support EP")
+        return threshold_expert_assignment(
+            topk_ids, config["BLOCK_SIZE_M"], global_num_experts
+        )
     # SPARSITY_FACTOR is a heuristic margin ensuring tokens_in_chunk * top_k
     # activates only a small fraction of total experts
     # Skips moe_align_block_size and activates the `sorted_token_ids is None`

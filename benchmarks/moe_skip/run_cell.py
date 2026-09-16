@@ -22,7 +22,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--spec-model")
     parser.add_argument("--draft-length", type=int)
-    parser.add_argument("--top-h", type=int, default=4)
+    routing = parser.add_mutually_exclusive_group()
+    routing.add_argument("--top-h", type=int)
+    routing.add_argument("--min-weight", type=float)
     parser.add_argument("--num-samples", type=int, default=4)
     parser.add_argument("--sample-index", type=int)
     parser.add_argument("--max-tokens", type=int, default=128)
@@ -113,6 +115,7 @@ def main() -> None:
             "method": "moe_skip",
             "num_speculative_tokens": args.draft_length,
             "moe_skip_top_h": args.top_h,
+            "moe_skip_min_weight": args.min_weight,
         }
     elif args.method == "mtp":
         speculative_config = {
@@ -249,6 +252,11 @@ def main() -> None:
         "mode": args.mode,
         "draft_length": args.draft_length,
         "top_h": args.top_h if args.method == "moe_skip" else None,
+        "min_weight": (
+            (args.min_weight if args.min_weight is not None else 0.125)
+            if args.method == "moe_skip" and args.top_h is None
+            else None
+        ),
         "num_samples": len(samples),
         "sample_index": args.sample_index,
         "max_tokens": args.max_tokens,

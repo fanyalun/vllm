@@ -54,7 +54,8 @@ def run_cell(path):
     if method != "ar":
         spec = {"method": method, "num_speculative_tokens": config["d"]}
         if method == "moe_skip":
-            spec["moe_skip_top_h"] = 4
+            spec["moe_skip_top_h"] = config.get("top_h", 4)
+            spec["moe_skip_min_weight"] = config.get("min_weight")
         elif config["spec_model"]:
             spec["model"] = config["spec_model"]
     start = time.perf_counter()
@@ -260,7 +261,8 @@ def main():
         "num_samples": 16,
         "max_tokens": 512,
         "batch_size": 1,
-        "top_h": 4,
+        "top_h": None,
+        "min_weight": 0.125,
         "max_model_len": 1024,
         "max_num_batched_tokens": 4096,
         "temperature": 0,
@@ -338,6 +340,8 @@ def main():
                         "d": d,
                         "spec_model": model.get(method),
                         "dataset": contract["datasets"][name]["path"],
+                        "top_h": contract.get("top_h", 4),
+                        "min_weight": contract.get("min_weight"),
                     },
                 )
                 command = [

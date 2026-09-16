@@ -207,12 +207,28 @@ class BaseRouter(FusedMoERouter):
             "routing_preserve_weights", False
         )
 
+    def get_routing_min_weight(self) -> float | None:
+        if not is_forward_context_available():
+            return None
+        return get_forward_context().additional_kwargs.get("routing_min_weight")
+
     def select_routing_top_k(
         self,
         weights: torch.Tensor,
         ids: torch.Tensor,
         router_logits: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        threshold = self.get_routing_min_weight()
+        if threshold is not None:
+            from .weight_threshold import threshold_experts
+
+            return threshold_experts(
+                weights,
+                ids,
+                router_logits,
+                threshold,
+                renormalize=not self.get_routing_preserve_weights(),
+            )
         top_k = self.get_routing_top_k()
         if weights.shape[-1] == top_k:
             return weights, ids

@@ -215,3 +215,59 @@ def test_preserved_weights_handle_invalid_experts_during_graph_capture(
     start = 0 if all_invalid else 2
     assert torch.equal(selected_weights, weights[:, start : start + 4])
     assert torch.equal(selected_ids, ids[:, start : start + 4])
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("tokens", [1, 4, 5, 16, 32, 33, 64])
+@pytest.mark.parametrize("uniform", [False, True])
+@pytest.mark.parametrize("threshold", [0.125, 0.625])
+def test_threshold_dispatch_matches_zero_weight_reference(tokens, uniform, threshold):
+    """Skipped slots must be initialized on both packed and aligned paths."""
+    from vllm.model_executor.layers.fused_moe.fused_moe import fused_experts
+    from vllm.model_executor.layers.fused_moe.router.weight_threshold import (
+        threshold_experts,
+    )
+
+    torch.manual_seed(0)
+    logits = torch.randn(tokens, 128, device="cuda")
+    if uniform:
+        logits.zero_()
+    scores, ids = logits.topk(8, dim=-1)
+    ids = ids.to(torch.int32)
+    q = scores.softmax(-1)
+    weights = q * torch.linspace(0.1, 2, 128, device="cuda")[ids.long()]
+    keep = q >= threshold
+    actual_weights, actual_ids = threshold_experts(weights, ids, logits, threshold)
+    assert torch.equal(actual_ids, ids.masked_fill(~keep, -1))
+    assert torch.equal(actual_weights, weights.masked_fill(~keep, 0))
+    renormalized, renormalized_ids = threshold_experts(
+        weights, ids, logits, threshold, renormalize=True
+    )
+    mass = q.masked_fill(~keep, 0).sum(-1, keepdim=True)
+    expected = weights.masked_fill(~keep, 0) / torch.where(mass > 0, mass, 1)
+    torch.testing.assert_close(renormalized, expected)
+    assert torch.equal(renormalized_ids, actual_ids)
+    x = torch.randn(tokens, 128, device="cuda", dtype=torch.bfloat16)
+    w1 = torch.randn(128, 128, 128, device="cuda", dtype=torch.bfloat16) / 16
+    w2 = torch.randn(128, 128, 64, device="cuda", dtype=torch.bfloat16) / 16
+    reference = fused_experts(x, w1, w2, actual_weights, ids)
+    context = ForwardContext(
+        no_compile_layers={},
+        attn_metadata={},
+        slot_mapping={},
+        additional_kwargs={"routing_min_weight": threshold},
+    )
+    with override_forward_context(context):
+        actual = fused_experts(x, w1, w2, actual_weights, actual_ids)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            captured = fused_experts(x, w1, w2, actual_weights, actual_ids)
+        graph.replay()
+        torch.accelerator.synchronize()
+    torch.testing.assert_close(actual, reference, rtol=0.02, atol=0.01)
+    torch.testing.assert_close(captured, reference, rtol=0.02, atol=0.01)
+    actual_ids.fill_(-1)
+    actual_weights.zero_()
+    graph.replay()
+    torch.accelerator.synchronize()
+    assert torch.count_nonzero(captured) == 0

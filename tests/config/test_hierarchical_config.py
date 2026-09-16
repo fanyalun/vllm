@@ -47,7 +47,8 @@ def test_capacity_includes_each_preverify_recovery_or_bonus(monkeypatch):
     config = make_config(monkeypatch)
     assert config.num_speculative_tokens == 20
     assert config.inner_method == "mtp"
-    assert config.moe_skip_top_h == 4
+    assert config.moe_skip_top_h == 8
+    assert config.moe_skip_min_weight == 0.125
     assert config.moe_skip_weight_mode == "preserve"
     assert config.hierarchical_stop_policy == "low_error"
     assert make_config(monkeypatch, inner_num_rounds=2).num_speculative_tokens == 10
@@ -56,7 +57,8 @@ def test_capacity_includes_each_preverify_recovery_or_bonus(monkeypatch):
 def test_gemma4_uses_shared_moe_preverification_with_full_outer_capacity(monkeypatch):
     config = make_config(monkeypatch, family="gemma4")
     assert config.num_speculative_tokens == 20
-    assert config.moe_skip_top_h == 4
+    assert config.moe_skip_top_h == 8
+    assert config.moe_skip_min_weight == 0.125
 
 
 def test_graph_hash_distinguishes_inner_method_depth_rounds_and_top_h(monkeypatch):

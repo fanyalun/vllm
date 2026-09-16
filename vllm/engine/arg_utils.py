@@ -655,6 +655,7 @@ class EngineArgs:
     spec_model: str | None = None
     spec_tokens: int | None = None
     moe_skip_top_h: int | None = None
+    moe_skip_min_weight: float | None = None
     moe_skip_weight_mode: str | None = None
     diffusion_config: dict[str, Any] | None = None
 
@@ -1672,6 +1673,9 @@ class EngineArgs:
             "--moe-skip-top-h", **speculative_kwargs["moe_skip_top_h"]
         )
         vllm_group.add_argument(
+            "--moe-skip-min-weight", **speculative_kwargs["moe_skip_min_weight"]
+        )
+        vllm_group.add_argument(
             "--moe-skip-weight-mode",
             **{**speculative_kwargs["moe_skip_weight_mode"], "default": None},
         )
@@ -1896,6 +1900,7 @@ class EngineArgs:
             ("--spec-model", "model", self.spec_model),
             ("--spec-tokens", "num_speculative_tokens", self.spec_tokens),
             ("--moe-skip-top-h", "moe_skip_top_h", self.moe_skip_top_h),
+            ("--moe-skip-min-weight", "moe_skip_min_weight", self.moe_skip_min_weight),
             (
                 "--moe-skip-weight-mode",
                 "moe_skip_weight_mode",
