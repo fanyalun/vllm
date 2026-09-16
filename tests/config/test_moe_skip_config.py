@@ -54,6 +54,7 @@ def test_moe_skip_defaults_and_has_no_draft_model():
     config = _make_config()
 
     assert config.moe_skip_top_h == 4
+    assert config.moe_skip_weight_mode == "preserve"
     assert config.model is None
     assert config.draft_model_config is None
     assert config.draft_parallel_config is None
@@ -72,6 +73,37 @@ def test_moe_skip_rejects_invalid_top_h():
         _make_config(moe_skip_top_h=0)
     with pytest.raises(ValueError, match="no larger than"):
         _make_config(moe_skip_top_h=9)
+
+
+def test_moe_skip_weight_mode_changes_graph_hash_and_rejects_unknown_modes():
+    preserve = _make_config()
+    renormalize = _make_config(moe_skip_weight_mode="renormalize")
+    assert preserve.compute_hash() != renormalize.compute_hash()
+    with pytest.raises(ValidationError):
+        _make_config(moe_skip_weight_mode="invalid")
+    with pytest.raises(ValueError, match="moe_skip_weight_mode"):
+        SpeculativeConfig(
+            method="ngram",
+            num_speculative_tokens=4,
+            moe_skip_weight_mode="renormalize",
+        )
+
+
+def test_moe_skip_weight_mode_cli_alias_and_json_conflict():
+    config = EngineArgs(
+        spec_method="moe_skip", spec_tokens=8, moe_skip_weight_mode="renormalize"
+    ).create_speculative_config(_target_config(), ParallelConfig())
+    assert config is not None
+    assert config.moe_skip_weight_mode == "renormalize"
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        EngineArgs(
+            speculative_config={
+                "method": "moe_skip",
+                "num_speculative_tokens": 8,
+                "moe_skip_weight_mode": "preserve",
+            },
+            moe_skip_weight_mode="renormalize",
+        ).create_speculative_config(_target_config(), ParallelConfig())
 
 
 def test_qwen_moe_skip_requires_two_gdn_scratch_candidates():

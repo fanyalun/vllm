@@ -606,6 +606,14 @@ class SpeculativeConfig:
     model's configured routing top-k unchanged.
     """
 
+    moe_skip_weight_mode: Literal["preserve", "renormalize"] = "preserve"
+    """Weight handling for MoE-Skip drafts and hierarchical pre-verification.
+
+    preserve keeps the retained experts' native top-k weights. renormalize
+    uses the model's routing normalization over the retained top-h experts.
+    Target routing and shared experts are unchanged.
+    """
+
     inner_method: Literal["mtp", "dspark"] | None = None
     """Small drafter used by hierarchical speculative decoding."""
 
@@ -653,6 +661,7 @@ class SpeculativeConfig:
             method=self.inner_method,
             inner_method=None,
             moe_skip_top_h=None,
+            moe_skip_weight_mode="preserve",
             preverify_gdn_mode="none",
             preverify_gdn_group_mode="none",
             num_speculative_tokens=self.inner_num_speculative_tokens,
@@ -677,6 +686,7 @@ class SpeculativeConfig:
             inner.inner_method = None
             inner.num_speculative_tokens = self.inner_num_speculative_tokens
             inner.moe_skip_top_h = None
+            inner.moe_skip_weight_mode = "preserve"
             factors.extend(
                 (
                     self.method,
@@ -684,6 +694,7 @@ class SpeculativeConfig:
                     self.inner_num_speculative_tokens,
                     self.inner_num_rounds,
                     self.moe_skip_top_h,
+                    self.moe_skip_weight_mode,
                     self.preverify_gdn_mode,
                     self.preverify_gdn_group_mode,
                     self.hierarchical_stop_policy,
@@ -724,7 +735,12 @@ class SpeculativeConfig:
 
         if self.method == "moe_skip":
             factors.extend(
-                (self.method, self.num_speculative_tokens, self.moe_skip_top_h)
+                (
+                    self.method,
+                    self.num_speculative_tokens,
+                    self.moe_skip_top_h,
+                    self.moe_skip_weight_mode,
+                )
             )
 
         hash_str = safe_hash(str(factors).encode(), usedforsecurity=False).hexdigest()
@@ -1194,6 +1210,8 @@ class SpeculativeConfig:
 
         if self.method != "moe_skip" and self.moe_skip_top_h is not None:
             raise ValueError("moe_skip_top_h is only supported with method='moe_skip'")
+        if self.method != "moe_skip" and self.moe_skip_weight_mode != "preserve":
+            raise ValueError("moe_skip_weight_mode requires moe_skip or hierarchical")
 
         if self.model is None and self.num_speculative_tokens is not None:
             if self.method == "mtp":
@@ -1976,6 +1994,11 @@ class SpeculativeConfig:
             and self.moe_skip_top_h is not None
         ):
             raise ValueError("moe_skip_top_h is only supported with method='moe_skip'")
+        if (
+            self.method not in ("moe_skip", "hierarchical")
+            and self.moe_skip_weight_mode != "preserve"
+        ):
+            raise ValueError("moe_skip_weight_mode requires moe_skip or hierarchical")
 
         if self.rejection_sample_method == "synthetic":
             # Consolidate to per-position rates

@@ -48,6 +48,7 @@ def test_capacity_includes_each_preverify_recovery_or_bonus(monkeypatch):
     assert config.num_speculative_tokens == 20
     assert config.inner_method == "mtp"
     assert config.moe_skip_top_h == 4
+    assert config.moe_skip_weight_mode == "preserve"
     assert config.hierarchical_stop_policy == "low_error"
     assert make_config(monkeypatch, inner_num_rounds=2).num_speculative_tokens == 10
 
@@ -67,6 +68,7 @@ def test_graph_hash_distinguishes_inner_method_depth_rounds_and_top_h(monkeypatc
             {"inner_num_speculative_tokens": 2},
             {"inner_num_rounds": 2},
             {"moe_skip_top_h": 2},
+            {"moe_skip_weight_mode": "renormalize"},
             {"preverify_gdn_mode": "ssm_mean"},
             {"preverify_gdn_mode": "input_mean"},
             {"preverify_gdn_mode": "replay_tail"},

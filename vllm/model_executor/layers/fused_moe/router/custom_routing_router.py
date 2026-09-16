@@ -55,10 +55,17 @@ class CustomRoutingRouter(BaseRouter):
         topk_weights, topk_ids = self.custom_routing_function(
             hidden_states=hidden_states,
             gating_output=router_logits,
-            topk=self.get_routing_top_k(),
+            topk=(
+                self.top_k
+                if self.get_routing_preserve_weights()
+                else self.get_routing_top_k()
+            ),
             renormalize=self.renormalize,
         )
 
+        topk_weights, topk_ids = self.select_routing_top_k(
+            topk_weights, topk_ids, router_logits
+        )
         return topk_weights.to(torch.float32), topk_ids.to(
             torch.int32 if indices_type is None else indices_type
         )

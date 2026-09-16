@@ -165,10 +165,14 @@ class FusedTopKRouter(BaseRouter):
         topk_weights, topk_ids, token_expert_indices = fused_topk(
             hidden_states=hidden_states,
             gating_output=router_logits,
-            topk=self.get_routing_top_k(),
+            topk=(
+                self.top_k
+                if self.get_routing_preserve_weights()
+                else self.get_routing_top_k()
+            ),
             renormalize=self.renormalize,
             indices_type=indices_type,
             scoring_func=self.scoring_func,
         )
 
-        return topk_weights, topk_ids
+        return self.select_routing_top_k(topk_weights, topk_ids, router_logits)

@@ -4,6 +4,58 @@ On 2026-09-16, preserving native top-8 weights improved acceptance for
 Qwen3.6-35B-A3B, but slightly reduced aggregate acceptance for Gemma-4-26B-A4B-it.
 This four-prompt smoke test does not establish a universal winner.
 
+## Production weight modes
+
+The production MoE-Skip implementation now defaults to preserving native top-k
+weights. Set `moe_skip_weight_mode` to `preserve` or `renormalize` in the
+speculative config. The same setting controls hierarchical MoE pre-verification;
+it does not alter the inner drafter, full Target routing, or shared experts.
+
+```json
+{
+  "method": "moe_skip",
+  "num_speculative_tokens": 16,
+  "moe_skip_top_h": 4,
+  "moe_skip_weight_mode": "preserve"
+}
+```
+
+Omitting `moe_skip_weight_mode` selects `preserve`. To recover the previous
+behavior, use `"moe_skip_weight_mode": "renormalize"`. The CLI alias is
+`--moe-skip-weight-mode preserve` or `--moe-skip-weight-mode renormalize`.
+
+Preserve computes native top-k routing weights, selects the highest-gate top-h
+experts, and gathers their weights unchanged. Equal gates retain native expert
+order. Expert scaling is preserved, including Gemma's per-expert scale. The
+expert kernels receive tensors with width h, so the skipped experts are removed
+from dispatch. Renormalize uses the previous direct top-h routing path.
+The mode is call-scoped and included in compilation hashes.
+
+`run_weight_ablation.py` now uses this production config directly for fixed h;
+it no longer installs the benchmark-only fixed-h router patch. The experimental
+top-p path remains a separate worker extension, with weight mode selected by
+`--mode`. Historical results below retain their explicitly recorded modes.
+
+Production validation passed 151 targeted tests covering configuration, graph
+hashes, CLI alias conflicts, independent and hierarchical routing/state behavior,
+native weights and expert scales, tied gates, and invalid graph-capture IDs.
+The four CUDA Graph cells (two models, two modes, four prompts each, D=16,
+128 output tokens) completed. Eager preserve-mode runs matched the previous
+experimental implementation's output tokens and detailed acceptance counters
+exactly for all eight tested prompts across both models.
+
+CUDA Graph completion is not strict output equivalence: the two graph weight
+modes matched outputs on 4/4 Qwen prompts and 0/4 Gemma prompts; comparison to
+the corresponding prior eager mode matched 3/4 Qwen prompts and 0/4 Gemma
+prompts. The cause of these graph/eager output differences is not established
+by this change. No AR equivalence or performance claim is made.
+Actual-model validation covers standalone MoE-Skip; hierarchical integration is
+covered by the targeted tests.
+
+Validation artifacts, including the exact-source manifest, per-cell logs and
+results, pytest/pre-commit output, and `validation.json`, are in
+`benchmark_results/moe_skip_native_weight_modes_4x128_d16_cudagraph_20260916_validated/`.
+
 ## Contract
 
 - Four fixed prompts per model: HumanEval, Alpaca, GSM8K, UltraFeedback.

@@ -459,6 +459,8 @@ class HierarchicalSpeculator(BaseSpeculator):
                 is_padding=batch.is_padding,
                 additional_forward_kwargs={
                     "routing_top_k": self.config.moe_skip_top_h,
+                    "routing_preserve_weights": self.config.moe_skip_weight_mode
+                    == "preserve",
                     "preverify_gdn_mode": self.config.preverify_gdn_mode,
                 },
             ),

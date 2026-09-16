@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--samples", type=int, default=4)
     parser.add_argument("--draft-length", type=int, default=4)
     parser.add_argument("--expert-top-p", type=float)
+    parser.add_argument("--cuda-graphs", action="store_true")
     args = parser.parse_args()
     if args.samples < 1 or args.draft_length < 1:
         parser.error("--samples and --draft-length must be positive")
@@ -52,7 +53,7 @@ def main():
         "max_tokens": 128,
         "temperature": 0,
         "seed": 0,
-        "enforce_eager": True,
+        "enforce_eager": not args.cuda_graphs,
         "dataset": str(dataset),
         "dataset_sha256": sha256(dataset),
         "model_path": MODELS[args.model][0],
@@ -61,7 +62,7 @@ def main():
     llm = LLM(
         model=config["model_path"],
         tensor_parallel_size=1,
-        enforce_eager=True,
+        enforce_eager=config["enforce_eager"],
         max_model_len=1024,
         max_num_seqs=1,
         max_num_batched_tokens=4096,
@@ -71,15 +72,14 @@ def main():
         speculative_config={
             "method": "moe_skip",
             "moe_skip_top_h": 4 if args.expert_top_p is None else 8,
+            "moe_skip_weight_mode": args.mode,
             "num_speculative_tokens": args.draft_length,
         },
         per_request_spec_decode_metrics="detailed",
         disable_log_stats=True,
         seed=0,
         worker_extension_cls=(
-            "weight_ablation_worker.WeightAblationWorker"
-            if args.expert_top_p is None
-            else "top_p_worker.TopPWorker"
+            "" if args.expert_top_p is None else "top_p_worker.TopPWorker"
         ),
     )
     if args.expert_top_p is not None:

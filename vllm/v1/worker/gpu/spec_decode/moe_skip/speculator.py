@@ -71,6 +71,7 @@ class MoeSkipSpeculator(BaseSpeculator):
         assert speculative_config.method == "moe_skip"
         assert speculative_config.moe_skip_top_h is not None
         self.top_h = speculative_config.moe_skip_top_h
+        self.preserve_weights = speculative_config.moe_skip_weight_mode == "preserve"
         self.num_speculative_steps = speculative_config.num_speculative_tokens
 
         scheduler_config = vllm_config.scheduler_config
@@ -375,7 +376,10 @@ class MoeSkipSpeculator(BaseSpeculator):
             slot_mapping=slot_mappings,
             batch_descriptor=BatchDescriptor(num_tokens=num_tokens),
             is_padding=self.input_buffers.is_padding[:num_tokens],
-            additional_forward_kwargs={"routing_top_k": self.top_h},
+            additional_forward_kwargs={
+                "routing_top_k": self.top_h,
+                "routing_preserve_weights": self.preserve_weights,
+            },
         ):
             if cudagraph_runtime_mode == CUDAGraphMode.PIECEWISE:
                 assert self.decode_cudagraph_manager is not None

@@ -200,6 +200,32 @@ class BaseRouter(FusedMoERouter):
             )
         return routing_top_k
 
+    def get_routing_preserve_weights(self) -> bool:
+        if not is_forward_context_available():
+            return False
+        return get_forward_context().additional_kwargs.get(
+            "routing_preserve_weights", False
+        )
+
+    def select_routing_top_k(
+        self,
+        weights: torch.Tensor,
+        ids: torch.Tensor,
+        router_logits: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        top_k = self.get_routing_top_k()
+        if weights.shape[-1] == top_k:
+            return weights, ids
+        # Select by gate logits, not weights that may include expert scales.
+        valid = (ids >= 0) & (ids < router_logits.shape[-1])
+        safe_ids = ids.long().clamp(0, router_logits.shape[-1] - 1)
+        scores = router_logits.gather(1, safe_ids).masked_fill(~valid, -float("inf"))
+        selected = scores.argsort(dim=-1, descending=True, stable=True)[:, :top_k]
+        return (
+            weights.gather(1, selected).contiguous(),
+            ids.gather(1, selected).contiguous(),
+        )
+
     def set_capture_fn(self, capture_fn: Callable[[torch.Tensor], None] | None) -> None:
         """Set a capture callback for logical routed expert IDs."""
         self.capture_fn = capture_fn
