@@ -911,23 +911,30 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         return self._forward_cuda_exact(hidden_states)
 
     def _forward_cuda_exact(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        num_tokens = hidden_states.size(0)
         # ============================================================
         # Part 1: Input Projection
         # ============================================================
         mixed_qkvz, _ = self.in_proj_qkvz(hidden_states)
         ba, _ = self.in_proj_ba(hidden_states)
 
+        return self.forward_cuda_projected(mixed_qkvz, ba)
+
+    def forward_cuda_projected(
+        self, mixed_qkvz: torch.Tensor, ba: torch.Tensor
+    ) -> torch.Tensor:
+        """Run the original state update with already projected inputs."""
+        num_tokens = mixed_qkvz.size(0)
+
         use_fused_gdn_decode = (
             self.enable_fused_gdn_decode
-            and hidden_states.dtype == torch.bfloat16
+            and mixed_qkvz.dtype == torch.bfloat16
             and self.norm.weight.dtype in (torch.bfloat16, torch.float32)
         )
         if use_fused_gdn_decode:
             core_attn_out = torch.zeros(
                 (num_tokens, self.num_v_heads // self.tp_size, self.head_v_dim),
-                dtype=hidden_states.dtype,
-                device=hidden_states.device,
+                dtype=mixed_qkvz.dtype,
+                device=mixed_qkvz.device,
             )
             torch.ops.vllm.qwen_gdn_attention_core_fused_norm_packed(
                 mixed_qkvz,
@@ -962,8 +969,8 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         # see discussions in https://github.com/vllm-project/vllm/pull/28182
         core_attn_out = torch.zeros(
             (num_tokens, self.num_v_heads // self.tp_size, self.head_v_dim),
-            dtype=hidden_states.dtype,
-            device=hidden_states.device,
+            dtype=mixed_qkvz.dtype,
+            device=mixed_qkvz.device,
         )
 
         torch.ops.vllm.qwen_gdn_attention_core(
@@ -1953,6 +1960,13 @@ def qwen_gdn_mean_forward(
         )
     qkvz, _ = layer.in_proj_qkvz(hidden_states)
     ba, _ = layer.in_proj_ba(hidden_states)
+    projected = qwen_gdn_mean_projected(layer, qkvz, ba, metadata, mode)
+    output.copy_(projected.expand(tokens, -1))
+
+
+def qwen_gdn_mean_projected(layer, qkvz, ba, metadata, mode):
+    """Update private state from projections, preserving per-token gates."""
+    conv, state = layer.kv_cache
     qkv_size = layer.key_dim * 2 + layer.value_dim
     qkv, z = qkvz.split([qkv_size, layer.value_dim], dim=-1)
     b, a = layer.split_ba(ba)
@@ -1975,7 +1989,7 @@ def qwen_gdn_mean_forward(
         .transpose(0, 1)
     )
     q, k, v = convolved.split([layer.key_dim, layer.key_dim, layer.value_dim], -1)
-    n = hidden_states.shape[0]
+    n = qkvz.shape[0]
     update = replay_tail_update if mode == "replay_tail" else mean_state_update
     core = update(
         q.reshape(n, layer.num_k_heads, layer.head_k_dim),
@@ -1994,7 +2008,7 @@ def qwen_gdn_mean_forward(
         projected, _ = layer.out_proj(core.flatten(-2))
     else:
         projected = layer._output_projection(core, output_gate)
-    output.copy_(projected.expand(tokens, -1))
+    return projected
 
 
 def qwen_gdn_mean_forward_fake(

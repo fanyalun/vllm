@@ -125,6 +125,7 @@ class HierarchicalSpeculator(BaseSpeculator):
             inner_method=None,
             dspark_draft_topk=None,
             preverify_gdn_mode="none",
+            preverify_gdn_group_mode="none",
         )
         self.preverify = MoeSkipSpeculator(self.preverify_config, device)
         self.buffers = InputBuffers(
@@ -149,7 +150,10 @@ class HierarchicalSpeculator(BaseSpeculator):
         self.check_preverify = (
             os.environ.get("VLLM_HIERARCHICAL_CHECK_PREVERIFY") == "1"
         )
-        if self.check_preverify and config.preverify_gdn_mode != "none":
+        if self.check_preverify and (
+            config.preverify_gdn_mode != "none"
+            or config.preverify_gdn_group_mode != "none"
+        ):
             raise ValueError("Mean GDN cannot use exact sequential preverify checks")
         self.pending_req_id = None
         self.preverify_graphs = {}
@@ -174,7 +178,11 @@ class HierarchicalSpeculator(BaseSpeculator):
         self.state = PreverifyState(
             self.model, self.depth + 1, self.device, self.config.preverify_gdn_mode
         )
-        if self.config.preverify_gdn_mode != "none":
+        self.grouped_gdn = None
+        if (
+            self.config.preverify_gdn_mode != "none"
+            or self.config.preverify_gdn_group_mode != "none"
+        ):
             if self.preverify.model_family != "qwen3_6" or self.device.type != "cuda":
                 raise ValueError("Mean GDN preverify requires Qwen3.6 on CUDA")
             if self.vllm_config.parallel_config.tensor_parallel_size != 1:
@@ -185,6 +193,16 @@ class HierarchicalSpeculator(BaseSpeculator):
                 cache[1].dtype != torch.float32 for cache in self.state.caches.values()
             ):
                 raise ValueError("Mean GDN preverify requires FP32 recurrent state")
+        if self.config.preverify_gdn_group_mode != "none":
+            from vllm.v1.worker.gpu.spec_decode.hierarchical.grouped_gdn import (
+                GroupedGDNPreverify,
+            )
+
+            if any(
+                cache[0].dtype != torch.bfloat16 for cache in self.state.caches.values()
+            ):
+                raise ValueError("Grouped GDN requires BF16 Conv state")
+            self.grouped_gdn = GroupedGDNPreverify(self.model, self.vllm_config)
         if self.preverify.model_family == "qwen3_6" and not self.state.layers:
             raise ValueError("hierarchical requires Qwen GDN layers")
         self.small.load_model(target_model)
@@ -447,7 +465,16 @@ class HierarchicalSpeculator(BaseSpeculator):
         ):
             self.tracing_layers = self.check_preverify
             try:
-                output = self.model(input_ids=batch.input_ids, positions=positions)
+                if self.config.preverify_gdn_group_mode == "none":
+                    output = self.model(input_ids=batch.input_ids, positions=positions)
+                else:
+                    assert self.grouped_gdn is not None
+                    output = self.grouped_gdn(
+                        batch.input_ids,
+                        positions,
+                        self.config.preverify_gdn_group_mode,
+                        self.config.preverify_gdn_mode,
+                    )
             finally:
                 self.tracing_layers = False
         if isinstance(output, tuple):

@@ -109,7 +109,8 @@ def test_replay_tail_audit_rejects_duplicate_cells_despite_complete_marker(tmp_p
 @pytest.mark.parametrize(
     "mismatch", [None, "different", "reordered", "duplicate", "missing", "method"]
 )
-def test_replay_tail_ar_identity_precedes_token_comparison(tmp_path, mismatch):
+@pytest.mark.parametrize("grouped", [False, True])
+def test_replay_tail_ar_identity_precedes_token_comparison(tmp_path, mismatch, grouped):
     hashes = ["prompt-a", "prompt-b"]
     ar = [
         {"sample_index": i, "prompt_sha256": h, "token_ids": [1, 2]}
@@ -125,6 +126,14 @@ def test_replay_tail_ar_identity_precedes_token_comparison(tmp_path, mismatch):
         del ar[0]["prompt_sha256"]
     (tmp_path / "ar.json").write_text(json.dumps({"outputs": ar}))
     cases = ["none", "replay_tail", "tail_only"]
+    timed = ["none", "replay_tail"]
+    if grouped:
+        cases = [
+            f"{s}:{g}"
+            for s in ("none", "replay_tail")
+            for g in ("none", "projection", "full")
+        ]
+        timed = cases
     for method in ("mtp", "dspark"):
         folder = tmp_path / method
         folder.mkdir()
@@ -150,7 +159,7 @@ def test_replay_tail_ar_identity_precedes_token_comparison(tmp_path, mismatch):
                 spans=[dict(phase="preverify", ms=1)],
             )
             for c in cases
-            for phase in (["e2e", "audit"] if c != "tail_only" else ["audit"])
+            for phase in (["e2e", "audit"] if c in timed else ["audit"])
             for i in range(2)
         ]
         for name, value in {
@@ -159,8 +168,9 @@ def test_replay_tail_ar_identity_precedes_token_comparison(tmp_path, mismatch):
                 max_tokens=2,
                 repeats=1,
                 cases=cases,
+                **({"timed_cases": timed} if grouped else {}),
             ),
-            "measurement_complete.json": dict(expected=10),
+            "measurement_complete.json": dict(expected=len(rows)),
             "private_state.json": {c: dict(ssm_bytes=10) for c in cases},
             "results.json": rows,
         }.items():

@@ -19,6 +19,7 @@ def main():
         description="Paired fixed-input pre-verifier timing"
     )
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--grouped-gdn", action="store_true")
     args = parser.parse_args()
     ROOT = args.output
     ROOT.mkdir(parents=True, exist_ok=True)
@@ -54,6 +55,14 @@ def main():
             preverify_gdn_mode="replay_tail",
         ),
     )
+    cases = ["baseline", "recurrent", "optimized"]
+    boundaries = ["forward", "gdn", "advance", "combined"]
+    if args.grouped_gdn:
+        from grouped_gdn_cost_worker import BOUNDARIES, CASES
+
+        cases, boundaries = CASES, list(BOUNDARIES)
+        config["worker_extension_cls"] = "grouped_gdn_cost_worker.GroupedGDNCostWorker"
+        config["speculative_config"]["preverify_gdn_group_mode"] = "projection"
     (ROOT / "contract.json").write_text(
         json.dumps(
             {
@@ -71,7 +80,9 @@ def main():
                 "timing": "CUDA events around graph replay; no internal events",
                 "gates": "per_token",
                 "rounds": 3,
-                "cases": ["baseline", "recurrent", "optimized"],
+                "cases": cases,
+                "boundaries": boundaries,
+                "baseline": "none:none" if args.grouped_gdn else "baseline",
                 "source_sha256": {
                     path: hashlib.sha256((REPO / path).read_bytes()).hexdigest()
                     for path in (
@@ -79,6 +90,10 @@ def main():
                         "vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py",
                         "vllm/v1/worker/gpu/spec_decode/hierarchical/state.py",
                         "benchmarks/hierarchical/replay_tail_cost_worker.py",
+                        "benchmarks/hierarchical/grouped_gdn_cost_worker.py",
+                        "vllm/model_executor/layers/mamba/gdn/grouped_input.py",
+                        "vllm/v1/worker/gpu/spec_decode/hierarchical/grouped_gdn.py",
+                        "vllm/v1/worker/gpu/spec_decode/hierarchical/speculator.py",
                     )
                 },
             },
@@ -101,7 +116,7 @@ def main():
         result = llm.generate([sample["prompt"]], params, use_tqdm=False)[0]
         measured = llm.collective_rpc("collect_reuse")[0]
         assert list(result.outputs[0].token_ids) == list(baseline.outputs[0].token_ids)
-        assert len(measured["rows"]) == 3 * 4 * 30
+        assert len(measured["rows"]) == len(cases) * len(boundaries) * 30
         rows.append(
             dict(
                 sample=i,
@@ -114,7 +129,12 @@ def main():
         print("COMPLETE", trial, flush=True)
     (ROOT / "measurement_complete.json").write_text(
         json.dumps(
-            {"prefixes": 3, "rounds": 3, "rows": 3240, "control_outputs_equal": True}
+            {
+                "prefixes": 3,
+                "rounds": 3,
+                "rows": 9 * len(cases) * len(boundaries) * 30,
+                "control_outputs_equal": True,
+            }
         )
         + "\n"
     )

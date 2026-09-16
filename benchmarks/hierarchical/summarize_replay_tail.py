@@ -47,6 +47,7 @@ def summarize(root):
         contract = contracts[method]
         memory = json.loads((folder / "private_state.json").read_text())
         rows = json.loads((folder / "results.json").read_text())
+        timed_cases = contract.get("timed_cases", ["none", "replay_tail"])
         n, length, repeats = (
             contract["samples"],
             contract["max_tokens"],
@@ -55,12 +56,12 @@ def summarize(root):
         assert (
             len(rows)
             == marker["expected"]
-            == len(n) * (2 * repeats + len(contract["cases"]))
+            == len(n) * (len(timed_cases) * repeats + len(contract["cases"]))
         )
         keys = {(r["case"], r["phase"], r["repeat"], r["sample"]) for r in rows}
         expected = {
             (c, "e2e", r, s)
-            for c in ("none", "replay_tail")
+            for c in timed_cases
             for r in range(repeats)
             for s in range(len(n))
         }
@@ -105,7 +106,7 @@ def summarize(root):
                 )
                 for repeat in range(repeats)
             ]
-            timed = case in ("none", "replay_tail")
+            timed = case in timed_cases
             tps = [len(n) * length / seconds for seconds in times] if timed else []
             spans = [
                 s["ms"] for r in audit for s in r["spans"] if s["phase"] == "preverify"

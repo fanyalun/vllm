@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--samples", type=int, default=4)
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--grouped-gdn", action="store_true")
     parser.add_argument(
         "--dataset",
         type=Path,
@@ -28,6 +29,16 @@ def main():
         ),
     )
     args = parser.parse_args()
+    cases = (
+        [
+            f"{state}:{group}"
+            for state in ("none", "replay_tail")
+            for group in ("none", "projection", "full")
+        ]
+        if args.grouped_gdn
+        else ["none", "replay_tail", "tail_only"]
+    )
+    timed_cases = cases if args.grouped_gdn else ["none", "replay_tail"]
     root = Path(__file__).resolve().parents[2]
     os.environ["PATH"] = str(root / ".venv/bin") + os.pathsep + os.environ["PATH"]
     os.environ["HF_HUB_OFFLINE"] = "1"
@@ -53,6 +64,8 @@ def main():
     )
     if args.inner_method == "dspark":
         spec["model"] = "/data1/fanya/models/Qwen3.6-35B-A3B-speculator.dspark"
+    if args.grouped_gdn:
+        spec["preverify_gdn_group_mode"] = "projection"
     config = dict(
         model="/data1/fanya/Qwen/Qwen3.6-35B-A3B",
         tensor_parallel_size=1,
@@ -70,6 +83,8 @@ def main():
         worker_extension_cls="replay_tail_worker.ReplayTailWorker",
     )
     args.output.mkdir(parents=True, exist_ok=True)
+    if args.grouped_gdn:
+        config["worker_extension_cls"] = "grouped_gdn_worker.GroupedGDNWorker"
 
     def save(name, data):
         (args.output / name).write_text(json.dumps(data, indent=2) + "\n")
@@ -81,7 +96,8 @@ def main():
             "samples": samples,
             "max_tokens": args.max_tokens,
             "repeats": args.repeats,
-            "cases": ["none", "replay_tail", "tail_only"],
+            "cases": cases,
+            "timed_cases": timed_cases,
             "gates": "per_token",
             "tail_kernel": "register_recurrence_final_store",
             "commit": subprocess.check_output(
@@ -100,6 +116,9 @@ def main():
                     "vllm/model_executor/layers/mamba/gdn/replay_tail_update.py",
                     "benchmarks/hierarchical/run_replay_tail.py",
                     "benchmarks/hierarchical/replay_tail_worker.py",
+                    "benchmarks/hierarchical/grouped_gdn_worker.py",
+                    "vllm/model_executor/layers/mamba/gdn/grouped_input.py",
+                    "vllm/v1/worker/gpu/spec_decode/hierarchical/grouped_gdn.py",
                 )
             },
         },
@@ -143,25 +162,25 @@ def main():
             save("results.json", rows)
         print(f"COMPLETE {case} {phase} {repeat} {index} {elapsed:.3f}s", flush=True)
 
-    for case in ("none", "replay_tail", "tail_only"):
+    for case in cases:
         memory[case] = llm.collective_rpc("set_replay_case", args=(case,))[0]
         for index, sample in enumerate(samples):
             generate(case, "warmup", 0, index, sample)
         memory[case] = llm.collective_rpc("set_replay_case", args=(case,))[0]
     save("private_state.json", memory)
     for repeat in range(args.repeats):
-        cases = ("none", "replay_tail") if repeat % 2 == 0 else ("replay_tail", "none")
-        for case in cases:
+        order = timed_cases if repeat % 2 == 0 else timed_cases[::-1]
+        for case in order:
             before = llm.collective_rpc("set_replay_case", args=(case,))[0]
             for index, sample in enumerate(samples):
                 generate(case, "e2e", repeat, index, sample)
             after = llm.collective_rpc("set_replay_case", args=(case,))[0]
             assert before["graphs"] == after["graphs"], "new graph in timed run"
-    for case in ("none", "replay_tail", "tail_only"):
+    for case in cases:
         llm.collective_rpc("set_replay_case", args=(case,))
         for index, sample in enumerate(samples):
             generate(case, "audit", 0, index, sample)
-    expected = args.samples * (2 * args.repeats + 3)
+    expected = args.samples * (len(timed_cases) * args.repeats + len(cases))
     assert len(rows) == expected
     save(
         "measurement_complete.json",

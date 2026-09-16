@@ -14,7 +14,8 @@ def summarize(root):
     complete = json.loads((root / "measurement_complete.json").read_text())
     samples = json.loads((root / "results.json").read_text())
     cases = contract["cases"]
-    boundaries = ("forward", "gdn", "advance", "combined")
+    boundaries = contract.get("boundaries", ("forward", "gdn", "advance", "combined"))
+    baseline = contract.get("baseline", "baseline")
     expected = {
         (trial, sample)
         for trial in range(contract["rounds"])
@@ -56,7 +57,7 @@ def summarize(root):
                         boundary=boundary,
                         case=case,
                         median_ms=ms,
-                        time_reduction_pct=100 * (1 - ms / medians["baseline"]),
+                        time_reduction_pct=100 * (1 - ms / medians[baseline]),
                     )
                 )
     summary = []
