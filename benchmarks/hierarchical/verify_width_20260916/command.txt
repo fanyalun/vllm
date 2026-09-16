@@ -1,0 +1,1 @@
+PATH=/home/fanya/vllm/.venv/bin:$PATH CUDA_VISIBLE_DEVICES=0 VLLM_USE_V2_MODEL_RUNNER=1 VLLM_ENABLE_V1_MULTIPROCESSING=0 .venv/bin/python -m benchmarks.hierarchical.run_verify_width_probe --output benchmark_results/gemma_verify_width_20260916

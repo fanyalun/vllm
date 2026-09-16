@@ -1,0 +1,37 @@
+{
+  "config": {
+    "model": "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+    "tensor_parallel_size": 1,
+    "max_model_len": 1024,
+    "max_num_seqs": 16,
+    "max_num_batched_tokens": 4096,
+    "gpu_memory_utilization": 0.9,
+    "enable_prefix_caching": false,
+    "async_scheduling": false,
+    "limit_mm_per_prompt": {
+      "image": 0,
+      "video": 0
+    },
+    "disable_log_stats": true,
+    "seed": 0,
+    "speculative_config": {
+      "method": "hierarchical",
+      "model": "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it-assistant",
+      "inner_method": "mtp",
+      "inner_num_speculative_tokens": 4,
+      "inner_num_rounds": 6,
+      "moe_skip_top_h": 4,
+      "draft_sample_method": "greedy"
+    },
+    "worker_extension_cls": "benchmarks.hierarchical.verify_width_worker.VerifyWidthWorker"
+  },
+  "commit": "ad5a9deb10595daa2980fa2779b246cd40b8714d\n",
+  "dataset_sha256": "00f7a6422951bba2c045d276d412ad6c5280d0d6edb19d613c1546dd6d2f8b57",
+  "cupti_python": "unavailable; FlashInfer CUDA event fallback",
+  "environment": {
+    "VLLM_USE_V2_MODEL_RUNNER": "1",
+    "VLLM_ENABLE_V1_MULTIPROCESSING": "0",
+    "CUDA_VISIBLE_DEVICES": "0"
+  },
+  "contract": "Fixed prompt plus 64 AR tokens. Nested candidate prefixes. Private verification forward includes backbone, logits, top2 and argmax; excludes metadata, sampling, scheduler and draft generation. Manual CUDA graph replay; FlashInfer CUPTI cold L2; 20 repeats. Full h8 is a Target-forward proxy, not execute_model timing."
+}

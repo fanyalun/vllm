@@ -1,0 +1,6618 @@
+[
+  {
+    "batch": 1,
+    "control": [
+      [
+        784,
+        9952,
+        531,
+        5330
+      ]
+    ],
+    "observed": [
+      [
+        784,
+        9952,
+        531,
+        5330
+      ]
+    ],
+    "rows": [
+      {
+        "batch": 1,
+        "width": 5,
+        "top_h": 8,
+        "positions": [
+          185
+        ],
+        "input_ids": [
+          [
+            784,
+            9952,
+            531,
+            5330,
+            692
+          ]
+        ],
+        "milliseconds": [
+          11.715583801269531,
+          11.705344200134277,
+          11.703295707702637,
+          11.723775863647461,
+          11.707391738891602,
+          11.711487770080566,
+          11.715583801269531,
+          11.723775863647461,
+          11.699199676513672,
+          11.721728324890137,
+          11.710463523864746,
+          11.695103645324707,
+          11.709440231323242,
+          11.728896141052246,
+          11.706368446350098,
+          11.74732780456543,
+          11.714559555053711,
+          11.73196792602539,
+          11.718655586242676,
+          11.712512016296387
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 23,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 28,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 29,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 26,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 23,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 23,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 24,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 26,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 34,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 33,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 27,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 25,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 26,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 26,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 27,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 30,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 26,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 22,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 19,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 21,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 21,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 18,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 16,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 22,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 23,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 25,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 22,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 21,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 24,
+            "assignments": 40
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 19,
+            "assignments": 40
+          }
+        ],
+        "exact_eager_graph": true
+      },
+      {
+        "batch": 1,
+        "width": 31,
+        "top_h": 8,
+        "positions": [
+          185
+        ],
+        "input_ids": [
+          [
+            784,
+            9952,
+            531,
+            5330,
+            692,
+            236789,
+            236751,
+            711,
+            1164,
+            1186,
+            13356,
+            236764,
+            840,
+            9883,
+            107,
+            140,
+            236865,
+            1191,
+            236789,
+            859,
+            1161,
+            9883,
+            531,
+            6349,
+            784,
+            9952,
+            531,
+            6349,
+            784,
+            9952,
+            107
+          ]
+        ],
+        "milliseconds": [
+          18.23232078552246,
+          18.207744598388672,
+          18.22822380065918,
+          18.256895065307617,
+          18.21798324584961,
+          18.23539161682129,
+          18.22310447692871,
+          18.24870491027832,
+          18.23232078552246,
+          18.23846435546875,
+          18.229248046875,
+          18.21286392211914,
+          18.23948860168457,
+          18.23744010925293,
+          18.23027229309082,
+          18.25177574157715,
+          18.22719955444336,
+          18.22003173828125,
+          18.25587272644043,
+          18.22617530822754
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 54,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 77,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 63,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 60,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 36,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 45,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 53,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 60,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 70,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 56,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 47,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 43,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 51,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 49,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 49,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 57,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 43,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 49,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 46,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 47,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 49,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 49,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 39,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 48,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 49,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 57,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 44,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 51,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 57,
+            "assignments": 248
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 48,
+            "assignments": 248
+          }
+        ],
+        "exact_eager_graph": true
+      },
+      {
+        "batch": 1,
+        "width": 11,
+        "top_h": 8,
+        "positions": [
+          185
+        ],
+        "input_ids": [
+          [
+            784,
+            9952,
+            531,
+            5330,
+            692,
+            236789,
+            236751,
+            711,
+            1164,
+            1186,
+            13356
+          ]
+        ],
+        "milliseconds": [
+          14.15884780883789,
+          14.166015625,
+          14.146559715270996,
+          14.164992332458496,
+          14.172160148620605,
+          14.149632453918457,
+          14.156800270080566,
+          14.145536422729492,
+          14.160896301269531,
+          14.15884780883789,
+          14.142463684082031,
+          14.171135902404785,
+          14.16703987121582,
+          14.152704238891602,
+          14.149632453918457,
+          14.146559715270996,
+          14.162943840026855,
+          14.15782356262207,
+          14.15782356262207,
+          14.130175590515137
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 32,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 48,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 44,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 38,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 31,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 31,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 36,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 37,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 47,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 45,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 38,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 32,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 36,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 36,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 37,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 43,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 34,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 30,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 30,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 32,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 31,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 25,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 24,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 32,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 31,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 35,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 29,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 32,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 36,
+            "assignments": 88
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 27,
+            "assignments": 88
+          }
+        ],
+        "exact_eager_graph": true
+      },
+      {
+        "batch": 1,
+        "width": 21,
+        "top_h": 8,
+        "positions": [
+          185
+        ],
+        "input_ids": [
+          [
+            784,
+            9952,
+            531,
+            5330,
+            692,
+            236789,
+            236751,
+            711,
+            1164,
+            1186,
+            13356,
+            236764,
+            840,
+            9883,
+            107,
+            140,
+            236865,
+            1191,
+            236789,
+            859,
+            1161
+          ]
+        ],
+        "milliseconds": [
+          16.84172821044922,
+          16.84992027282715,
+          16.83660888671875,
+          16.852991104125977,
+          16.869375228881836,
+          16.83660888671875,
+          16.84992027282715,
+          16.84992027282715,
+          16.845823287963867,
+          16.848896026611328,
+          16.8407039642334,
+          16.867328643798828,
+          16.878591537475586,
+          16.829439163208008,
+          16.846847534179688,
+          16.838655471801758,
+          16.858112335205078,
+          16.865280151367188,
+          16.84275245666504,
+          16.84377670288086
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 53,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 73,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 59,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 57,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 34,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 45,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 49,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 53,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 62,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 51,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 44,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 41,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 49,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 46,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 45,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 53,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 41,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 41,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 40,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 40,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 45,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 37,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 32,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 43,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 37,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 48,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 43,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 44,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 49,
+            "assignments": 168
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 40,
+            "assignments": 168
+          }
+        ],
+        "exact_eager_graph": true
+      },
+      {
+        "batch": 1,
+        "width": 5,
+        "top_h": 4,
+        "positions": [
+          185
+        ],
+        "input_ids": [
+          [
+            784,
+            9952,
+            531,
+            5330,
+            692
+          ]
+        ],
+        "milliseconds": [
+          10.036224365234375,
+          10.046463966369629,
+          10.04748821258545,
+          10.03110408782959,
+          10.0382719039917,
+          10.03929615020752,
+          10.055680274963379,
+          10.04032039642334,
+          10.045439720153809,
+          10.054656028747559,
+          10.050559997558594,
+          10.050559997558594,
+          10.03212833404541,
+          10.051584243774414,
+          10.04748821258545,
+          10.045439720153809,
+          10.034175872802734,
+          10.057727813720703,
+          10.060799598693848,
+          10.033151626586914
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 15,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 15,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 15,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 15,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 12,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 14,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 14,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 15,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 19,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 18,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 16,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 14,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 14,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 12,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 14,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 16,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 12,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 11,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 10,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 13,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 9,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 11,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 8,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 13,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 15,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 13,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 13,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 13,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 13,
+            "assignments": 20
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 12,
+            "assignments": 20
+          }
+        ],
+        "exact_eager_graph": true
+      }
+    ]
+  },
+  {
+    "batch": 4,
+    "control": [
+      [
+        784,
+        9952,
+        531,
+        5330
+      ],
+      [
+        623,
+        623,
+        623,
+        623
+      ],
+      [
+        236770,
+        236770,
+        236770,
+        236770
+      ],
+      [
+        1938,
+        236761,
+        107,
+        2717
+      ]
+    ],
+    "observed": [
+      [
+        784,
+        9952,
+        531,
+        5330
+      ],
+      [
+        623,
+        623,
+        623,
+        623
+      ],
+      [
+        236770,
+        236770,
+        236770,
+        236770
+      ],
+      [
+        1938,
+        236761,
+        107,
+        2717
+      ]
+    ],
+    "rows": [
+      {
+        "batch": 4,
+        "width": 5,
+        "top_h": 8,
+        "positions": [
+          71,
+          95,
+          132,
+          185
+        ],
+        "input_ids": [
+          [
+            623,
+            9952,
+            531,
+            5330,
+            692
+          ],
+          [
+            236770,
+            623,
+            623,
+            623,
+            623
+          ],
+          [
+            1938,
+            236770,
+            236770,
+            236770,
+            236770
+          ],
+          [
+            784,
+            236761,
+            107,
+            2717,
+            108
+          ]
+        ],
+        "milliseconds": [
+          15.791104316711426,
+          15.787008285522461,
+          15.769599914550781,
+          15.778816223144531,
+          15.757311820983887,
+          15.777791976928711,
+          15.779840469360352,
+          15.768575668334961,
+          15.977472305297852,
+          15.779840469360352,
+          15.787008285522461,
+          15.762432098388672,
+          15.748096466064453,
+          15.777791976928711,
+          15.781888008117676,
+          15.773695945739746,
+          15.766528129577637,
+          15.799296379089355,
+          15.782912254333496,
+          15.77676773071289
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 58,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 59,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 58,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 51,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 25,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 45,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 47,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 52,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 53,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 41,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 36,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 34,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 33,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 32,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 34,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 35,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 37,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 35,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 32,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 33,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 42,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 42,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 39,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 41,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 40,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 42,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 41,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 39,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 47,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 46,
+            "assignments": 160
+          }
+        ],
+        "exact_eager_graph": true
+      },
+      {
+        "batch": 4,
+        "width": 31,
+        "top_h": 8,
+        "positions": [
+          71,
+          95,
+          132,
+          185
+        ],
+        "input_ids": [
+          [
+            623,
+            9952,
+            531,
+            5330,
+            692,
+            236789,
+            236751,
+            711,
+            1164,
+            1186,
+            13356,
+            236764,
+            840,
+            9883,
+            107,
+            140,
+            236865,
+            1191,
+            236789,
+            859,
+            1161,
+            9883,
+            531,
+            6349,
+            784,
+            9952,
+            531,
+            6349,
+            784,
+            9952,
+            107
+          ],
+          [
+            236770,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623
+          ],
+          [
+            1938,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770
+          ],
+          [
+            784,
+            236761,
+            107,
+            2717,
+            108,
+            8574,
+            611,
+            2847,
+            614,
+            2591,
+            529,
+            1217,
+            611,
+            1093,
+            1161,
+            72375,
+            531,
+            8729,
+            19293,
+            532,
+            29141,
+            573,
+            107,
+            1018,
+            1018,
+            108,
+            1018,
+            108,
+            1018,
+            108,
+            1018
+          ]
+        ],
+        "milliseconds": [
+          26.878976821899414,
+          26.852352142333984,
+          26.884096145629883,
+          26.853376388549805,
+          26.865663528442383,
+          26.866687774658203,
+          26.88819122314453,
+          26.878976821899414,
+          26.876928329467773,
+          26.88819122314453,
+          26.869760513305664,
+          26.864639282226562,
+          26.93222427368164,
+          26.95372772216797,
+          26.96499252319336,
+          26.983423233032227,
+          26.852352142333984,
+          26.872831344604492,
+          26.89740753173828,
+          26.875904083251953
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 78,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 100,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 82,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 86,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 52,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 78,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 79,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 85,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 96,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 79,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 65,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 72,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 67,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 60,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 59,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 81,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 70,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 80,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 69,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 73,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 76,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 71,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 68,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 73,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 67,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 74,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 67,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 77,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 76,
+            "assignments": 992
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 74,
+            "assignments": 992
+          }
+        ],
+        "exact_eager_graph": true
+      },
+      {
+        "batch": 4,
+        "width": 11,
+        "top_h": 8,
+        "positions": [
+          71,
+          95,
+          132,
+          185
+        ],
+        "input_ids": [
+          [
+            623,
+            9952,
+            531,
+            5330,
+            692,
+            236789,
+            236751,
+            711,
+            1164,
+            1186,
+            13356
+          ],
+          [
+            236770,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623
+          ],
+          [
+            1938,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770
+          ],
+          [
+            784,
+            236761,
+            107,
+            2717,
+            108,
+            8574,
+            611,
+            2847,
+            614,
+            2591,
+            529
+          ]
+        ],
+        "milliseconds": [
+          19.773439407348633,
+          19.82361602783203,
+          19.80620765686035,
+          19.802112579345703,
+          19.787776947021484,
+          19.82156753540039,
+          19.803136825561523,
+          19.80415916442871,
+          19.783679962158203,
+          19.81235122680664,
+          19.8154239654541,
+          19.826688766479492,
+          19.82259178161621,
+          19.8287353515625,
+          19.82156753540039,
+          19.809280395507812,
+          19.83897590637207,
+          19.792896270751953,
+          19.791872024536133,
+          19.793920516967773
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 69,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 83,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 70,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 72,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 35,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 56,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 63,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 69,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 73,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 57,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 50,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 44,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 49,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 44,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 44,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 53,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 54,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 49,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 47,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 51,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 58,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 60,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 55,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 56,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 51,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 57,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 48,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 58,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 66,
+            "assignments": 352
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 66,
+            "assignments": 352
+          }
+        ],
+        "exact_eager_graph": true
+      },
+      {
+        "batch": 4,
+        "width": 21,
+        "top_h": 8,
+        "positions": [
+          71,
+          95,
+          132,
+          185
+        ],
+        "input_ids": [
+          [
+            623,
+            9952,
+            531,
+            5330,
+            692,
+            236789,
+            236751,
+            711,
+            1164,
+            1186,
+            13356,
+            236764,
+            840,
+            9883,
+            107,
+            140,
+            236865,
+            1191,
+            236789,
+            859,
+            1161
+          ],
+          [
+            236770,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623
+          ],
+          [
+            1938,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770
+          ],
+          [
+            784,
+            236761,
+            107,
+            2717,
+            108,
+            8574,
+            611,
+            2847,
+            614,
+            2591,
+            529,
+            1217,
+            611,
+            1093,
+            1161,
+            72375,
+            531,
+            8729,
+            19293,
+            532,
+            29141
+          ]
+        ],
+        "milliseconds": [
+          24.369152069091797,
+          24.363008499145508,
+          24.368127822875977,
+          24.368127822875977,
+          24.376319885253906,
+          24.381439208984375,
+          24.344575881958008,
+          24.351743698120117,
+          24.381439208984375,
+          24.394752502441406,
+          24.382463455200195,
+          24.372224807739258,
+          24.379392623901367,
+          24.383487701416016,
+          24.357887268066406,
+          24.361984252929688,
+          24.350719451904297,
+          24.344575881958008,
+          24.375295639038086,
+          24.383487701416016
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 78,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 95,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 79,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 84,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 48,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 74,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 77,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 82,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 91,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 76,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 61,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 61,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 58,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 56,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 55,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 68,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 64,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 65,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 64,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 62,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 70,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 63,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 64,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 67,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 62,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 69,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 56,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 73,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 73,
+            "assignments": 672
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 71,
+            "assignments": 672
+          }
+        ],
+        "exact_eager_graph": true
+      },
+      {
+        "batch": 4,
+        "width": 5,
+        "top_h": 4,
+        "positions": [
+          71,
+          95,
+          132,
+          185
+        ],
+        "input_ids": [
+          [
+            623,
+            9952,
+            531,
+            5330,
+            692
+          ],
+          [
+            236770,
+            623,
+            623,
+            623,
+            623
+          ],
+          [
+            1938,
+            236770,
+            236770,
+            236770,
+            236770
+          ],
+          [
+            784,
+            236761,
+            107,
+            2717,
+            108
+          ]
+        ],
+        "milliseconds": [
+          12.365823745727539,
+          12.374015808105469,
+          12.381183624267578,
+          12.377087593078613,
+          12.389375686645508,
+          12.377087593078613,
+          12.375040054321289,
+          12.37606430053711,
+          12.394495964050293,
+          12.364800453186035,
+          12.36787223815918,
+          12.377087593078613,
+          12.374015808105469,
+          12.369919776916504,
+          12.383232116699219,
+          12.36787223815918,
+          12.386303901672363,
+          12.371968269348145,
+          12.383232116699219,
+          12.385279655456543
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 40,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 40,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 36,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 33,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 17,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 30,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 31,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 35,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 31,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 32,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 21,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 22,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 24,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 17,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 20,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 28,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 23,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 20,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 23,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 19,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 23,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 27,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 22,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 26,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 25,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 27,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 29,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 25,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 30,
+            "assignments": 80
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 23,
+            "assignments": 80
+          }
+        ],
+        "exact_eager_graph": true
+      }
+    ]
+  },
+  {
+    "batch": 8,
+    "control": [
+      [
+        784,
+        9952,
+        531,
+        5330
+      ],
+      [
+        623,
+        623,
+        623,
+        623
+      ],
+      [
+        236770,
+        236770,
+        236770,
+        236770
+      ],
+      [
+        1938,
+        236761,
+        107,
+        2717
+      ],
+      [
+        236761,
+        236810,
+        2104,
+        108
+      ],
+      [
+        1437,
+        3904,
+        529,
+        614
+      ],
+      [
+        236779,
+        236779,
+        236779,
+        236779
+      ],
+      [
+        236778,
+        236819,
+        19592,
+        691
+      ]
+    ],
+    "observed": [
+      [
+        784,
+        9952,
+        531,
+        5330
+      ],
+      [
+        623,
+        623,
+        623,
+        623
+      ],
+      [
+        236770,
+        236770,
+        236770,
+        236770
+      ],
+      [
+        1938,
+        236761,
+        107,
+        2717
+      ],
+      [
+        236761,
+        236810,
+        2104,
+        108
+      ],
+      [
+        1437,
+        3904,
+        529,
+        614
+      ],
+      [
+        236779,
+        236779,
+        236779,
+        236779
+      ],
+      [
+        236778,
+        236819,
+        19592,
+        691
+      ]
+    ],
+    "rows": [
+      {
+        "batch": 8,
+        "width": 5,
+        "top_h": 8,
+        "positions": [
+          71,
+          71,
+          95,
+          124,
+          132,
+          149,
+          185,
+          217
+        ],
+        "input_ids": [
+          [
+            623,
+            9952,
+            531,
+            5330,
+            692
+          ],
+          [
+            1437,
+            623,
+            623,
+            623,
+            623
+          ],
+          [
+            236770,
+            236770,
+            236770,
+            236770,
+            236770
+          ],
+          [
+            236779,
+            236761,
+            107,
+            2717,
+            108
+          ],
+          [
+            1938,
+            236810,
+            2104,
+            108,
+            236810
+          ],
+          [
+            236761,
+            3904,
+            529,
+            614,
+            15639
+          ],
+          [
+            784,
+            236779,
+            236779,
+            236779,
+            236779
+          ],
+          [
+            236778,
+            236819,
+            19592,
+            691,
+            711
+          ]
+        ],
+        "milliseconds": [
+          22.228992462158203,
+          22.212608337402344,
+          22.2238712310791,
+          22.213632583618164,
+          22.237184524536133,
+          22.25049591064453,
+          22.222848892211914,
+          22.221824645996094,
+          22.205440521240234,
+          22.254592895507812,
+          22.238208770751953,
+          22.220800399780273,
+          22.245376586914062,
+          22.23206329345703,
+          22.26380729675293,
+          22.218751907348633,
+          22.245376586914062,
+          22.252544403076172,
+          22.26483154296875,
+          22.25663948059082
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 79,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 88,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 79,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 81,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 50,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 71,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 70,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 83,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 79,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 80,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 56,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 63,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 59,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 58,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 61,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 62,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 59,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 61,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 62,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 59,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 67,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 69,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 61,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 76,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 74,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 62,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 73,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 70,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 77,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 69,
+            "assignments": 320
+          }
+        ],
+        "exact_eager_graph": true
+      },
+      {
+        "batch": 8,
+        "width": 31,
+        "top_h": 8,
+        "positions": [
+          71,
+          71,
+          95,
+          124,
+          132,
+          149,
+          185,
+          217
+        ],
+        "input_ids": [
+          [
+            623,
+            9952,
+            531,
+            5330,
+            692,
+            236789,
+            236751,
+            711,
+            1164,
+            1186,
+            13356,
+            236764,
+            840,
+            9883,
+            107,
+            140,
+            236865,
+            1191,
+            236789,
+            859,
+            1161,
+            9883,
+            531,
+            6349,
+            784,
+            9952,
+            531,
+            6349,
+            784,
+            9952,
+            107
+          ],
+          [
+            1437,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623
+          ],
+          [
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770
+          ],
+          [
+            236779,
+            236761,
+            107,
+            2717,
+            108,
+            8574,
+            611,
+            2847,
+            614,
+            2591,
+            529,
+            1217,
+            611,
+            1093,
+            1161,
+            72375,
+            531,
+            8729,
+            19293,
+            532,
+            29141,
+            573,
+            107,
+            1018,
+            1018,
+            108,
+            1018,
+            108,
+            1018,
+            108,
+            1018
+          ],
+          [
+            1938,
+            236810,
+            2104,
+            108,
+            236810,
+            236761,
+            138,
+            818,
+            20632,
+            912,
+            529,
+            506,
+            1548,
+            563,
+            609,
+            236771,
+            236761,
+            236810,
+            2104,
+            108,
+            236825,
+            236761,
+            138,
+            818,
+            20632,
+            912,
+            529,
+            506,
+            1548,
+            563,
+            609
+          ],
+          [
+            236761,
+            3904,
+            529,
+            614,
+            15639,
+            236761,
+            107,
+            1437,
+            3904,
+            529,
+            614,
+            15639,
+            236761,
+            107,
+            1437,
+            3904,
+            529,
+            614,
+            15639,
+            236761,
+            107,
+            1437,
+            3904,
+            529,
+            614,
+            15639,
+            236761,
+            107,
+            1437,
+            3904,
+            529
+          ],
+          [
+            784,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779
+          ],
+          [
+            236778,
+            236819,
+            19592,
+            691,
+            711,
+            506,
+            1354,
+            529,
+            496,
+            3161,
+            8800,
+            840,
+            4319,
+            496,
+            623,
+            50936,
+            12978,
+            236775,
+            529,
+            5527,
+            236764,
+            5255,
+            236764,
+            532,
+            33999,
+            5872,
+            236761,
+            108,
+            2595,
+            236743,
+            236770
+          ]
+        ],
+        "milliseconds": [
+          37.83065414428711,
+          37.69548797607422,
+          37.66067123413086,
+          37.68320083618164,
+          37.68320083618164,
+          37.70163345336914,
+          37.69036865234375,
+          37.81324768066406,
+          37.821441650390625,
+          37.731327056884766,
+          37.6360969543457,
+          37.68012619018555,
+          37.69241714477539,
+          38.32729721069336,
+          38.28531265258789,
+          38.100990295410156,
+          37.94841766357422,
+          37.85830307006836,
+          37.83065414428711,
+          37.756927490234375
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 104,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 115,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 107,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 110,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 87,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 100,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 100,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 111,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 115,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 105,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 92,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 92,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 100,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 91,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 93,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 112,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 96,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 101,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 89,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 95,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 95,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 85,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 84,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 96,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 93,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 90,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 91,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 93,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 92,
+            "assignments": 1984
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 95,
+            "assignments": 1984
+          }
+        ],
+        "exact_eager_graph": true
+      },
+      {
+        "batch": 8,
+        "width": 11,
+        "top_h": 8,
+        "positions": [
+          71,
+          71,
+          95,
+          124,
+          132,
+          149,
+          185,
+          217
+        ],
+        "input_ids": [
+          [
+            623,
+            9952,
+            531,
+            5330,
+            692,
+            236789,
+            236751,
+            711,
+            1164,
+            1186,
+            13356
+          ],
+          [
+            1437,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623
+          ],
+          [
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770
+          ],
+          [
+            236779,
+            236761,
+            107,
+            2717,
+            108,
+            8574,
+            611,
+            2847,
+            614,
+            2591,
+            529
+          ],
+          [
+            1938,
+            236810,
+            2104,
+            108,
+            236810,
+            236761,
+            138,
+            818,
+            20632,
+            912,
+            529
+          ],
+          [
+            236761,
+            3904,
+            529,
+            614,
+            15639,
+            236761,
+            107,
+            1437,
+            3904,
+            529,
+            614
+          ],
+          [
+            784,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779
+          ],
+          [
+            236778,
+            236819,
+            19592,
+            691,
+            711,
+            506,
+            1354,
+            529,
+            496,
+            3161,
+            8800
+          ]
+        ],
+        "milliseconds": [
+          27.50771141052246,
+          27.50771141052246,
+          27.478015899658203,
+          27.479040145874023,
+          27.494400024414062,
+          27.478015899658203,
+          27.520000457763672,
+          27.512832641601562,
+          27.53228759765625,
+          27.482112884521484,
+          27.468799591064453,
+          27.474943161010742,
+          27.469823837280273,
+          27.475967407226562,
+          27.452415466308594,
+          27.482112884521484,
+          27.470848083496094,
+          27.484159469604492,
+          27.464704513549805,
+          27.466751098632812
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 89,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 107,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 91,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 93,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 63,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 80,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 85,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 91,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 97,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 85,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 73,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 74,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 70,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 70,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 78,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 90,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 77,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 83,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 77,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 78,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 80,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 74,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 74,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 84,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 87,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 76,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 79,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 88,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 88,
+            "assignments": 704
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 81,
+            "assignments": 704
+          }
+        ],
+        "exact_eager_graph": true
+      },
+      {
+        "batch": 8,
+        "width": 21,
+        "top_h": 8,
+        "positions": [
+          71,
+          71,
+          95,
+          124,
+          132,
+          149,
+          185,
+          217
+        ],
+        "input_ids": [
+          [
+            623,
+            9952,
+            531,
+            5330,
+            692,
+            236789,
+            236751,
+            711,
+            1164,
+            1186,
+            13356,
+            236764,
+            840,
+            9883,
+            107,
+            140,
+            236865,
+            1191,
+            236789,
+            859,
+            1161
+          ],
+          [
+            1437,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623
+          ],
+          [
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770
+          ],
+          [
+            236779,
+            236761,
+            107,
+            2717,
+            108,
+            8574,
+            611,
+            2847,
+            614,
+            2591,
+            529,
+            1217,
+            611,
+            1093,
+            1161,
+            72375,
+            531,
+            8729,
+            19293,
+            532,
+            29141
+          ],
+          [
+            1938,
+            236810,
+            2104,
+            108,
+            236810,
+            236761,
+            138,
+            818,
+            20632,
+            912,
+            529,
+            506,
+            1548,
+            563,
+            609,
+            236771,
+            236761,
+            236810,
+            2104,
+            108,
+            236825
+          ],
+          [
+            236761,
+            3904,
+            529,
+            614,
+            15639,
+            236761,
+            107,
+            1437,
+            3904,
+            529,
+            614,
+            15639,
+            236761,
+            107,
+            1437,
+            3904,
+            529,
+            614,
+            15639,
+            236761,
+            107
+          ],
+          [
+            784,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779
+          ],
+          [
+            236778,
+            236819,
+            19592,
+            691,
+            711,
+            506,
+            1354,
+            529,
+            496,
+            3161,
+            8800,
+            840,
+            4319,
+            496,
+            623,
+            50936,
+            12978,
+            236775,
+            529,
+            5527,
+            236764
+          ]
+        ],
+        "milliseconds": [
+          33.38444900512695,
+          33.328128814697266,
+          33.349632263183594,
+          33.34553527832031,
+          33.320960998535156,
+          33.360897064208984,
+          33.31584167480469,
+          33.35782241821289,
+          33.349632263183594,
+          33.3383674621582,
+          33.35475158691406,
+          33.351680755615234,
+          33.331199645996094,
+          33.34553527832031,
+          33.346561431884766,
+          33.344512939453125,
+          33.549312591552734,
+          33.90668869018555,
+          33.64966583251953,
+          33.55033493041992
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 101,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 112,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 106,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 105,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 78,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 99,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 97,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 103,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 108,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 100,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 86,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 88,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 88,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 85,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 85,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 106,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 89,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 96,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 88,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 89,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 90,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 84,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 78,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 88,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 89,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 82,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 89,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 88,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 90,
+            "assignments": 1344
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 86,
+            "assignments": 1344
+          }
+        ],
+        "exact_eager_graph": true
+      },
+      {
+        "batch": 8,
+        "width": 5,
+        "top_h": 4,
+        "positions": [
+          71,
+          71,
+          95,
+          124,
+          132,
+          149,
+          185,
+          217
+        ],
+        "input_ids": [
+          [
+            623,
+            9952,
+            531,
+            5330,
+            692
+          ],
+          [
+            1437,
+            623,
+            623,
+            623,
+            623
+          ],
+          [
+            236770,
+            236770,
+            236770,
+            236770,
+            236770
+          ],
+          [
+            236779,
+            236761,
+            107,
+            2717,
+            108
+          ],
+          [
+            1938,
+            236810,
+            2104,
+            108,
+            236810
+          ],
+          [
+            236761,
+            3904,
+            529,
+            614,
+            15639
+          ],
+          [
+            784,
+            236779,
+            236779,
+            236779,
+            236779
+          ],
+          [
+            236778,
+            236819,
+            19592,
+            691,
+            711
+          ]
+        ],
+        "milliseconds": [
+          17.320959091186523,
+          17.295360565185547,
+          17.313791275024414,
+          17.318912506103516,
+          17.309696197509766,
+          17.336320877075195,
+          17.337343215942383,
+          17.316864013671875,
+          17.318912506103516,
+          17.306623458862305,
+          17.317888259887695,
+          17.300479888916016,
+          17.333248138427734,
+          17.288192749023438,
+          17.323007583618164,
+          17.316864013671875,
+          17.309696197509766,
+          17.316864013671875,
+          17.344512939453125,
+          17.319936752319336
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 56,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 62,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 54,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 57,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 30,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 53,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 46,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 62,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 57,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 56,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 40,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 40,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 39,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 29,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 36,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 40,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 44,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 42,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 40,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 39,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 46,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 48,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 42,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 47,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 46,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 43,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 47,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 46,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 54,
+            "assignments": 160
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 47,
+            "assignments": 160
+          }
+        ],
+        "exact_eager_graph": true
+      }
+    ]
+  },
+  {
+    "batch": 16,
+    "control": [
+      [
+        784,
+        9952,
+        531,
+        5330
+      ],
+      [
+        623,
+        623,
+        623,
+        623
+      ],
+      [
+        236770,
+        236770,
+        236770,
+        236770
+      ],
+      [
+        1938,
+        236761,
+        107,
+        2717
+      ],
+      [
+        236761,
+        236810,
+        2104,
+        108
+      ],
+      [
+        1437,
+        3904,
+        529,
+        614
+      ],
+      [
+        236779,
+        236779,
+        236779,
+        236779
+      ],
+      [
+        236778,
+        236819,
+        19592,
+        691
+      ],
+      [
+        236865,
+        657,
+        600,
+        1523
+      ],
+      [
+        108,
+        1390,
+        108,
+        1390
+      ],
+      [
+        236764,
+        532,
+        834,
+        236789
+      ],
+      [
+        611,
+        2847,
+        506,
+        3393
+      ],
+      [
+        236768,
+        965,
+        538,
+        236768
+      ],
+      [
+        4893,
+        236761,
+        562,
+        990
+      ],
+      [
+        236743,
+        236778,
+        1607,
+        4690
+      ],
+      [
+        623,
+        2986,
+        538,
+        2986
+      ]
+    ],
+    "observed": [
+      [
+        784,
+        9952,
+        531,
+        5330
+      ],
+      [
+        623,
+        623,
+        623,
+        623
+      ],
+      [
+        236770,
+        236770,
+        236770,
+        236770
+      ],
+      [
+        1938,
+        236761,
+        107,
+        2717
+      ],
+      [
+        236761,
+        236810,
+        2104,
+        108
+      ],
+      [
+        1437,
+        3904,
+        529,
+        614
+      ],
+      [
+        236779,
+        236779,
+        236779,
+        236779
+      ],
+      [
+        236778,
+        236819,
+        19592,
+        691
+      ],
+      [
+        236865,
+        657,
+        600,
+        1523
+      ],
+      [
+        108,
+        1390,
+        108,
+        1390
+      ],
+      [
+        236764,
+        532,
+        834,
+        236789
+      ],
+      [
+        611,
+        2847,
+        506,
+        3393
+      ],
+      [
+        236768,
+        965,
+        538,
+        236768
+      ],
+      [
+        4893,
+        236761,
+        562,
+        990
+      ],
+      [
+        236743,
+        236778,
+        1607,
+        4690
+      ],
+      [
+        623,
+        2986,
+        538,
+        2986
+      ]
+    ],
+    "rows": [
+      {
+        "batch": 16,
+        "width": 5,
+        "top_h": 8,
+        "positions": [
+          71,
+          71,
+          71,
+          76,
+          90,
+          91,
+          95,
+          118,
+          124,
+          132,
+          149,
+          183,
+          185,
+          187,
+          217,
+          368
+        ],
+        "input_ids": [
+          [
+            623,
+            9952,
+            531,
+            5330,
+            692
+          ],
+          [
+            1437,
+            623,
+            623,
+            623,
+            623
+          ],
+          [
+            108,
+            236770,
+            236770,
+            236770,
+            236770
+          ],
+          [
+            4893,
+            236761,
+            107,
+            2717,
+            108
+          ],
+          [
+            611,
+            236810,
+            2104,
+            108,
+            236810
+          ],
+          [
+            236743,
+            3904,
+            529,
+            614,
+            15639
+          ],
+          [
+            236770,
+            236779,
+            236779,
+            236779,
+            236779
+          ],
+          [
+            236764,
+            236819,
+            19592,
+            691,
+            711
+          ],
+          [
+            236779,
+            657,
+            600,
+            1523,
+            1292
+          ],
+          [
+            1938,
+            1390,
+            108,
+            1390,
+            108
+          ],
+          [
+            236761,
+            532,
+            834,
+            236789,
+            236751
+          ],
+          [
+            236768,
+            2847,
+            506,
+            3393,
+            573
+          ],
+          [
+            784,
+            965,
+            538,
+            236768,
+            107
+          ],
+          [
+            236865,
+            236761,
+            562,
+            990,
+            1056
+          ],
+          [
+            236778,
+            236778,
+            1607,
+            4690,
+            236761
+          ],
+          [
+            623,
+            2986,
+            538,
+            2986,
+            623
+          ]
+        ],
+        "milliseconds": [
+          27.236352920532227,
+          27.238399505615234,
+          27.224063873291016,
+          27.227136611938477,
+          27.233280181884766,
+          27.263999938964844,
+          27.211776733398438,
+          27.220991134643555,
+          27.216896057128906,
+          27.242496490478516,
+          27.211776733398438,
+          27.226112365722656,
+          27.240447998046875,
+          27.232255935668945,
+          27.211776733398438,
+          27.237375259399414,
+          27.223039627075195,
+          27.201536178588867,
+          27.218944549560547,
+          27.235328674316406
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 99,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 110,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 105,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 101,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 56,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 90,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 90,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 98,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 96,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 80,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 73,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 78,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 71,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 69,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 71,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 80,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 74,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 71,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 70,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 65,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 69,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 72,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 69,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 84,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 79,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 72,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 76,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 81,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 82,
+            "assignments": 640
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 80,
+            "assignments": 640
+          }
+        ],
+        "exact_eager_graph": true
+      },
+      {
+        "batch": 16,
+        "width": 31,
+        "top_h": 8,
+        "positions": [
+          71,
+          71,
+          71,
+          76,
+          90,
+          91,
+          95,
+          118,
+          124,
+          132,
+          149,
+          183,
+          185,
+          187,
+          217,
+          368
+        ],
+        "input_ids": [
+          [
+            623,
+            9952,
+            531,
+            5330,
+            692,
+            236789,
+            236751,
+            711,
+            1164,
+            1186,
+            13356,
+            236764,
+            840,
+            9883,
+            107,
+            140,
+            236865,
+            1191,
+            236789,
+            859,
+            1161,
+            9883,
+            531,
+            6349,
+            784,
+            9952,
+            531,
+            6349,
+            784,
+            9952,
+            107
+          ],
+          [
+            1437,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623
+          ],
+          [
+            108,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770
+          ],
+          [
+            4893,
+            236761,
+            107,
+            2717,
+            108,
+            8574,
+            611,
+            2847,
+            614,
+            2591,
+            529,
+            1217,
+            611,
+            1093,
+            1161,
+            72375,
+            531,
+            8729,
+            19293,
+            532,
+            29141,
+            573,
+            107,
+            1018,
+            1018,
+            108,
+            1018,
+            108,
+            1018,
+            108,
+            1018
+          ],
+          [
+            611,
+            236810,
+            2104,
+            108,
+            236810,
+            236761,
+            138,
+            818,
+            20632,
+            912,
+            529,
+            506,
+            1548,
+            563,
+            609,
+            236771,
+            236761,
+            236810,
+            2104,
+            108,
+            236825,
+            236761,
+            138,
+            818,
+            20632,
+            912,
+            529,
+            506,
+            1548,
+            563,
+            609
+          ],
+          [
+            236743,
+            3904,
+            529,
+            614,
+            15639,
+            236761,
+            107,
+            1437,
+            3904,
+            529,
+            614,
+            15639,
+            236761,
+            107,
+            1437,
+            3904,
+            529,
+            614,
+            15639,
+            236761,
+            107,
+            1437,
+            3904,
+            529,
+            614,
+            15639,
+            236761,
+            107,
+            1437,
+            3904,
+            529
+          ],
+          [
+            236770,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779
+          ],
+          [
+            236764,
+            236819,
+            19592,
+            691,
+            711,
+            506,
+            1354,
+            529,
+            496,
+            3161,
+            8800,
+            840,
+            4319,
+            496,
+            623,
+            50936,
+            12978,
+            236775,
+            529,
+            5527,
+            236764,
+            5255,
+            236764,
+            532,
+            33999,
+            5872,
+            236761,
+            108,
+            2595,
+            236743,
+            236770
+          ],
+          [
+            236779,
+            657,
+            600,
+            1523,
+            1292,
+            1374,
+            994,
+            6288,
+            236761,
+            27587,
+            625,
+            1374,
+            577,
+            496,
+            1292,
+            600,
+            7623,
+            6288,
+            236761,
+            107,
+            140,
+            236865,
+            669,
+            13179,
+            563,
+            531,
+            2426,
+            768,
+            657,
+            1027,
+            1523
+          ],
+          [
+            1938,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108
+          ],
+          [
+            236761,
+            532,
+            834,
+            236789,
+            236751,
+            236764,
+            532,
+            834,
+            236789,
+            236751,
+            236764,
+            532,
+            834,
+            236789,
+            236751,
+            236764,
+            532,
+            834,
+            236789,
+            236751,
+            236764,
+            532,
+            834,
+            236789,
+            236751,
+            236764,
+            532,
+            834,
+            236789,
+            236751,
+            236764
+          ],
+          [
+            236768,
+            2847,
+            506,
+            3393,
+            573,
+            672,
+            14274,
+            236881,
+            3199,
+            611,
+            2847,
+            506,
+            3393,
+            573,
+            672,
+            14274,
+            236881,
+            3199,
+            611,
+            2847,
+            506,
+            3393,
+            573,
+            672,
+            14274,
+            236881,
+            3199,
+            611,
+            2847,
+            506,
+            3393
+          ],
+          [
+            784,
+            965,
+            538,
+            236768,
+            107,
+            140,
+            236865,
+            568,
+            236781,
+            236779,
+            10520,
+            578,
+            2324,
+            236769,
+            236781,
+            236768,
+            965,
+            538,
+            236768,
+            107,
+            140,
+            236865,
+            568,
+            236781,
+            236779,
+            10520,
+            578,
+            2324,
+            236769,
+            236781,
+            236768
+          ],
+          [
+            236865,
+            236761,
+            562,
+            990,
+            1056,
+            611,
+            1053,
+            531,
+            1386,
+            496,
+            3909,
+            4893,
+            236761,
+            562,
+            990,
+            1056,
+            611,
+            1053,
+            531,
+            1386,
+            496,
+            3909,
+            4893,
+            236761,
+            562,
+            990,
+            1056,
+            611,
+            1053,
+            531,
+            1386
+          ],
+          [
+            236778,
+            236778,
+            1607,
+            4690,
+            236761,
+            236743,
+            236800,
+            236772,
+            4000,
+            6064,
+            531,
+            236743,
+            236778,
+            1607,
+            4690,
+            236761,
+            236743,
+            236800,
+            236772,
+            4000,
+            6064,
+            531,
+            236743,
+            236778,
+            1607,
+            4690,
+            236761,
+            236743,
+            236800,
+            236772,
+            4000
+          ],
+          [
+            623,
+            2986,
+            538,
+            2986,
+            623,
+            3755,
+            529,
+            123466,
+            3605,
+            659,
+            236787,
+            14797,
+            107,
+            139,
+            8996,
+            2986,
+            623,
+            9272,
+            623,
+            2986,
+            538,
+            2986,
+            623,
+            236770,
+            236775,
+            2986,
+            538,
+            2986,
+            623,
+            236771,
+            236775
+          ]
+        ],
+        "milliseconds": [
+          52.927486419677734,
+          52.71859359741211,
+          52.63257598876953,
+          52.631553649902344,
+          53.06163024902344,
+          52.915199279785156,
+          53.93920135498047,
+          54.763519287109375,
+          53.391361236572266,
+          52.585472106933594,
+          53.08006286621094,
+          52.931583404541016,
+          52.724735260009766,
+          52.56089782714844,
+          52.86092758178711,
+          53.782527923583984,
+          52.994049072265625,
+          52.733951568603516,
+          52.86809539794922,
+          52.80972671508789
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 117,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 119,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 117,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 116,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 95,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 111,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 118,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 116,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 119,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 113,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 100,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 103,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 106,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 105,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 104,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 109,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 99,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 108,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 108,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 105,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 101,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 98,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 92,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 105,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 99,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 100,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 102,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 101,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 103,
+            "assignments": 3968
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 106,
+            "assignments": 3968
+          }
+        ],
+        "exact_eager_graph": true
+      },
+      {
+        "batch": 16,
+        "width": 11,
+        "top_h": 8,
+        "positions": [
+          71,
+          71,
+          71,
+          76,
+          90,
+          91,
+          95,
+          118,
+          124,
+          132,
+          149,
+          183,
+          185,
+          187,
+          217,
+          368
+        ],
+        "input_ids": [
+          [
+            623,
+            9952,
+            531,
+            5330,
+            692,
+            236789,
+            236751,
+            711,
+            1164,
+            1186,
+            13356
+          ],
+          [
+            1437,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623
+          ],
+          [
+            108,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770
+          ],
+          [
+            4893,
+            236761,
+            107,
+            2717,
+            108,
+            8574,
+            611,
+            2847,
+            614,
+            2591,
+            529
+          ],
+          [
+            611,
+            236810,
+            2104,
+            108,
+            236810,
+            236761,
+            138,
+            818,
+            20632,
+            912,
+            529
+          ],
+          [
+            236743,
+            3904,
+            529,
+            614,
+            15639,
+            236761,
+            107,
+            1437,
+            3904,
+            529,
+            614
+          ],
+          [
+            236770,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779
+          ],
+          [
+            236764,
+            236819,
+            19592,
+            691,
+            711,
+            506,
+            1354,
+            529,
+            496,
+            3161,
+            8800
+          ],
+          [
+            236779,
+            657,
+            600,
+            1523,
+            1292,
+            1374,
+            994,
+            6288,
+            236761,
+            27587,
+            625
+          ],
+          [
+            1938,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108
+          ],
+          [
+            236761,
+            532,
+            834,
+            236789,
+            236751,
+            236764,
+            532,
+            834,
+            236789,
+            236751,
+            236764
+          ],
+          [
+            236768,
+            2847,
+            506,
+            3393,
+            573,
+            672,
+            14274,
+            236881,
+            3199,
+            611,
+            2847
+          ],
+          [
+            784,
+            965,
+            538,
+            236768,
+            107,
+            140,
+            236865,
+            568,
+            236781,
+            236779,
+            10520
+          ],
+          [
+            236865,
+            236761,
+            562,
+            990,
+            1056,
+            611,
+            1053,
+            531,
+            1386,
+            496,
+            3909
+          ],
+          [
+            236778,
+            236778,
+            1607,
+            4690,
+            236761,
+            236743,
+            236800,
+            236772,
+            4000,
+            6064,
+            531
+          ],
+          [
+            623,
+            2986,
+            538,
+            2986,
+            623,
+            3755,
+            529,
+            123466,
+            3605,
+            659,
+            236787
+          ]
+        ],
+        "milliseconds": [
+          34.69004821777344,
+          34.68492889404297,
+          34.58047866821289,
+          34.513919830322266,
+          34.53644943237305,
+          34.5272331237793,
+          34.515968322753906,
+          34.5241584777832,
+          34.5272331237793,
+          34.52006530761719,
+          34.548736572265625,
+          34.534400939941406,
+          34.539520263671875,
+          34.546688079833984,
+          34.62144088745117,
+          35.399681091308594,
+          35.390464782714844,
+          35.03923034667969,
+          34.87027359008789,
+          34.764801025390625
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 112,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 117,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 112,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 111,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 74,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 100,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 104,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 107,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 110,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 100,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 86,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 92,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 90,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 90,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 86,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 91,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 83,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 91,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 87,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 90,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 87,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 80,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 87,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 94,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 88,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 86,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 91,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 87,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 94,
+            "assignments": 1408
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 91,
+            "assignments": 1408
+          }
+        ],
+        "exact_eager_graph": true
+      },
+      {
+        "batch": 16,
+        "width": 21,
+        "top_h": 8,
+        "positions": [
+          71,
+          71,
+          71,
+          76,
+          90,
+          91,
+          95,
+          118,
+          124,
+          132,
+          149,
+          183,
+          185,
+          187,
+          217,
+          368
+        ],
+        "input_ids": [
+          [
+            623,
+            9952,
+            531,
+            5330,
+            692,
+            236789,
+            236751,
+            711,
+            1164,
+            1186,
+            13356,
+            236764,
+            840,
+            9883,
+            107,
+            140,
+            236865,
+            1191,
+            236789,
+            859,
+            1161
+          ],
+          [
+            1437,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623,
+            623
+          ],
+          [
+            108,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770,
+            236770
+          ],
+          [
+            4893,
+            236761,
+            107,
+            2717,
+            108,
+            8574,
+            611,
+            2847,
+            614,
+            2591,
+            529,
+            1217,
+            611,
+            1093,
+            1161,
+            72375,
+            531,
+            8729,
+            19293,
+            532,
+            29141
+          ],
+          [
+            611,
+            236810,
+            2104,
+            108,
+            236810,
+            236761,
+            138,
+            818,
+            20632,
+            912,
+            529,
+            506,
+            1548,
+            563,
+            609,
+            236771,
+            236761,
+            236810,
+            2104,
+            108,
+            236825
+          ],
+          [
+            236743,
+            3904,
+            529,
+            614,
+            15639,
+            236761,
+            107,
+            1437,
+            3904,
+            529,
+            614,
+            15639,
+            236761,
+            107,
+            1437,
+            3904,
+            529,
+            614,
+            15639,
+            236761,
+            107
+          ],
+          [
+            236770,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779,
+            236779
+          ],
+          [
+            236764,
+            236819,
+            19592,
+            691,
+            711,
+            506,
+            1354,
+            529,
+            496,
+            3161,
+            8800,
+            840,
+            4319,
+            496,
+            623,
+            50936,
+            12978,
+            236775,
+            529,
+            5527,
+            236764
+          ],
+          [
+            236779,
+            657,
+            600,
+            1523,
+            1292,
+            1374,
+            994,
+            6288,
+            236761,
+            27587,
+            625,
+            1374,
+            577,
+            496,
+            1292,
+            600,
+            7623,
+            6288,
+            236761,
+            107,
+            140
+          ],
+          [
+            1938,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108,
+            1390,
+            108
+          ],
+          [
+            236761,
+            532,
+            834,
+            236789,
+            236751,
+            236764,
+            532,
+            834,
+            236789,
+            236751,
+            236764,
+            532,
+            834,
+            236789,
+            236751,
+            236764,
+            532,
+            834,
+            236789,
+            236751,
+            236764
+          ],
+          [
+            236768,
+            2847,
+            506,
+            3393,
+            573,
+            672,
+            14274,
+            236881,
+            3199,
+            611,
+            2847,
+            506,
+            3393,
+            573,
+            672,
+            14274,
+            236881,
+            3199,
+            611,
+            2847,
+            506
+          ],
+          [
+            784,
+            965,
+            538,
+            236768,
+            107,
+            140,
+            236865,
+            568,
+            236781,
+            236779,
+            10520,
+            578,
+            2324,
+            236769,
+            236781,
+            236768,
+            965,
+            538,
+            236768,
+            107,
+            140
+          ],
+          [
+            236865,
+            236761,
+            562,
+            990,
+            1056,
+            611,
+            1053,
+            531,
+            1386,
+            496,
+            3909,
+            4893,
+            236761,
+            562,
+            990,
+            1056,
+            611,
+            1053,
+            531,
+            1386,
+            496
+          ],
+          [
+            236778,
+            236778,
+            1607,
+            4690,
+            236761,
+            236743,
+            236800,
+            236772,
+            4000,
+            6064,
+            531,
+            236743,
+            236778,
+            1607,
+            4690,
+            236761,
+            236743,
+            236800,
+            236772,
+            4000,
+            6064
+          ],
+          [
+            623,
+            2986,
+            538,
+            2986,
+            623,
+            3755,
+            529,
+            123466,
+            3605,
+            659,
+            236787,
+            14797,
+            107,
+            139,
+            8996,
+            2986,
+            623,
+            9272,
+            623,
+            2986,
+            538
+          ]
+        ],
+        "milliseconds": [
+          44.028926849365234,
+          43.842559814453125,
+          43.847679138183594,
+          44.28287887573242,
+          44.17331314086914,
+          44.1077766418457,
+          44.16716766357422,
+          44.1712646484375,
+          44.17843246459961,
+          45.240318298339844,
+          45.936641693115234,
+          45.05497741699219,
+          44.54707336425781,
+          44.74982452392578,
+          44.36991882324219,
+          44.33305740356445,
+          44.1610221862793,
+          44.14668655395508,
+          44.6300163269043,
+          44.265472412109375
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 117,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 119,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 116,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 116,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 90,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 111,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 116,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 115,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 116,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 111,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 93,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 101,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 98,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 102,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 100,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 105,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 95,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 107,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 101,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 101,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 97,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 93,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 91,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 100,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 95,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 97,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 96,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 98,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 100,
+            "assignments": 2688
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 106,
+            "assignments": 2688
+          }
+        ],
+        "exact_eager_graph": true
+      },
+      {
+        "batch": 16,
+        "width": 5,
+        "top_h": 4,
+        "positions": [
+          71,
+          71,
+          71,
+          76,
+          90,
+          91,
+          95,
+          118,
+          124,
+          132,
+          149,
+          183,
+          185,
+          187,
+          217,
+          368
+        ],
+        "input_ids": [
+          [
+            623,
+            9952,
+            531,
+            5330,
+            692
+          ],
+          [
+            1437,
+            623,
+            623,
+            623,
+            623
+          ],
+          [
+            108,
+            236770,
+            236770,
+            236770,
+            236770
+          ],
+          [
+            4893,
+            236761,
+            107,
+            2717,
+            108
+          ],
+          [
+            611,
+            236810,
+            2104,
+            108,
+            236810
+          ],
+          [
+            236743,
+            3904,
+            529,
+            614,
+            15639
+          ],
+          [
+            236770,
+            236779,
+            236779,
+            236779,
+            236779
+          ],
+          [
+            236764,
+            236819,
+            19592,
+            691,
+            711
+          ],
+          [
+            236779,
+            657,
+            600,
+            1523,
+            1292
+          ],
+          [
+            1938,
+            1390,
+            108,
+            1390,
+            108
+          ],
+          [
+            236761,
+            532,
+            834,
+            236789,
+            236751
+          ],
+          [
+            236768,
+            2847,
+            506,
+            3393,
+            573
+          ],
+          [
+            784,
+            965,
+            538,
+            236768,
+            107
+          ],
+          [
+            236865,
+            236761,
+            562,
+            990,
+            1056
+          ],
+          [
+            236778,
+            236778,
+            1607,
+            4690,
+            236761
+          ],
+          [
+            623,
+            2986,
+            538,
+            2986,
+            623
+          ]
+        ],
+        "milliseconds": [
+          22.30169677734375,
+          22.26585578918457,
+          22.243328094482422,
+          22.214656829833984,
+          22.25766372680664,
+          22.23103904724121,
+          22.30681610107422,
+          22.312959671020508,
+          22.30169677734375,
+          22.26278305053711,
+          22.24127960205078,
+          22.2423038482666,
+          22.226943969726562,
+          22.244352340698242,
+          22.224895477294922,
+          22.28326416015625,
+          22.30784034729004,
+          22.29657554626465,
+          22.29759979248047,
+          22.24025535583496
+        ],
+        "routes": [
+          {
+            "layer": "model.layers.0.moe.experts",
+            "unique_experts": 80,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.1.moe.experts",
+            "unique_experts": 90,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.2.moe.experts",
+            "unique_experts": 90,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.3.moe.experts",
+            "unique_experts": 83,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.4.moe.experts",
+            "unique_experts": 39,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.5.moe.experts",
+            "unique_experts": 67,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.6.moe.experts",
+            "unique_experts": 64,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.7.moe.experts",
+            "unique_experts": 80,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.8.moe.experts",
+            "unique_experts": 80,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.9.moe.experts",
+            "unique_experts": 63,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.10.moe.experts",
+            "unique_experts": 52,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.11.moe.experts",
+            "unique_experts": 54,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.12.moe.experts",
+            "unique_experts": 47,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.13.moe.experts",
+            "unique_experts": 41,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.14.moe.experts",
+            "unique_experts": 44,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.15.moe.experts",
+            "unique_experts": 54,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.16.moe.experts",
+            "unique_experts": 46,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.17.moe.experts",
+            "unique_experts": 48,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.18.moe.experts",
+            "unique_experts": 48,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.19.moe.experts",
+            "unique_experts": 49,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.20.moe.experts",
+            "unique_experts": 55,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.21.moe.experts",
+            "unique_experts": 55,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.22.moe.experts",
+            "unique_experts": 47,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.23.moe.experts",
+            "unique_experts": 63,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.24.moe.experts",
+            "unique_experts": 56,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.25.moe.experts",
+            "unique_experts": 56,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.26.moe.experts",
+            "unique_experts": 56,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.27.moe.experts",
+            "unique_experts": 56,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.28.moe.experts",
+            "unique_experts": 68,
+            "assignments": 320
+          },
+          {
+            "layer": "model.layers.29.moe.experts",
+            "unique_experts": 59,
+            "assignments": 320
+          }
+        ],
+        "exact_eager_graph": true
+      }
+    ]
+  }
+]

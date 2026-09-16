@@ -1,0 +1,10 @@
+{
+  "cells": 20,
+  "timed_replays": 400,
+  "layers_per_cell": 30,
+  "eager_graph_equal": true,
+  "four_generation_controls_equal": true,
+  "scope": "short-output instrumentation control, not AR equivalence",
+  "timing_backend": "CUDA events over manual graph replay, cold L2",
+  "inference_code_modified": false
+}

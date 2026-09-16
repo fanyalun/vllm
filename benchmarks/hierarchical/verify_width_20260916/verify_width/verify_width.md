@@ -1,0 +1,3 @@
+# Verification width
+
+Source: ../summary.csv and raw fixed-prefix result.json. Gemma4 BF16, TP1, GPU0 A100 80GB; prefix = prompt + 64 AR tokens. Width includes one anchor. h8 private verification forward proxy includes logits, top2 and argmax; not native Target execute_model. Median of 20 warmed CUDA graph replays, cold L2; CUDA event fallback because cupti-python is absent. One nested prompt group per B. Expert counts are untimed means over 30 layers, not per-token top-k. The two curves show association, not isolated expert-count causality. Reproduce with benchmarks/hierarchical/analyze_verify_width.py.
