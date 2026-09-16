@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Paired 4 x 128 greedy acceptance smoke test for routing weight scaling."""
+"""Paired greedy acceptance test for routing weight scaling."""
 
 import argparse
 import json
@@ -15,25 +15,33 @@ def main():
     parser.add_argument("--model", choices=MODELS, required=True)
     parser.add_argument("--mode", choices=("renormalize", "preserve"), required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--dataset", type=Path)
+    parser.add_argument("--samples", type=int, default=4)
+    parser.add_argument("--draft-length", type=int, default=4)
     args = parser.parse_args()
+    if args.samples < 1 or args.draft_length < 1:
+        parser.error("--samples and --draft-length must be positive")
     os.environ["MOE_SKIP_WEIGHT_MODE"] = args.mode
     from vllm import LLM, SamplingParams
 
-    dataset = (
+    dataset = args.dataset or (
         ROOT
         / "benchmark_results/moe_skip_top_p_4x128_20260915"
         / args.model
         / "dataset.jsonl"
     )
     samples = [json.loads(line) for line in dataset.read_text().splitlines()]
-    assert len(samples) == 4
+    assert len(samples) == args.samples
+    assert len({sample["prompt_sha256"] for sample in samples}) == args.samples
     args.output.mkdir(parents=True, exist_ok=True)
+    if (args.output / "config.json").exists():
+        raise FileExistsError(f"Refusing to overwrite an existing run: {args.output}")
     config = {
         "model": args.model,
         "mode": args.mode,
         "h": 4,
-        "d": 4,
-        "samples": 4,
+        "d": args.draft_length,
+        "samples": args.samples,
         "max_tokens": 128,
         "temperature": 0,
         "seed": 0,
@@ -56,7 +64,7 @@ def main():
         speculative_config={
             "method": "moe_skip",
             "moe_skip_top_h": 4,
-            "num_speculative_tokens": 4,
+            "num_speculative_tokens": args.draft_length,
         },
         per_request_spec_decode_metrics="detailed",
         disable_log_stats=True,
@@ -71,7 +79,7 @@ def main():
         assert len(output.token_ids) == 128
         assert len(result.prompt_token_ids) == sample["prompt_token_count"]
         metrics = output.spec_decode_metrics.to_dict()
-        validate_metrics(metrics, 4)
+        validate_metrics(metrics, args.draft_length)
         outputs.append(
             {
                 "sample_index": sample["sample_index"],
@@ -82,7 +90,7 @@ def main():
             }
         )
         write_json(args.output / "progress.json", outputs)
-        print(f"SAMPLE_COMPLETE {len(outputs)}/4", flush=True)
+        print(f"SAMPLE_COMPLETE {len(outputs)}/{args.samples}", flush=True)
     accepted = sum(o["metrics"]["num_accepted_draft_tokens"] for o in outputs)
     drafted = sum(o["metrics"]["num_draft_tokens"] for o in outputs)
     steps = sum(o["metrics"]["num_spec_steps"] for o in outputs)
@@ -98,7 +106,7 @@ def main():
             "mean_acceptance_length": 1 + accepted / steps,
         },
     )
-    (args.output / "CELL_COMPLETE").write_text("4 x 128 completed\n")
+    (args.output / "CELL_COMPLETE").write_text(f"{args.samples} x 128 completed\n")
 
 
 if __name__ == "__main__":

@@ -79,3 +79,66 @@ Original local artifacts are in
 per-cell configs, logs, token IDs, detailed counters, and completion markers.
 
 AI assistance was used to implement and run this benchmark and write this report.
+
+## Expanded run: 16 prompts and D=16
+
+The follow-up on 2026-09-16 uses four prompts from each of the same four
+categories, D=16, and otherwise retains h=4, 128 output tokens, greedy sampling,
+B=1, TP=1, and eager execution. All 64 requests completed, producing 8192 output
+tokens. Both modes use identical prompts within each model.
+
+| Model | Method | Accepted / proposed | Acceptance | Mean acceptance length |
+| --- | --- | --- | --- | --- |
+| Qwen3.6 | Renormalize | 1980 / 3104 | 63.79% | 11.206 |
+| Qwen3.6 | Preserve | 2011 / 2464 | 81.62% | 14.058 |
+| Gemma4 | Renormalize | 1939 / 3440 | 56.37% | 10.019 |
+| Gemma4 | Preserve | 1937 / 3536 | 54.78% | 9.765 |
+
+Preserving weights improves Qwen3.6 by 17.83 percentage points; it wins on
+15 of 16 prompts and loses on one. Gemma4 decreases by 1.59 percentage points;
+preserve wins on five prompts, loses on four, and ties on seven. Aggregates are
+ratios of total counters, so prompt win counts do not determine the aggregate.
+All 32 paired final outputs match token for token.
+
+| Model | Domain (four prompts each) | Renormalize | Preserve | Change (pp) |
+| --- | --- | --- | --- | --- |
+| Qwen3.6 | HumanEval | 58.37% | 79.42% | +21.05 |
+| Qwen3.6 | Alpaca | 61.75% | 77.08% | +15.33 |
+| Qwen3.6 | GSM8K | 76.37% | 91.25% | +14.88 |
+| Qwen3.6 | UltraFeedback | 61.25% | 79.81% | +18.56 |
+| Gemma4 | HumanEval | 56.37% | 58.73% | +2.36 |
+| Gemma4 | Alpaca | 65.16% | 63.67% | -1.49 |
+| Gemma4 | GSM8K | 69.03% | 64.49% | -4.54 |
+| Gemma4 | UltraFeedback | 42.50% | 39.81% | -2.69 |
+
+The probability of accepting the entire 16-token draft prefix changes from
+40.21% to 66.23% on Qwen3.6, and from 46.98% to 44.80% on Gemma4. These
+position-wise rates count accepted prefixes over rounds proposing that position;
+they are not conditional agreement given an accepted previous token.
+
+This supports preserving weights for Qwen3.6 under the tested configuration.
+Gemma4 shows mixed per-prompt effects and slightly favors renormalization overall.
+No independent AR baseline or performance comparison was run. Sample count and
+D changed together relative to the first smoke, so differences between the two
+experiments cannot be attributed to D alone.
+
+Reproduce using the environment exports above, with the expanded dataset and
+additional runner arguments:
+
+```bash
+for mode in renormalize preserve; do
+    .venv/bin/python benchmarks/moe_skip/run_weight_ablation.py \
+        --model qwen36 --mode "$mode" --samples 16 --draft-length 16 \
+        --dataset benchmark_results/moe_skip_static_budget_16x512_20260914/qwen36/dataset.jsonl \
+        --output "benchmark_results/weight_ablation_d16_repeat/qwen36/$mode"
+done
+```
+
+Use `gemma4` consistently for the model, dataset directory, and output directory
+to reproduce that model. Existing run directories are protected from overwrite.
+Local artifacts are in
+`benchmark_results/moe_skip_weight_ablation_16x128_d16_20260916/`: frozen datasets
+and source snapshots, manifest and source diff, logs, full token outputs and
+per-cycle counters, `summary.csv`, `category_summary.csv`, `paired_samples.csv`,
+`position_acceptance.csv`, corresponding JSON files, and completion markers.
+The artifact-local `analyze.py` revalidates counters and regenerates the summaries.
