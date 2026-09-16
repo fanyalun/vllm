@@ -11,6 +11,17 @@ from pathlib import Path
 
 POLICIES = ("low_error", "balanced", "aggressive")
 BATCHES = (1, 4, 8, 16)
+# Reviewed db1b2cee33 -> 7b6dfb28ff: Qwen-only replay_tail, inactive for Gemma.
+REVIEWED_SOURCE_PAIRS = {
+    "vllm/config/speculative.py": (
+        "393ed4a2e7e8c5d4ee86b230f3ff75a7ac39c09c735fba067762722fb7a7134b",
+        "630406b5488e260f8b587a5e1bbb1041702f4f40834be35d0a5441b4fbe75745",
+    ),
+    "vllm/v1/worker/gpu/spec_decode/hierarchical/state.py": (
+        "05326539f5e4def96997ebcd795222f7c8bd2f802c38281b49388885f08170d7",
+        "3e99da4a873f48ed997fd81d36ff0fc91071f4093e06a06e710a1459f71085bf",
+    ),
+}
 
 
 def acceptance_stats(metrics, capacity):
@@ -73,7 +84,10 @@ def audit(root, rounds, reference=None):
             assert contract[key] == reference[key], key
         for name, digest in reference["source_sha256"].items():
             if name.startswith("vllm/"):
-                assert contract["source_sha256"][name] == digest, name
+                new_digest = contract["source_sha256"][name]
+                if new_digest != digest:
+                    assert Path(contract["model"]).name == "gemma-4-26B-A4B-it"
+                    assert (digest, new_digest) == REVIEWED_SOURCE_PAIRS.get(name), name
     samples = [json.loads(line) for line in dataset.splitlines()]
     results = {}
     for batch, mode in contract["cells"]:
@@ -99,6 +113,8 @@ def summarize(baseline, round6, round8, output):
     reference, old = audit(baseline, 4)
     runs = {4: old}
     for rounds, root in ((6, round6), (8, round8)):
+        if root is None:
+            continue
         _, runs[rounds] = audit(root, rounds, reference)
     rows, comparisons = [], []
     for rounds, results in runs.items():
@@ -163,6 +179,21 @@ def summarize(baseline, round6, round8, output):
                     }
                 )
     output.mkdir(parents=True, exist_ok=True)
+    (output / "source_compatibility.json").write_text(
+        json.dumps(
+            {
+                "reviewed_source_pairs": REVIEWED_SOURCE_PAIRS,
+                "reason": "Historical source differs by Qwen-only replay_tail "
+                "additions. "
+                "Gemma has no QwenGatedDeltaNetAttention layers; the default GDN mode "
+                "remains none. Hierarchical speculator and batched proposal source "
+                "are unchanged. This is a reviewed compatibility exception, not "
+                "byte-identical whole-repository source.",
+            },
+            indent=2,
+        )
+        + "\n"
+    )
     for name, data in (("summary", rows), ("output_comparisons", comparisons)):
         (output / f"{name}.json").write_text(json.dumps(data, indent=2) + "\n")
         with (output / f"{name}.csv").open("w") as stream:
@@ -172,10 +203,11 @@ def summarize(baseline, round6, round8, output):
             writer.writeheader()
             writer.writerows(data)
     lines = [
-        "# h4 D4 三档停止信号：4/6/8 轮比较",
+        f"# h4 D4 三档停止信号：{'/'.join(map(str, runs))} 轮比较",
         "",
-        "24 个新增配置完整，合并此前 12 个四轮配置。16 条相同样本，"
-        "每条输出 512，B1/4/8/16。四轮是历史测量，六/八轮是本次新测量；"
+        f"{12 * (len(runs) - 1)} 个新增配置完整，合并此前 12 个四轮配置。"
+        "16 条相同样本，每条输出 512，B1/4/8/16。"
+        "四轮是历史测量，增加轮数的配置是本次新测量；"
         "每配置一次热图覆盖稳定的测量，无误差条或显著性结论。",
         "",
         "| B | Policy | R | tok/s | vs R4 | 接受率 | 平均提交 | 平均接受 |"
@@ -203,12 +235,17 @@ def summarize(baseline, round6, round8, output):
         "- 跳过请求内轮不是 GPU 时间节省；各策略生成轨迹可能不同。"
         "与同 batch AR 和同策略四轮输出的逐 token 一致性单独报告。",
         "- 固定四轮无早停对照不在本次范围；不能推导真实反事实误停率。",
+        "- 四轮源码为 db1b2cee33，六轮源码为 7b6dfb28ff 加 benchmark 参数改动。"
+        "版本间增加 Qwen 专用 replay_tail；Gemma 不含 Qwen GDN 层且 GDN 模式为 none。"
+        "逐项审查后仅允许 source_compatibility.json 列出的两个精确指纹对；"
+        "不是整个仓库逐字节相同。Gemma 的 speculator 和 batched 路径未变。",
         "- AI assistance was used for benchmark implementation and analysis.",
         "",
     ]
     (output / "results.md").write_text("\n".join(lines))
     (output / "MATRIX_AUDIT_COMPLETE").write_text(
-        "24 new cells + 12 historical R4 cells; counters and identities audited; "
+        f"{12 * (len(runs) - 1)} new cells + 12 historical R4 cells; "
+        "counters and identities audited; "
         "output equality reported separately\n"
     )
     return rows
@@ -221,19 +258,24 @@ if __name__ == "__main__":
     parser.add_argument("round8", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--wait", action="store_true")
+    parser.add_argument("--six-only", action="store_true")
     args = parser.parse_args()
+    if args.six_only:
+        args.round8 = None
+    new_roots = [r for r in (args.round6, args.round8) if r is not None]
+    expected = 12 * len(new_roots)
     if args.wait:
         args.output.mkdir(parents=True, exist_ok=True)
         while True:
             states = []
-            for root in (args.round6, args.round8):
+            for root in new_roots:
                 status = root / "status.json"
                 states.append(json.loads(status.read_text()) if status.exists() else {})
             if any(s.get("state") == "failed" for s in states):
                 raise RuntimeError(f"Round sweep worker failed: {states}")
             completed = sum(
                 (root / f"b{b}_{p}" / "CELL_COMPLETE").exists()
-                for root in (args.round6, args.round8)
+                for root in new_roots
                 for b in BATCHES
                 for p in POLICIES
             )
@@ -241,21 +283,21 @@ if __name__ == "__main__":
                 json.dumps(
                     {
                         "completed_cells": completed,
-                        "expected_cells": 24,
+                        "expected_cells": expected,
                         "workers": states,
                     },
                     indent=2,
                 )
                 + "\n"
             )
-            if completed == 24:
+            if completed == expected:
                 break
-            print(f"ROUND_SWEEP_WAIT {completed}/24", flush=True)
+            print(f"ROUND_SWEEP_WAIT {completed}/{expected}", flush=True)
             time.sleep(30)
     summarize(args.baseline, args.round6, args.round8, args.output)
     from benchmarks.hierarchical.plot_round_sweep import plot
 
     plot(args.output)
     (args.output / "ANALYSIS_COMPLETE").write_text(
-        "36 comparisons audited and plotted; visual review pending\n"
+        f"{expected + 12} comparisons audited and plotted; visual review pending\n"
     )

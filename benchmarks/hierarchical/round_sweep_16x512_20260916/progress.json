@@ -1,0 +1,11 @@
+{
+  "completed_cells": 12,
+  "expected_cells": 12,
+  "workers": [
+    {
+      "state": "complete",
+      "completed_cells": 12,
+      "visual_review": "pending"
+    }
+  ]
+}

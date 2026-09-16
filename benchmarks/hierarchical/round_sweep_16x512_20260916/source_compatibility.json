@@ -1,0 +1,13 @@
+{
+  "reviewed_source_pairs": {
+    "vllm/config/speculative.py": [
+      "393ed4a2e7e8c5d4ee86b230f3ff75a7ac39c09c735fba067762722fb7a7134b",
+      "630406b5488e260f8b587a5e1bbb1041702f4f40834be35d0a5441b4fbe75745"
+    ],
+    "vllm/v1/worker/gpu/spec_decode/hierarchical/state.py": [
+      "05326539f5e4def96997ebcd795222f7c8bd2f802c38281b49388885f08170d7",
+      "3e99da4a873f48ed997fd81d36ff0fc91071f4093e06a06e710a1459f71085bf"
+    ]
+  },
+  "reason": "Historical source differs by Qwen-only replay_tail additions. Gemma has no QwenGatedDeltaNetAttention layers; the default GDN mode remains none. Hierarchical speculator and batched proposal source are unchanged. This is a reviewed compatibility exception, not byte-identical whole-repository source."
+}

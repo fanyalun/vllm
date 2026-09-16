@@ -1,0 +1,9 @@
+{
+  "new_cells_complete": 12,
+  "historical_cells": 12,
+  "round8": "cancelled_before_any_measurement",
+  "visual_review": "passed_png_and_rendered_pdf",
+  "output_equivalence": "not_passed",
+  "source_compatibility": "reviewed_inactive_qwen_changes",
+  "effective_measurements_per_cell": 1
+}

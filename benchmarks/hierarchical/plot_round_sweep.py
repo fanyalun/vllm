@@ -15,7 +15,9 @@ import matplotlib.pyplot as plt
 def plot(root):
     assert (root / "MATRIX_AUDIT_COMPLETE").exists()
     rows = json.loads((root / "summary.json").read_text())
-    assert len(rows) == 36
+    rounds = sorted({r["rounds"] for r in rows})
+    assert rounds in ([4, 6], [4, 6, 8])
+    assert len(rows) == 12 * len(rounds)
     plt.rcParams.update(
         {
             "font.family": "STIXGeneral",
@@ -62,7 +64,7 @@ def plot(root):
         ):
             ax.set_xlabel("Maximum inner rounds")
             ax.set_ylabel(ylabel)
-            ax.set_xticks([4, 6, 8])
+            ax.set_xticks(rounds)
             ax.set_ylim(bottom=0)
             if i in (1, 3):
                 ax.set_ylim(0, 100)
@@ -97,7 +99,8 @@ def plot(root):
             f"# Round limit comparison, batch size {batch}\n\n"
             "Source: ../summary.json. Gemma h4, MTP D4, 16 identical raw prompts, "
             "512 output tokens/request, TP1, greedy, ignore_eos, synchronous. "
-            "R4 reuses the historical 2026-09-15 baseline; R6/R8 are new runs. "
+            f"Round limits: {rounds}. R4 reuses the historical 2026-09-15 "
+            "baseline; larger round limits are new runs. "
             "One warmed measurement per configuration; no error bars.\n\n"
             "(a) Total output throughput including prefill, excluding loading/warmup. "
             "(b) Accepted candidate tokens / submitted candidate tokens. "
