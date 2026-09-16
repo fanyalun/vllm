@@ -18,17 +18,33 @@ def main():
     parser.add_argument("--dataset", type=Path)
     parser.add_argument("--samples", type=int, default=4)
     parser.add_argument("--draft-length", type=int, default=4)
-    parser.add_argument("--expert-top-p", type=float)
+    routing = parser.add_mutually_exclusive_group()
+    routing.add_argument("--expert-top-p", type=float)
+    routing.add_argument("--expert-min-weight", type=float)
+    parser.add_argument("--track-expert-counts", action="store_true")
     parser.add_argument("--cuda-graphs", action="store_true")
     args = parser.parse_args()
     if args.samples < 1 or args.draft_length < 1:
         parser.error("--samples and --draft-length must be positive")
     if args.expert_top_p is not None and not 0 < args.expert_top_p <= 1:
         parser.error("--expert-top-p must be in (0, 1]")
+    if args.expert_min_weight is not None and not 0 < args.expert_min_weight <= 1:
+        parser.error("--expert-min-weight must be in (0, 1]")
+    adaptive = args.expert_top_p is not None or args.expert_min_weight is not None
+    count_experts = adaptive or args.track_expert_counts
     os.environ["MOE_SKIP_WEIGHT_MODE"] = args.mode
-    os.environ.pop("MOE_SKIP_BENCH_TOP_P", None)
+    for key in (
+        "MOE_SKIP_BENCH_TOP_P",
+        "MOE_SKIP_BENCH_MIN_WEIGHT",
+        "MOE_SKIP_BENCH_COUNT_ONLY",
+    ):
+        os.environ.pop(key, None)
     if args.expert_top_p is not None:
         os.environ["MOE_SKIP_BENCH_TOP_P"] = str(args.expert_top_p)
+    elif args.expert_min_weight is not None:
+        os.environ["MOE_SKIP_BENCH_MIN_WEIGHT"] = str(args.expert_min_weight)
+    elif count_experts:
+        os.environ["MOE_SKIP_BENCH_COUNT_ONLY"] = "1"
     from vllm import LLM, SamplingParams
 
     dataset = args.dataset or (
@@ -46,8 +62,11 @@ def main():
     config = {
         "model": args.model,
         "mode": args.mode,
-        "h": 4 if args.expert_top_p is None else None,
+        "h": None if adaptive else 4,
         "expert_top_p": args.expert_top_p,
+        "expert_min_weight": args.expert_min_weight,
+        "threshold_fallback": "none",
+        "histogram_first_bin": 1 if args.expert_top_p is not None else 0,
         "d": args.draft_length,
         "samples": args.samples,
         "max_tokens": 128,
@@ -71,18 +90,16 @@ def main():
         async_scheduling=False,
         speculative_config={
             "method": "moe_skip",
-            "moe_skip_top_h": 4 if args.expert_top_p is None else 8,
+            "moe_skip_top_h": 8 if adaptive else 4,
             "moe_skip_weight_mode": args.mode,
             "num_speculative_tokens": args.draft_length,
         },
         per_request_spec_decode_metrics="detailed",
         disable_log_stats=True,
         seed=0,
-        worker_extension_cls=(
-            "" if args.expert_top_p is None else "top_p_worker.TopPWorker"
-        ),
+        worker_extension_cls=("top_p_worker.TopPWorker" if count_experts else ""),
     )
-    if args.expert_top_p is not None:
+    if count_experts:
         llm.collective_rpc("reset_budget_counts")
     sampling = SamplingParams(temperature=0, max_tokens=128, ignore_eos=True)
     outputs = []
@@ -108,10 +125,10 @@ def main():
     drafted = sum(o["metrics"]["num_draft_tokens"] for o in outputs)
     steps = sum(o["metrics"]["num_spec_steps"] for o in outputs)
     budgets = None
-    if args.expert_top_p is not None:
+    if count_experts:
         budgets = llm.collective_rpc("collect_budget_counts")
         if not any(sum(v) for worker in budgets for v in worker.values()):
-            raise RuntimeError("Top-p did not record any expert routing")
+            raise RuntimeError("Expert-count instrumentation did not record routing")
     write_json(
         args.output / "result.json",
         {
