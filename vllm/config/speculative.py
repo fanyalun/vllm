@@ -661,6 +661,12 @@ class SpeculativeConfig:
     Approximate modes retain one private SSM state after rejection.
     """
 
+    preverify_gdn_update_policy: Literal["exact", "three_level_p50"] = "exact"
+    """Conditional recurrent updates, confined to replay-tail preverification."""
+
+    preverify_gdn_tail_policy: Literal["carry", "repair_on_reject"] = "carry"
+    """Optionally replay the consumed prefix before the next inner window."""
+
     def make_inner_config(self) -> "SpeculativeConfig":
         from dataclasses import replace
 
@@ -673,6 +679,8 @@ class SpeculativeConfig:
             moe_skip_weight_mode="preserve",
             preverify_gdn_mode="none",
             preverify_gdn_group_mode="none",
+            preverify_gdn_update_policy="exact",
+            preverify_gdn_tail_policy="carry",
             num_speculative_tokens=self.inner_num_speculative_tokens,
         )
 
@@ -708,6 +716,8 @@ class SpeculativeConfig:
                     self.moe_skip_weight_mode,
                     self.preverify_gdn_mode,
                     self.preverify_gdn_group_mode,
+                    self.preverify_gdn_update_policy,
+                    self.preverify_gdn_tail_policy,
                     self.hierarchical_stop_policy,
                     inner.compute_hash(),
                 )
@@ -1193,6 +1203,11 @@ class SpeculativeConfig:
             raise ValueError("inner_method requires method='hierarchical'")
         if self.preverify_gdn_mode != "none":
             raise ValueError("preverify_gdn_mode requires method='hierarchical'")
+        if (
+            self.preverify_gdn_update_policy != "exact"
+            or self.preverify_gdn_tail_policy != "carry"
+        ):
+            raise ValueError("GDN update/tail policies require method='hierarchical'")
         if self.preverify_gdn_group_mode != "none":
             raise ValueError("preverify_gdn_group_mode requires method='hierarchical'")
         # Note: "method" is a new parameter that helps to extend the
@@ -1673,6 +1688,8 @@ class SpeculativeConfig:
             num_speculative_tokens=max(2, self.inner_num_speculative_tokens),
             preverify_gdn_mode="none",
             preverify_gdn_group_mode="none",
+            preverify_gdn_update_policy="exact",
+            preverify_gdn_tail_policy="carry",
         )
         if not set(self.target_model_config.architectures or ()) <= {
             "Qwen3_5MoeForCausalLM",
@@ -1682,6 +1699,14 @@ class SpeculativeConfig:
         }:
             raise ValueError("hierarchical supports Qwen3.6 MoE and Gemma4 MoE only")
         self.moe_skip_top_h = preverify.moe_skip_top_h
+        if self.preverify_gdn_update_policy != "exact":
+            if (
+                self.preverify_gdn_mode != "replay_tail"
+                or self.preverify_gdn_group_mode != "none"
+            ):
+                raise ValueError("Three-level GDN requires ungrouped replay_tail")
+        elif self.preverify_gdn_tail_policy != "carry":
+            raise ValueError("repair_on_reject requires three_level_p50")
         self.moe_skip_min_weight = preverify.moe_skip_min_weight
         if self.preverify_gdn_group_mode not in ("none", "projection", "full"):
             raise ValueError("Unknown preverify_gdn_group_mode")

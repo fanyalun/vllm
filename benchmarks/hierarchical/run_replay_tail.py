@@ -20,6 +20,13 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--grouped-gdn", action="store_true")
+    parser.add_argument("--three-level", action="store_true")
+    parser.add_argument("--cases", nargs="+")
+    parser.add_argument("--seed", type=int, default=20260908)
+    parser.add_argument("--capture-inputs", type=Path)
+    parser.add_argument("--cost-output", type=Path)
+    parser.add_argument("--action-audit", action="store_true")
+    parser.add_argument("--profile-output", type=Path)
     parser.add_argument(
         "--dataset",
         type=Path,
@@ -39,6 +46,20 @@ def main():
         else ["none", "replay_tail", "tail_only"]
     )
     timed_cases = cases if args.grouped_gdn else ["none", "replay_tail"]
+    if args.three_level:
+        cases = args.cases or (
+            ["none:carry:low_error"]
+            + [
+                f"{update}:{tail}:{stop}"
+                for stop in ("low_error", "balanced", "aggressive", "none")
+                for update, tail in (
+                    ("exact", "carry"),
+                    ("three_level", "carry"),
+                    ("three_level", "repair_on_reject"),
+                )
+            ]
+        )
+        timed_cases = cases
     root = Path(__file__).resolve().parents[2]
     os.environ["PATH"] = str(root / ".venv/bin") + os.pathsep + os.environ["PATH"]
     os.environ["HF_HUB_OFFLINE"] = "1"
@@ -79,12 +100,14 @@ def main():
         async_scheduling=False,
         speculative_config=spec,
         disable_log_stats=True,
-        seed=20260908,
+        seed=args.seed,
         worker_extension_cls="replay_tail_worker.ReplayTailWorker",
     )
     args.output.mkdir(parents=True, exist_ok=True)
     if args.grouped_gdn:
         config["worker_extension_cls"] = "grouped_gdn_worker.GroupedGDNWorker"
+    if args.three_level:
+        config["worker_extension_cls"] = "three_level_worker.ThreeLevelWorker"
 
     def save(name, data):
         (args.output / name).write_text(json.dumps(data, indent=2) + "\n")
@@ -117,23 +140,35 @@ def main():
                     "benchmarks/hierarchical/run_replay_tail.py",
                     "benchmarks/hierarchical/replay_tail_worker.py",
                     "benchmarks/hierarchical/grouped_gdn_worker.py",
+                    "benchmarks/hierarchical/three_level_worker.py",
                     "vllm/model_executor/layers/mamba/gdn/grouped_input.py",
                     "vllm/v1/worker/gpu/spec_decode/hierarchical/grouped_gdn.py",
                 )
             },
         },
     )
+    contract = json.loads((args.output / "contract.json").read_text())
+    for path in contract["source_sha256"]:
+        target = args.output / "source_snapshot" / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((root / path).read_bytes())
     llm = LLM(**config)
+    if args.capture_inputs:
+        llm.collective_rpc(
+            "capture_three_level_inputs", args=(str(args.capture_inputs.resolve()),)
+        )
     params = SamplingParams(
-        temperature=0, max_tokens=args.max_tokens, ignore_eos=True, seed=20260908
+        temperature=0, max_tokens=args.max_tokens, ignore_eos=True, seed=args.seed
     )
     rows, memory = [], {}
     references = {}
 
     def generate(case, phase, repeat, index, sample):
-        params.seed = 20260908 + index
+        params.seed = args.seed if args.three_level else args.seed + index
         if phase == "audit":
             llm.collective_rpc("begin_replay_audit")
+        elif phase == "actions":
+            llm.collective_rpc("begin_action_audit")
         start = time.perf_counter()
         result = llm.generate([sample["prompt"]], params, use_tqdm=False)[0]
         elapsed = time.perf_counter() - start
@@ -147,6 +182,8 @@ def main():
         audit = (
             llm.collective_rpc("collect_replay_audit")[0] if phase == "audit" else {}
         )
+        if phase == "actions":
+            audit = llm.collective_rpc("collect_action_audit")[0]
         if phase != "warmup":
             rows.append(
                 dict(
@@ -156,6 +193,7 @@ def main():
                     sample=index,
                     seconds=elapsed,
                     token_ids=tokens,
+                    text=result.outputs[0].text,
                     **audit,
                 )
             )
@@ -164,10 +202,16 @@ def main():
 
     for case in cases:
         memory[case] = llm.collective_rpc("set_replay_case", args=(case,))[0]
+        if args.cost_output and case == cases[0]:
+            llm.collective_rpc(
+                "begin_three_level_cost", args=(str(args.cost_output.resolve()),)
+            )
         for index, sample in enumerate(samples):
             generate(case, "warmup", 0, index, sample)
         memory[case] = llm.collective_rpc("set_replay_case", args=(case,))[0]
     save("private_state.json", memory)
+    if args.three_level:
+        llm.collective_rpc("set_three_level_jit_guard", args=(True,))
     for repeat in range(args.repeats):
         order = timed_cases if repeat % 2 == 0 else timed_cases[::-1]
         for case in order:
@@ -176,12 +220,48 @@ def main():
                 generate(case, "e2e", repeat, index, sample)
             after = llm.collective_rpc("set_replay_case", args=(case,))[0]
             assert before["graphs"] == after["graphs"], "new graph in timed run"
+    if args.three_level:
+        llm.collective_rpc("set_three_level_jit_guard", args=(False,))
     for case in cases:
         llm.collective_rpc("set_replay_case", args=(case,))
         for index, sample in enumerate(samples):
             generate(case, "audit", 0, index, sample)
     expected = args.samples * (len(timed_cases) * args.repeats + len(cases))
+    if args.action_audit:
+        for case in cases:
+            if not case.startswith("three_level"):
+                continue
+            llm.collective_rpc("set_replay_case", args=(case,))
+            for index, sample in enumerate(samples):
+                generate(case, "actions", 0, index, sample)
+            expected += args.samples
     assert len(rows) == expected
+    if args.profile_output:
+        llm.collective_rpc("set_replay_case", args=(cases[-1],))
+        params.max_tokens = 32
+        reference = llm.generate([samples[0]["prompt"]], params, use_tqdm=False)[0]
+        llm.collective_rpc("begin_three_profile")
+        profiled = llm.generate([samples[0]["prompt"]], params, use_tqdm=False)[0]
+        llm.collective_rpc(
+            "end_three_profile", args=(str(args.profile_output.resolve()),)
+        )
+        assert list(reference.outputs[0].token_ids) == list(
+            profiled.outputs[0].token_ids
+        )
+        save(
+            "profile_parity.json",
+            dict(
+                case=cases[-1],
+                tokens=32,
+                token_ids=list(profiled.outputs[0].token_ids),
+                identical=True,
+            ),
+        )
+    if args.three_level:
+        llm.collective_rpc(
+            "export_three_level_kernels",
+            args=(str((args.output / "kernels").resolve()),),
+        )
     save(
         "measurement_complete.json",
         {

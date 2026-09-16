@@ -191,6 +191,229 @@ def test_replay_tail_preserves_causal_outputs_and_overwrites_only_final_state(
     torch.testing.assert_close(state, expected_state, rtol=0, atol=0)
 
 
+@pytest.mark.parametrize("tokens", range(1, 6))
+@pytest.mark.parametrize("action", ["full", "skip", "decay", "mixed"])
+@torch.inference_mode()
+def test_three_level_independent_tail_and_consumed_prefix(tokens, action):
+    """Conditional updates preserve the input and repair only consumed tokens."""
+    from vllm.model_executor.layers.mamba.gdn.replay_tail_update import (
+        replay_tail_update,
+    )
+
+    torch.manual_seed(42)
+    h, hv, dim = 16, 32, 128
+    q, k = [
+        torch.randn(tokens, h, dim, device="cuda", dtype=torch.bfloat16)
+        for _ in range(2)
+    ]
+    v = torch.randn(tokens, hv, dim, device="cuda", dtype=torch.bfloat16)
+    a, b = [
+        torch.randn(tokens, hv, device="cuda", dtype=torch.bfloat16) for _ in range(2)
+    ]
+    a_log, dt = [torch.randn(hv, device="cuda") for _ in range(2)]
+    initial = torch.randn(1, hv, dim, dim, device="cuda") * 0.05
+    saved = initial.clone()
+    thresholds = torch.tensor(
+        {
+            "full": [0.98, 0.0],
+            "skip": [-1.0, 2.0],
+            "decay": [2.0, 2.0],
+            "mixed": [0.98, 0.36328125],
+        }[action],
+        device="cuda",
+    )
+    tail = torch.empty_like(initial)
+    counts = torch.zeros(3, dtype=torch.int64, device="cuda")
+    actual = replay_tail_update(
+        q,
+        k,
+        v,
+        a,
+        b,
+        a_log,
+        dt,
+        initial,
+        tail=tail,
+        thresholds=thresholds,
+        action_counts=counts,
+    )
+    torch.testing.assert_close(initial, saved, rtol=0, atol=0)
+    if action == "full":
+        exact = initial.clone()
+        expected = replay_tail_update(q, k, v, a, b, a_log, dt, exact)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        torch.testing.assert_close(tail, exact, rtol=0, atol=0)
+    if action == "skip":
+        torch.testing.assert_close(tail, initial, rtol=0, atol=0)
+    query = q.float() * (q.float().square().sum(-1, keepdim=True) + 1e-6).rsqrt()
+    query = query.repeat_interleave(hv // h, 1) * dim**-0.5
+    key = k.float() * (k.float().square().sum(-1, keepdim=True) + 1e-6).rsqrt()
+    key = key.repeat_interleave(hv // h, 1)
+    alpha = (-a_log.exp() * torch.nn.functional.softplus(a.float() + dt)).exp()
+    beta = b.float().sigmoid()
+    full = beta.bfloat16().float() >= thresholds[1]
+    decay = full | (alpha <= thresholds[0])
+    assert counts.tolist() == [
+        int(full.sum()),
+        int((decay & ~full).sum()),
+        int((~decay).sum()),
+    ]
+    reference = initial.clone()
+    outputs = []
+    prefixes = []
+    for t in range(tokens):
+        reference *= torch.where(decay[t], alpha[t], 1)[None, :, None, None]
+        delta = (v[t].float() - (reference[0] * key[t, :, None, :]).sum(-1)) * beta[
+            t, :, None
+        ]
+        reference += (delta * full[t, :, None])[None, :, :, None] * key[
+            t, None, :, None, :
+        ]
+        prefixes.append(reference.clone())
+        outputs.append((reference[0] * query[t, :, None, :]).sum(-1))
+    torch.testing.assert_close(
+        actual, torch.stack(outputs).bfloat16(), rtol=1e-3, atol=1e-3
+    )
+    torch.testing.assert_close(tail, reference, rtol=1e-3, atol=1e-3)
+    for consumed in range(1, tokens + 1):
+        replay_tail_update(
+            q[:consumed],
+            k[:consumed],
+            v[:consumed],
+            a[:consumed],
+            b[:consumed],
+            a_log,
+            dt,
+            initial,
+            tail=tail,
+            thresholds=thresholds,
+            out=v,
+            readout=False,
+        )
+        torch.testing.assert_close(tail, prefixes[consumed - 1], rtol=1e-3, atol=1e-3)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = replay_tail_update(
+            q, k, v, a, b, a_log, dt, initial, tail=tail, thresholds=thresholds
+        )
+    graph.replay()
+    torch.testing.assert_close(captured, actual, rtol=0, atol=0)
+    torch.testing.assert_close(tail, reference, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("accepted", range(5))
+@pytest.mark.parametrize("dim_first", [False, True])
+def test_replay_tail_batched_conv_shift_matches_individual_layers(accepted, dim_first):
+    from vllm.model_executor.layers.mamba.gdn.replay_tail_update import (
+        advance_replay_tail_conv,
+        advance_replay_tail_convs,
+    )
+
+    shape = (1, 67, 8) if dim_first else (1, 8, 67)
+    layers = [torch.randn(shape, device="cuda", dtype=torch.bfloat16) for _ in range(3)]
+    expected = [x.clone() for x in layers]
+    pointers = torch.tensor(
+        [x.data_ptr() for x in layers], device="cuda", dtype=torch.uint64
+    )
+    advance_replay_tail_convs(pointers, layers[0], accepted, dim_first)
+    for actual, reference in zip(layers, expected, strict=True):
+        advance_replay_tail_conv(reference, accepted, dim_first)
+        torch.testing.assert_close(actual, reference, rtol=0, atol=0)
+
+
+@torch.inference_mode()
+def test_three_level_classifies_bf16_beta_but_updates_with_fp32_beta():
+    from vllm.model_executor.layers.mamba.gdn.replay_tail_update import (
+        replay_tail_update,
+    )
+
+    q = torch.ones(1, 1, 8, device="cuda", dtype=torch.bfloat16)
+    k = q.clone()
+    v = torch.zeros(1, 4, 8, device="cuda", dtype=torch.bfloat16)
+    a = torch.tensor([[-8, 0, 0, 0]], device="cuda", dtype=torch.bfloat16)
+    b = torch.tensor(
+        [[-0.56640625, -0.56640625, -0.5625, -0.55078125]],
+        device="cuda",
+        dtype=torch.bfloat16,
+    )
+    al = dt = torch.zeros(4, device="cuda")
+    initial = torch.ones(1, 4, 8, 8, device="cuda")
+    tail = torch.empty_like(initial)
+    thresholds = torch.tensor([0.98, 0.36328125], device="cuda")
+    counts = torch.zeros(3, dtype=torch.int64, device="cuda")
+    beta = b.float().sigmoid()
+    assert beta[0, 2] < thresholds[1]
+    assert beta.bfloat16()[0, 2].float() == thresholds[1]
+    assert beta.bfloat16()[0, 3].float() > thresholds[1]
+    replay_tail_update(
+        q,
+        k,
+        v,
+        a,
+        b,
+        al,
+        dt,
+        initial,
+        tail=tail,
+        thresholds=thresholds,
+        action_counts=counts,
+    )
+    assert counts.tolist() == [2, 1, 1]
+    torch.testing.assert_close(tail[:, 0], initial[:, 0], rtol=0, atol=0)
+    torch.testing.assert_close(tail[:, 1], initial[:, 1] * 0.5, rtol=1e-6, atol=1e-6)
+    for head in (2, 3):
+        expected = 0.5 * (1 - beta[0, head] * 8 / (8 + 1e-6))
+        torch.testing.assert_close(
+            tail[0, head], expected.expand(8, 8), rtol=1e-6, atol=1e-6
+        )
+
+
+@torch.inference_mode()
+def test_three_level_alpha_boundary_and_runtime_threshold_graph_updates():
+    from vllm.model_executor.layers.mamba.gdn.replay_tail_update import (
+        replay_tail_update,
+    )
+
+    q = torch.ones(1, 1, 8, device="cuda", dtype=torch.bfloat16)
+    v = torch.zeros(1, 3, 8, device="cuda", dtype=torch.bfloat16)
+    center = torch.tensor(0.98, device="cuda").log()
+    g = (center + torch.tensor([-1e-6, 0.0, 1e-6], device="cuda"))[None]
+    beta = torch.full((1, 3), 0.2, device="cuda", dtype=torch.bfloat16)
+    initial = torch.ones(1, 3, 8, 8, device="cuda")
+    tail = torch.empty_like(initial)
+    thresholds = torch.tensor([0.98, 0.36328125], device="cuda")
+    counts = torch.zeros(3, dtype=torch.int64, device="cuda")
+
+    def execute():
+        return replay_tail_update(
+            q,
+            q,
+            v,
+            g,
+            beta,
+            None,
+            None,
+            initial,
+            tail=tail,
+            thresholds=thresholds,
+            action_counts=counts,
+            effective_gates=True,
+        )
+
+    execute()
+    low = int((g.exp() <= thresholds[0]).sum())
+    assert counts.tolist() == [0, low, 3 - low]
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        execute()
+    for settings, expected in (([0.98, 0.0], [3, 0, 0]), ([-1.0, 2.0], [0, 0, 3])):
+        thresholds.copy_(torch.tensor(settings, device="cuda"))
+        counts.zero_()
+        graph.replay()
+        assert counts.tolist() == expected
+    torch.testing.assert_close(tail, initial, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("accepted", range(5))
 @pytest.mark.parametrize("dim_first", [False, True])
 def test_replay_tail_conv_shift_matches_overlapping_index_copy(accepted, dim_first):

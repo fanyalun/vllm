@@ -110,6 +110,23 @@ def test_mean_gdn_rejects_other_models_and_depths(monkeypatch, mode):
         )
 
 
+def test_three_level_requires_replay_and_isolated_tail_policy(monkeypatch):
+    with pytest.raises(ValueError, match="ungrouped replay_tail"):
+        make_config(monkeypatch, preverify_gdn_update_policy="three_level_p50")
+    with pytest.raises(ValueError, match="requires three_level_p50"):
+        make_config(monkeypatch, preverify_gdn_tail_policy="repair_on_reject")
+    hashes = []
+    for tail in ("carry", "repair_on_reject"):
+        config = make_config(
+            monkeypatch,
+            preverify_gdn_mode="replay_tail",
+            preverify_gdn_update_policy="three_level_p50",
+            preverify_gdn_tail_policy=tail,
+        )
+        hashes.append(config.compute_hash())
+    assert hashes[0] != hashes[1]
+
+
 @pytest.mark.parametrize("group", ["projection", "full"])
 def test_grouped_gdn_is_independent_but_rejects_incompatible_modes(monkeypatch, group):
     assert (

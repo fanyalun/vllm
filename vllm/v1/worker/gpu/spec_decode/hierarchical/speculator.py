@@ -126,6 +126,8 @@ class HierarchicalSpeculator(BaseSpeculator):
             dspark_draft_topk=None,
             preverify_gdn_mode="none",
             preverify_gdn_group_mode="none",
+            preverify_gdn_update_policy="exact",
+            preverify_gdn_tail_policy="carry",
         )
         self.preverify = MoeSkipSpeculator(self.preverify_config, device)
         self.buffers = InputBuffers(
@@ -176,7 +178,12 @@ class HierarchicalSpeculator(BaseSpeculator):
         self.model = self.preverify.model
         self.logits_model = target_model
         self.state = PreverifyState(
-            self.model, self.depth + 1, self.device, self.config.preverify_gdn_mode
+            self.model,
+            self.depth + 1,
+            self.device,
+            self.config.preverify_gdn_mode,
+            self.config.preverify_gdn_update_policy,
+            self.config.preverify_gdn_tail_policy,
         )
         self.grouped_gdn = None
         if (
@@ -320,16 +327,23 @@ class HierarchicalSpeculator(BaseSpeculator):
         width = tokens.numel()
         padded = width
         buffers = self.buffers
-        buffers.input_ids[:padded].zero_()
-        buffers.positions[:padded].zero_()
-        buffers.is_padding[:padded].fill_(True)
+        optimized = getattr(self.state, "execution_optimized", False) is True
+        if not optimized:
+            buffers.input_ids[:padded].zero_()
+            buffers.positions[:padded].zero_()
+            buffers.is_padding[:padded].fill_(True)
         buffers.input_ids[:width].copy_(tokens)
-        buffers.positions[:width].copy_(
-            torch.arange(position, position + width, device=self.device)
-        )
-        buffers.query_start_loc[:2].copy_(
-            torch.tensor([0, width], dtype=torch.int32, device=self.device)
-        )
+        if optimized:
+            indices, local_positions, query_start = self.state.batch_constants[width]
+            torch.add(indices, position, out=buffers.positions[:width])
+            buffers.query_start_loc[:2].copy_(query_start)
+        else:
+            buffers.positions[:width].copy_(
+                torch.arange(position, position + width, device=self.device)
+            )
+            buffers.query_start_loc[:2].copy_(
+                torch.tensor([0, width], dtype=torch.int32, device=self.device)
+            )
         buffers.seq_lens[:1].fill_(position + width)
         buffers.is_padding[:width].zero_()
         zeros = np.zeros(1, dtype=np.int32)
@@ -337,9 +351,9 @@ class HierarchicalSpeculator(BaseSpeculator):
             template,
             num_reqs_after_padding=1,
             expanded_idx_mapping=template.idx_mapping.expand(width),
-            expanded_local_pos=torch.arange(
-                width, dtype=torch.int32, device=self.device
-            ),
+            expanded_local_pos=local_positions
+            if optimized
+            else torch.arange(width, dtype=torch.int32, device=self.device),
             num_scheduled_tokens=np.array([width], dtype=np.int32),
             num_tokens=width,
             num_tokens_after_padding=padded,
@@ -360,7 +374,9 @@ class HierarchicalSpeculator(BaseSpeculator):
             input_ids=buffers.input_ids[:padded],
             positions=buffers.positions[:padded],
             is_padding=buffers.is_padding[:padded],
-            logits_indices=torch.arange(width, dtype=torch.int64, device=self.device),
+            logits_indices=indices
+            if optimized
+            else torch.arange(width, dtype=torch.int64, device=self.device),
             cu_num_logits=buffers.query_start_loc[:2],
             cu_num_logits_np=np.array([0, width], dtype=np.int32),
             has_structured_output_reqs=False,
@@ -398,7 +414,9 @@ class HierarchicalSpeculator(BaseSpeculator):
             num_actual_tokens=width,
             spec_query_start_loc=batch.query_start_loc,
             spec_state_indices_tensor=self.state.state_indices[:, :width],
-            spec_sequence_masks=torch.ones(1, dtype=torch.bool, device=self.device),
+            spec_sequence_masks=self.state.sequence_mask
+            if getattr(self.state, "execution_optimized", False) is True
+            else torch.ones(1, dtype=torch.bool, device=self.device),
             num_accepted_tokens=self.state.num_accepted,
         )
         for name in self.state.layers:
@@ -407,10 +425,17 @@ class HierarchicalSpeculator(BaseSpeculator):
     def _verify(self, batch, metadata, slots):
         width = batch.num_tokens
         key = width if batch.num_reqs == 1 else (batch.num_reqs, width)
+        if getattr(self.state, "thresholds", None) is not None:
+            key = (width, self.state.direction)
+            if self.state.action_counts is not None:
+                key = (width, self.state.direction, "actions")
+            self.state.window_width = width
         if not self.use_preverify_graphs or self.check_preverify:
             return self._verify_eager(batch, metadata, slots)
         if key not in self.preverify_graphs:
             before = self.state.snapshot()
+            action_counts = getattr(self.state, "action_counts", None)
+            counts_before = action_counts.clone() if action_counts is not None else None
             for _ in range(3):
                 self._verify_eager(batch, metadata, slots)
                 self.state.restore(before)
@@ -418,6 +443,8 @@ class HierarchicalSpeculator(BaseSpeculator):
             with torch.cuda.graph(graph):
                 output = self._verify_eager(batch, metadata, slots)
             self.state.restore(before)
+            if counts_before is not None and action_counts is not None:
+                action_counts.copy_(counts_before)
             self.preverify_graphs[key] = (
                 graph,
                 output,
@@ -463,6 +490,7 @@ class HierarchicalSpeculator(BaseSpeculator):
                     "routing_preserve_weights": self.config.moe_skip_weight_mode
                     == "preserve",
                     "preverify_gdn_mode": self.config.preverify_gdn_mode,
+                    "preverify_gdn_state": self.state,
                 },
             ),
         ):
@@ -608,6 +636,14 @@ class HierarchicalSpeculator(BaseSpeculator):
             margin = (
                 float(self.last_margins[accepted].item())
                 if hasattr(self, "last_margins")
+                and (
+                    getattr(self.state, "execution_optimized", False) is not True
+                    or (
+                        round_idx < self.rounds - 1
+                        and accepted < width - 1
+                        and self.config.hierarchical_stop_policy != "none"
+                    )
+                )
                 else float("inf")
             )
             if before is not None:
@@ -672,6 +708,9 @@ class HierarchicalSpeculator(BaseSpeculator):
                     "accepted": accepted,
                     "emitted": emitted,
                     "offset": count,
+                    "stop_reason": 2
+                    if round_idx == self.rounds - 1
+                    else (3 if width < self.depth + 1 else 0),
                 }
             )
             count += emitted
@@ -688,14 +727,28 @@ class HierarchicalSpeculator(BaseSpeculator):
             ):
                 self.policy_metrics["early_stops"] += 1
                 self.policy_metrics["skipped_rounds"] += self.rounds - round_idx - 1
+                self.last_trace[-1]["stop_reason"] = 1
+                break
+            if getattr(
+                self.config, "preverify_gdn_update_policy", "exact"
+            ) == "three_level_p50" and (
+                round_idx == self.rounds - 1 or width < self.depth + 1
+            ):
                 break
             anchor = predictions[accepted : accepted + 1].clone()
             position += emitted
             self.state.advance(accepted)
-            num_sampled = torch.tensor([emitted], dtype=torch.int32, device=self.device)
-            num_rejected = torch.tensor(
-                [width - emitted], dtype=torch.int32, device=self.device
-            )
+            if getattr(self.state, "execution_optimized", False) is True:
+                num_sampled = self.state.counts[emitted : emitted + 1]
+                rejected = width - emitted
+                num_rejected = self.state.counts[rejected : rejected + 1]
+            else:
+                num_sampled = torch.tensor(
+                    [emitted], dtype=torch.int32, device=self.device
+                )
+                num_rejected = torch.tensor(
+                    [width - emitted], dtype=torch.int32, device=self.device
+                )
             if width < self.depth + 1:
                 break
         self.draft_lengths.fill_(count)

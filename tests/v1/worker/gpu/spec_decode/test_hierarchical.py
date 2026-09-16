@@ -257,6 +257,168 @@ def test_attention_only_preverify_does_not_access_recurrent_state():
         assert state.snapshot() == {}
 
 
+@pytest.mark.parametrize("align", [False, True])
+@pytest.mark.parametrize("accepted", range(1, 6))
+@pytest.mark.parametrize("dim_first", [False, True])
+@torch.inference_mode()
+def test_three_level_batched_begin_copies_accepted_canonical_state(
+    monkeypatch, align, accepted, dim_first
+):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required")
+    from vllm.v1.worker.gpu.spec_decode.hierarchical import state as impl
+
+    class Layer:
+        prefix = "layer"
+        conv_kernel_size = 4
+
+        def get_state_shape(self):
+            return ((7, 10) if dim_first else (10, 7), (2, 8, 8))
+
+        kv_cache: tuple[torch.Tensor, torch.Tensor]
+
+        def get_state_dtype(self):
+            return (torch.bfloat16, torch.float32)
+
+    monkeypatch.setattr(impl, "QwenGatedDeltaNetAttention", Layer)
+    monkeypatch.setattr(impl, "is_conv_state_dim_first", lambda: dim_first)
+    layer = Layer()
+    layer.kv_cache = (
+        torch.randn(
+            (10, 7, 10) if dim_first else (10, 10, 7),
+            device="cuda",
+            dtype=torch.bfloat16,
+        ),
+        torch.randn(10, 2, 8, 8, device="cuda"),
+    )
+    canonical = tuple(x.clone() for x in layer.kv_cache)
+    state = PreverifyState(
+        SimpleNamespace(modules=lambda: [layer]),
+        5,
+        torch.device("cuda"),
+        "replay_tail",
+        "three_level_p50",
+    )
+    table = torch.tensor(
+        [[5, 2, 7, 1, 4, 0, 6, 3, 9, 8]], dtype=torch.int32, device="cuda"
+    )
+    model_state = SimpleNamespace(
+        num_accepted_tokens_gpu=torch.tensor(
+            [accepted], device="cuda", dtype=torch.int32
+        ),
+        _mamba_state_idx_gpu=torch.tensor([2], device="cuda", dtype=torch.int32),
+        _align_mode=align,
+    )
+    batch = SimpleNamespace(
+        idx_mapping=torch.tensor([0], device="cuda", dtype=torch.int32)
+    )
+    config = SimpleNamespace(kv_cache_groups=[SimpleNamespace(layer_names=["layer"])])
+    start = 2 if align else 0
+    expected_conv = canonical[0][table[0, start]].index_select(
+        1 if dim_first else 0,
+        (torch.arange(8, device="cuda") + accepted - 1).clamp(max=9),
+    )
+    expected_state = canonical[1][table[0, start + accepted - 1]]
+    for _ in range(2):
+        state.begin(model_state, batch, (table,), config)
+        torch.testing.assert_close(
+            state.caches["layer"][0][0], expected_conv, rtol=0, atol=0
+        )
+        torch.testing.assert_close(
+            state.caches["layer"][1][0], expected_state, rtol=0, atol=0
+        )
+        state.advance(4)
+    for actual, expected in zip(layer.kv_cache, canonical, strict=True):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("accepted", range(5))
+@torch.inference_mode()
+def test_three_level_repair_alternates_private_buffers_and_restores_target(
+    monkeypatch, accepted
+):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required")
+    from vllm.model_executor.layers.mamba.gdn.replay_tail_update import (
+        replay_tail_update,
+    )
+    from vllm.v1.worker.gpu.spec_decode.hierarchical import state as impl
+
+    class Layer:
+        prefix = "layer"
+        conv_kernel_size = 4
+        num_k_heads, num_v_heads = 1, 2
+        head_k_dim = head_v_dim = 128
+        kv_cache: tuple[torch.Tensor, torch.Tensor]
+        A_log: torch.Tensor
+        dt_bias: torch.Tensor
+
+        def get_state_shape(self):
+            return ((4, 8), (2, 128, 128))
+
+        def get_state_dtype(self):
+            return (torch.bfloat16, torch.float32)
+
+    monkeypatch.setattr(impl, "QwenGatedDeltaNetAttention", Layer)
+    monkeypatch.setattr(impl, "is_conv_state_dim_first", lambda: True)
+    layer = Layer()
+    layer.A_log = torch.zeros(2, device="cuda")
+    layer.dt_bias = torch.zeros(2, device="cuda")
+    layer.kv_cache = (
+        torch.randn(1, 4, 8, device="cuda"),
+        torch.randn(1, 2, 128, 128, device="cuda"),
+    )
+    canonical = tuple(x.clone() for x in layer.kv_cache)
+    original = layer.kv_cache
+    state = PreverifyState(
+        SimpleNamespace(modules=lambda: [layer]),
+        5,
+        torch.device("cuda"),
+        "replay_tail",
+        "three_level_p50",
+        "repair_on_reject",
+    )
+    pointers = {state.caches["layer"][1].data_ptr(), state.tails["layer"].data_ptr()}
+    state.caches["layer"][1].normal_(std=0.05)
+    q, k = [
+        torch.randn(5, 1, 128, device="cuda", dtype=torch.bfloat16) for _ in range(2)
+    ]
+    v = torch.randn(5, 2, 128, device="cuda", dtype=torch.bfloat16)
+    a, b = [torch.randn(5, 2, device="cuda", dtype=torch.bfloat16) for _ in range(2)]
+    for window in range(3):
+        initial = state.caches["layer"][1].clone()
+        expected = torch.empty_like(initial)
+        length = accepted + 1
+        replay_tail_update(
+            q[:length],
+            k[:length],
+            v[:length],
+            a[:length],
+            b[:length],
+            layer.A_log,
+            layer.dt_bias,
+            initial,
+            tail=expected,
+            thresholds=state.thresholds,
+        )
+        state.update(layer, q, k, v, a, b)
+        state.advance(accepted)
+        torch.testing.assert_close(
+            state.caches["layer"][1], expected, rtol=1e-3, atol=1e-3
+        )
+        assert state.direction == (window + 1) % 2
+        assert {
+            state.caches["layer"][1].data_ptr(),
+            state.tails["layer"].data_ptr(),
+        } == pointers
+    with pytest.raises(RuntimeError, match="test recovery"), state.activate():
+        assert layer.kv_cache is state.caches["layer"]
+        raise RuntimeError("test recovery")
+    assert layer.kv_cache is original
+    for actual, expected in zip(layer.kv_cache, canonical, strict=True):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("mode", ["ssm_mean", "input_mean", "replay_tail"])
 @pytest.mark.parametrize("accepted", range(5))
 def test_approximate_state_survives_inner_rejection(monkeypatch, mode, accepted):
@@ -442,7 +604,10 @@ def test_grouped_gdn_rejects_float32_conv_before_kernel_setup(monkeypatch):
         load_model=lambda target: None, model=object(), model_family="qwen3_6"
     )
     proposer.config = SimpleNamespace(
-        preverify_gdn_mode="none", preverify_gdn_group_mode="full"
+        preverify_gdn_mode="none",
+        preverify_gdn_group_mode="full",
+        preverify_gdn_update_policy="exact",
+        preverify_gdn_tail_policy="carry",
     )
     proposer.depth, proposer.device = 4, torch.device("cuda")
     proposer.vllm_config = SimpleNamespace(
@@ -454,12 +619,19 @@ def test_grouped_gdn_rejects_float32_conv_before_kernel_setup(monkeypatch):
         proposer.load_model(object())
 
 
-def test_four_rounds_compact_recoveries_and_start_after_computed_prefix():
+@pytest.mark.parametrize("three_level", [False, True])
+@pytest.mark.parametrize("short_window", [False, True])
+def test_four_rounds_compact_recoveries_and_start_after_computed_prefix(
+    three_level, short_window
+):
     proposer = object.__new__(HierarchicalSpeculator)
     proposer.device = torch.device("cpu")
-    proposer.config = SimpleNamespace(inner_method="mtp")
+    proposer.config = SimpleNamespace(
+        inner_method="mtp",
+        preverify_gdn_update_policy="three_level_p50" if three_level else "exact",
+    )
     proposer.vllm_config = SimpleNamespace(
-        model_config=SimpleNamespace(max_model_len=128)
+        model_config=SimpleNamespace(max_model_len=9 if short_window else 128)
     )
     proposer.depth, proposer.rounds, proposer.capacity = 4, 4, 20
     proposer.draft_tokens = torch.empty((1, 20), dtype=torch.int64)
@@ -509,9 +681,11 @@ def test_four_rounds_compact_recoveries_and_start_after_computed_prefix():
         torch.zeros(1),
         torch.zeros(1, dtype=torch.int64),
     )
-    assert positions == [8, 9, 11, 15]
-    assert proposer.draft_lengths.tolist() == [12]
-    assert result[0, :12].tolist() == [9, 1, 9, 1, 2, 3, 9, 1, 2, 3, 4, 9]
-    assert result[0, 12:].eq(-1).all()
+    expected_tokens = [9] if short_window else [9, 1, 9, 1, 2, 3, 9, 1, 2, 3, 4, 9]
+    assert positions == ([8] if short_window else [8, 9, 11, 15])
+    assert proposer.draft_lengths.tolist() == [len(expected_tokens)]
+    assert result[0, : len(expected_tokens)].tolist() == expected_tokens
+    assert result[0, len(expected_tokens) :].eq(-1).all()
     advances = [call.args[0] for call in proposer.state.advance.call_args_list]
-    assert advances == [0, 1, 3, 4]
+    expected_advances = [0] if short_window else [0, 1, 3, 4]
+    assert advances == (expected_advances[:-1] if three_level else expected_advances)

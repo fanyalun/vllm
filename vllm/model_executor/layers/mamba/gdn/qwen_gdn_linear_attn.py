@@ -1991,16 +1991,27 @@ def qwen_gdn_mean_projected(layer, qkvz, ba, metadata, mode):
     q, k, v = convolved.split([layer.key_dim, layer.key_dim, layer.value_dim], -1)
     n = qkvz.shape[0]
     update = replay_tail_update if mode == "replay_tail" else mean_state_update
-    core = update(
-        q.reshape(n, layer.num_k_heads, layer.head_k_dim),
-        k.reshape(n, layer.num_k_heads, layer.head_k_dim),
-        v.reshape(n, layer.num_v_heads, layer.head_v_dim),
-        a,
-        b,
-        layer.A_log,
-        layer.dt_bias,
-        state,
-    )
+    private = get_forward_context().additional_kwargs.get("preverify_gdn_state")
+    if private is not None and private.thresholds is not None:
+        core = private.update(
+            layer,
+            q.reshape(n, layer.num_k_heads, layer.head_k_dim),
+            k.reshape(n, layer.num_k_heads, layer.head_k_dim),
+            v.reshape(n, layer.num_v_heads, layer.head_v_dim),
+            a,
+            b,
+        )
+    else:
+        core = update(
+            q.reshape(n, layer.num_k_heads, layer.head_k_dim),
+            k.reshape(n, layer.num_k_heads, layer.head_k_dim),
+            v.reshape(n, layer.num_v_heads, layer.head_v_dim),
+            a,
+            b,
+            layer.A_log,
+            layer.dt_bias,
+            state,
+        )
     output_gate = z.reshape(n, layer.num_v_heads, layer.head_v_dim)
     if mode == "replay_tail":
         # This custom-op body is eager; explicitly use the fused CUDA norm.
