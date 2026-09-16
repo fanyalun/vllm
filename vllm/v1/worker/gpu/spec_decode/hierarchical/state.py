@@ -8,6 +8,9 @@ import torch
 from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
     QwenGatedDeltaNetAttention,
 )
+from vllm.model_executor.layers.mamba.gdn.replay_tail_update import (
+    advance_replay_tail_conv,
+)
 from vllm.model_executor.layers.mamba.mamba_utils import is_conv_state_dim_first
 
 
@@ -89,6 +92,11 @@ class PreverifyState:
         if mode == "input_mean":
             return
         for conv, temporal in self.caches.values():
+            if mode == "replay_tail" and conv.is_cuda:
+                advance_replay_tail_conv(
+                    conv, accepted_drafts, is_conv_state_dim_first()
+                )
+                continue
             if mode in ("ssm_mean", "replay_tail"):
                 self._copy_conv(conv, conv, accepted_drafts)
                 continue

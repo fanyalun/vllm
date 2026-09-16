@@ -29,15 +29,19 @@ def main():
     rows = []
     for tokens in range(1, 6):
         h, hv, dim = 16, 32, 128
-        q, k = [
-            torch.randn(tokens, h, dim, device="cuda", dtype=torch.bfloat16)
-            for _ in range(2)
-        ]
-        v = torch.randn(tokens, hv, dim, device="cuda", dtype=torch.bfloat16)
-        a, b = [
-            torch.randn(1, hv, device="cuda", dtype=torch.bfloat16) for _ in range(2)
-        ]
-        full_a, full_b = [x.expand(tokens, -1).contiguous() for x in (a, b)]
+        packed = torch.randn(
+            tokens, (2 * h + hv) * dim, device="cuda", dtype=torch.bfloat16
+        )
+        q, k, v = packed.split([h * dim, h * dim, hv * dim], -1)
+        q, k, v = (
+            q.view(tokens, h, dim),
+            k.view(tokens, h, dim),
+            v.view(tokens, hv, dim),
+        )
+        a, b = torch.randn(tokens, 2 * hv, device="cuda", dtype=torch.bfloat16).split(
+            hv, -1
+        )
+        full_a, full_b = a, b
         a_log, dt = [torch.randn(hv, device="cuda") for _ in range(2)]
         start = torch.randn(1, hv, dim, dim, device="cuda") * 0.05
         state = start.clone()
@@ -129,7 +133,8 @@ def main():
                 "heads": [16, 32],
                 "head_dim": 128,
                 "boundary": (
-                    "recurrence wrappers, gates shared in both; no gate projection"
+                    "Triton recurrence wrappers with packed inputs and per-token "
+                    "gates; excludes gate projection and model CUDA fused GDN"
                 ),
                 "compiled": compiled,
                 "rows": rows,

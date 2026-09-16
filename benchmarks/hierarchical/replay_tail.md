@@ -8,18 +8,18 @@ proposal resets it from Target again.
 
 ## Semantics
 
-- Only the first input token's hidden state is projected through `in_proj_ba`.
-  Each head's resulting decay and beta are shared across the current window.
+- Every input token is projected through `in_proj_ba` and uses its own decay
+  and beta. Gates are never shared across positions.
 - Q/K/V/Z, causal Conv, Q/K normalization, and the output projection remain
   position-specific. The first input is the anchor, followed by up to four drafts.
-- The block kernel retains all causal delta dependencies. It solves a small
-  triangular system and produces every output without storing intermediate full
-  recurrent states. It writes the last actual input's state, not an unprocessed
-  correction or bonus token's state.
-- Each program owns complete state rows for its value tile. All initial-state
-  projections finish before any in-place store. Key tiling limits register
-  pressure; the tail pass rereads the initial state and overwrites each element
-  once. There is no cross-program state dependency or saved replay history.
+- The kernel reads the initial state once, retains the recurrence in FP32
+  registers, and produces every output before writing only the final state.
+  Positions execute sequentially within a single kernel launch. Each program
+  owns complete key rows for its value tile; there is no cross-program state
+  dependency, intermediate state writeback, or saved replay history.
+- The last actual input's state is stored, not an unprocessed correction or
+  bonus token's state. Conv advancement reads each channel's complete history
+  before shifting it in place, without index tensors or temporary copies.
 - Conv retains acceptance-aware history selection. Attention positions and
   candidate compaction follow the existing accepted-length bookkeeping.
 - Target cache bindings are restored after the private forward. The Target's
@@ -69,24 +69,26 @@ Each method uses the same four prompts and 256 output tokens. It warms every
 case and prompt, then runs three alternating baseline/replay-tail pairs.
 Timing runs have auditing disabled. Separate instrumented passes collect
 proposal-to-next-Target cycles, pre-verifier time, and integer acceptance counts.
-The two diagnostic ablations use existing per-position recurrence and are not
-kernel performance comparisons:
+The `tail_only` diagnostic uses existing per-position recurrence and checkpoint
+writes; it isolates tail-state semantics, not the storage optimization:
 
 | Case | Gates | State after inner rejection |
 | --- | --- | --- |
 | `none` | Per token | Accepted position |
-| `replay_tail` | First token | Complete tail |
-| `gates_only` | First token | Accepted position |
+| `replay_tail` | Per token | Complete tail; final state write only |
 | `tail_only` | Per token | Complete tail |
 
-Gate projection overrides exist only during the diagnostic private forward and
-are restored in `finally`. They never change a Target forward.
+The previous shared-gate implementation and `gates_only` diagnostic were removed.
+The September 15 report describes that historical implementation. New contracts
+record per-token gates, the kernel implementation, and source fingerprints.
 
 The completion marker certifies measurement coverage and repeatable outputs,
 not AR equivalence. The summary independently verifies the full cell matrix,
 clips returned-token counts at the requested output limit, and reports exact AR
-token comparisons separately. Kernel/state equivalence uses a sequential
-fixed-gate reference, not the original per-token-gate model.
+token comparisons separately. Before token comparison it requires matching AR,
+MTP, and DSpark prompt hashes and order. Kernel/state equivalence uses the
+original per-token-gate recurrence from an identical starting state. Cross-round
+tail reuse remains approximate after rejection.
 
 ## Kernel validation
 
@@ -102,10 +104,28 @@ CUDA_VISIBLE_DEVICES=0 .venv/bin/python \
 ```
 
 The microbenchmark checks all outputs and the tail against the existing
-recurrence with matching fixed gates before timing. It uses cold-L2 CUDA graph
+recurrence with matching per-token gates before timing. It uses cold-L2 CUDA graph
 timing through FlashInfer, records the actual timing backend and compiler spill
 counts, and excludes gate projection from both paths. When the CUPTI Python
 package is unavailable, FlashInfer falls back to CUDA events with rotating input
 buffers. Byte counts describe logical full-state writes, not measured DRAM
 transactions. Private cache savings do not change scheduler-visible Target cache
 capacity.
+
+## Fixed-input pre-verifier cost
+
+```bash
+CUDA_VISIBLE_DEVICES=0 .venv/bin/python benchmarks/hierarchical/run_replay_tail_cost.py \
+  --output benchmark_results/replay_tail/cost
+.venv/bin/python benchmarks/hierarchical/summarize_replay_tail_cost.py \
+  benchmark_results/replay_tail/cost
+```
+
+This compares native checkpoints, recurrent final-state writeback and fused
+output normalization with the old Conv shift, and the fully optimized path.
+Three fixed windows are measured in
+three rounds with 30 alternating graph replays per point. State restoration is
+outside timing, and 128 MiB L2 eviction precedes each sample. Forward, isolated
+GDN, state advancement, and forward-plus-advancement are measured independently.
+The isolated GDN inputs are identical across variants at every layer. This does
+not measure draft generation, rejection sampling, or Target validation.
