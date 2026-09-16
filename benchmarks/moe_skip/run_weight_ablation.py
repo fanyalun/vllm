@@ -18,10 +18,16 @@ def main():
     parser.add_argument("--dataset", type=Path)
     parser.add_argument("--samples", type=int, default=4)
     parser.add_argument("--draft-length", type=int, default=4)
+    parser.add_argument("--expert-top-p", type=float)
     args = parser.parse_args()
     if args.samples < 1 or args.draft_length < 1:
         parser.error("--samples and --draft-length must be positive")
+    if args.expert_top_p is not None and not 0 < args.expert_top_p <= 1:
+        parser.error("--expert-top-p must be in (0, 1]")
     os.environ["MOE_SKIP_WEIGHT_MODE"] = args.mode
+    os.environ.pop("MOE_SKIP_BENCH_TOP_P", None)
+    if args.expert_top_p is not None:
+        os.environ["MOE_SKIP_BENCH_TOP_P"] = str(args.expert_top_p)
     from vllm import LLM, SamplingParams
 
     dataset = args.dataset or (
@@ -39,7 +45,8 @@ def main():
     config = {
         "model": args.model,
         "mode": args.mode,
-        "h": 4,
+        "h": 4 if args.expert_top_p is None else None,
+        "expert_top_p": args.expert_top_p,
         "d": args.draft_length,
         "samples": args.samples,
         "max_tokens": 128,
@@ -63,14 +70,20 @@ def main():
         async_scheduling=False,
         speculative_config={
             "method": "moe_skip",
-            "moe_skip_top_h": 4,
+            "moe_skip_top_h": 4 if args.expert_top_p is None else 8,
             "num_speculative_tokens": args.draft_length,
         },
         per_request_spec_decode_metrics="detailed",
         disable_log_stats=True,
         seed=0,
-        worker_extension_cls="weight_ablation_worker.WeightAblationWorker",
+        worker_extension_cls=(
+            "weight_ablation_worker.WeightAblationWorker"
+            if args.expert_top_p is None
+            else "top_p_worker.TopPWorker"
+        ),
     )
+    if args.expert_top_p is not None:
+        llm.collective_rpc("reset_budget_counts")
     sampling = SamplingParams(temperature=0, max_tokens=128, ignore_eos=True)
     outputs = []
     for sample in samples:
@@ -94,6 +107,11 @@ def main():
     accepted = sum(o["metrics"]["num_accepted_draft_tokens"] for o in outputs)
     drafted = sum(o["metrics"]["num_draft_tokens"] for o in outputs)
     steps = sum(o["metrics"]["num_spec_steps"] for o in outputs)
+    budgets = None
+    if args.expert_top_p is not None:
+        budgets = llm.collective_rpc("collect_budget_counts")
+        if not any(sum(v) for worker in budgets for v in worker.values()):
+            raise RuntimeError("Top-p did not record any expert routing")
     write_json(
         args.output / "result.json",
         {
@@ -104,6 +122,7 @@ def main():
             "steps": steps,
             "acceptance_rate": accepted / drafted,
             "mean_acceptance_length": 1 + accepted / steps,
+            "budget_histograms": budgets,
         },
     )
     (args.output / "CELL_COMPLETE").write_text(f"{args.samples} x 128 completed\n")

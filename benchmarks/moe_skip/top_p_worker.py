@@ -10,7 +10,9 @@ from vllm.triton_utils import tl, triton
 
 
 @triton.jit
-def _truncate(W, IDS, G, C, OW, OI, E: tl.constexpr, P: tl.constexpr):
+def _truncate(
+    W, IDS, G, C, OW, OI, E: tl.constexpr, P: tl.constexpr, RENORMALIZE: tl.constexpr
+):
     row = tl.program_id(0)
     col = tl.arange(0, 8)
     ids = tl.load(IDS + row * 8 + col)
@@ -28,13 +30,15 @@ def _truncate(W, IDS, G, C, OW, OI, E: tl.constexpr, P: tl.constexpr):
         before = tl.sum(tl.where(precedes, probs[None, :], 0.0), 1)
         keep = before < P
         mass = tl.sum(tl.where(keep, probs, 0.0), 0)
-    tl.store(OW + row * 8 + col, tl.where(keep, weights / mass, 0.0))
+    if RENORMALIZE:
+        weights = weights / mass
+    tl.store(OW + row * 8 + col, tl.where(keep, weights, 0.0))
     tl.store(OI + row * 8 + col, tl.where(keep, ids, -1))
     h = tl.sum(keep.to(tl.int32), 0)
     tl.atomic_add(C + h - 1, 1)
 
 
-def truncate(weights, ids, logits, counts, p):
+def truncate(weights, ids, logits, counts, p, renormalize=True):
     if weights.shape[-1] != 8 or not 0 < p <= 1:
         raise ValueError("Top-p benchmark requires native top-8 and 0 < p <= 1")
     if weights.shape[0] * 8 * 4 > logits.shape[1]:
@@ -49,12 +53,13 @@ def truncate(weights, ids, logits, counts, p):
         out_ids,
         logits.shape[1],
         p,
+        renormalize,
         num_warps=4,
     )
     return out_weights, out_ids
 
 
-def install(p):
+def install(p, renormalize=True):
     from vllm.forward_context import get_forward_context
     from vllm.model_executor.layers.fused_moe.router.custom_routing_router import (
         CustomRoutingRouter,
@@ -71,7 +76,7 @@ def install(p):
         counts: torch.Tensor,
         probability: float,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return truncate(weights, ids, logits, counts, probability)
+        return truncate(weights, ids, logits, counts, probability, renormalize)
 
     def fake(weights, ids, logits, counts, probability):
         return torch.empty_like(weights), torch.empty_like(ids)
@@ -130,4 +135,8 @@ class TopPWorker:
 
 
 if "MOE_SKIP_BENCH_TOP_P" in os.environ:
-    install(float(os.environ["MOE_SKIP_BENCH_TOP_P"]))
+    install(
+        float(os.environ["MOE_SKIP_BENCH_TOP_P"]),
+        renormalize=os.environ.get("MOE_SKIP_WEIGHT_MODE", "renormalize")
+        == "renormalize",
+    )

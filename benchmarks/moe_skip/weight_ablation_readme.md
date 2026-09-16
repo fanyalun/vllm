@@ -142,3 +142,59 @@ and source snapshots, manifest and source diff, logs, full token outputs and
 per-cycle counters, `summary.csv`, `category_summary.csv`, `paired_samples.csv`,
 `position_acceptance.csv`, corresponding JSON files, and completion markers.
 The artifact-local `analyze.py` revalidates counters and regenerates the summaries.
+
+## Top-p=0.7: same 16 prompts and D=16
+
+The next run replaces fixed h=4 with the smallest native top-8 gate-probability
+prefix reaching 0.7. The dataset fingerprints match the previous 16-prompt run.
+All other parameters remain the same. Expert selection uses gate probabilities
+before Gemma expert scaling. The preserve variant retains the original native
+weights; the renormalize variant divides them by the retained gate mass. Both
+variants retain Gemma's expert scales.
+
+| Model | Method | Accepted / proposed | Acceptance | Mean length | Mean experts |
+| --- | --- | --- | --- | --- | --- |
+| Qwen3.6 | Renormalize | 1978 / 2848 | 69.45% | 12.112 | 4.869 |
+| Qwen3.6 | Preserve | 2012 / 2352 | 85.54% | 14.687 | 4.871 |
+| Gemma4 | Renormalize | 1939 / 3120 | 62.15% | 10.944 | 4.975 |
+| Gemma4 | Preserve | 1935 / 3104 | 62.34% | 10.974 | 4.975 |
+
+Preserving weights improves Qwen3.6 by 16.09 percentage points: 11 prompt wins,
+two losses, three ties. Gemma4 improves by only 0.19 percentage points: five wins,
+four losses, seven ties. The small Gemma difference does not establish a stable
+advantage. Mean experts is weighted over actual draft token-layer routing events;
+the two modes can have different intermediate draft states and routing counts.
+
+| Model | Domain (four prompts each) | Renormalize | Preserve | Change (pp) |
+| --- | --- | --- | --- | --- |
+| Qwen3.6 | HumanEval | 59.08% | 86.02% | +26.94 |
+| Qwen3.6 | Alpaca | 64.23% | 81.76% | +17.53 |
+| Qwen3.6 | GSM8K | 84.29% | 92.28% | +7.99 |
+| Qwen3.6 | UltraFeedback | 75.46% | 82.73% | +7.27 |
+| Gemma4 | HumanEval | 64.49% | 68.32% | +3.83 |
+| Gemma4 | Alpaca | 68.61% | 65.43% | -3.19 |
+| Gemma4 | GSM8K | 75.15% | 75.46% | +0.30 |
+| Gemma4 | UltraFeedback | 47.08% | 47.08% | +0.00 |
+
+All 64 requests completed and emitted exactly 128 tokens each. All 32 pairs
+match across weight modes, and all 64 outputs match the corresponding previous
+h=4 outputs. Detailed per-cycle counters and completion markers passed the
+artifact analysis checks. The expanded `check_top_p.py` passed 64 GPU reference
+cases, including scaled weights, uniform gate ties, p=1 identity, identical
+selected experts between modes, and fused-expert outputs with skipped IDs.
+Two unsupported aligned-assignment shapes were rejected as expected.
+
+With preserved weights, top-p raises acceptance over h=4 from 81.62% to 85.54%
+for Qwen3.6, and from 54.78% to 62.34% for Gemma4, while selecting approximately
+4.87 and 4.97 experts instead of four. This is a different compute budget.
+The experimental implementation masks skipped IDs while retaining routing width
+eight and supports the existing naive-assignment path. No performance comparison
+or independent AR baseline was run.
+
+Add `--expert-top-p 0.7` to the preceding D=16 reproduction command and use a new
+output directory. The default without this flag remains fixed h=4. The original
+top-p worker still defaults to renormalization when no weight mode is supplied.
+Local artifacts are in
+`benchmark_results/moe_skip_top_p07_weight_ablation_16x128_d16_20260916/`, including
+the same summary files as above, per-layer `expert_budgets.csv`, comparisons to
+the h=4 outputs, GPU check results, and frozen source and dataset copies.

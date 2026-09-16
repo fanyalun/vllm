@@ -48,6 +48,17 @@ def main():
                 actual = fused_experts(x, w1, w2, w, chosen)
                 torch.testing.assert_close(actual, reference, rtol=0.02, atol=0.01)
                 cases += 1
+                counts.zero_()
+                preserved, preserved_ids = truncate(
+                    weights, ids, logits, counts, p, renormalize=False
+                )
+                assert torch.equal(preserved, weights.masked_fill(~keep, 0))
+                assert torch.equal(preserved_ids, chosen)
+                assert torch.equal(counts, expected_counts)
+                reference = fused_experts(x, w1, w2, preserved, ids)
+                actual = fused_experts(x, w1, w2, preserved, preserved_ids)
+                torch.testing.assert_close(actual, reference, rtol=0.02, atol=0.01)
+                cases += 1
     for tokens in (5, 16):
         logits = torch.zeros(tokens, 128, device="cuda")
         weights = torch.ones(tokens, 8, device="cuda") / 8
