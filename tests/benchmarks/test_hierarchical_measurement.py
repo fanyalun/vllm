@@ -26,6 +26,38 @@ from benchmarks.hierarchical.summarize_policy_matrix import summarize
 from benchmarks.hierarchical.summarize_replay_tail import summarize as summarize_replay
 
 
+def test_paired_ablation_weights_forward_cost_not_per_window_speedup():
+    from benchmarks.hierarchical.summarize_moe_gdn_ablation import paired_effects
+
+    result = paired_effects(
+        [
+            {"full": {"median_us": 10}, "skip": {"median_us": 5}},
+            {"full": {"median_us": 100}, "skip": {"median_us": 90}},
+        ],
+        "full",
+        "skip",
+    )
+    assert result["saved_us"] == 7.5
+    assert result["speedup"] == pytest.approx(110 / 95)
+    assert result["paired_saved_us"] == [5, 10]
+
+
+def test_ablation_rejects_windowed_label_when_native_dispatch_was_captured():
+    from benchmarks.hierarchical.summarize_moe_gdn_ablation import validate_dispatch
+
+    with pytest.raises(ValueError, match="kernel does not match"):
+        validate_dispatch(
+            dict(gdn="v2", windowed_kernel_launches=0, action_counts=[0] * 8)
+        )
+    with pytest.raises(ValueError, match="did not record"):
+        validate_dispatch(
+            dict(gdn="v3", windowed_kernel_launches=30, action_counts=[0] * 8)
+        )
+    validate_dispatch(
+        dict(gdn="v2", windowed_kernel_launches=30, action_counts=[5, 0, 0])
+    )
+
+
 def test_batch_metrics_weight_time_and_exclude_correction_from_acceptance(tmp_path):
     from benchmarks.hierarchical.summarize_batch import summarize as summarize_batch
 

@@ -33,11 +33,18 @@ def main():
     parser.add_argument("--quality", action="store_true")
     parser.add_argument("--batched-tokens", type=int, default=256)
     parser.add_argument("--kv-gib", type=float)
+    parser.add_argument("--top-h", type=int, choices=[4, 8], default=4)
+    parser.add_argument("--min-weight", type=float, choices=[0.125])
+    parser.add_argument("--audit-all", action="store_true")
     parser.add_argument(
         "--cases", nargs="+", choices=["v1", "v2", "v3", "v4d", "v4q", "v4dq"]
     )
     parser.add_argument("--batches", nargs="+", type=int)
     args = parser.parse_args()
+    if args.min_weight is not None and args.top_h != 8:
+        parser.error("--min-weight requires --top-h 8 (native candidate set)")
+    if args.audit_all and (args.cases or args.batches):
+        parser.error("--audit-all currently requires a single case and batch size")
     if args.cases and args.case in ("ar", "native"):
         parser.error("--cases requires a windowed initial --case")
     if args.batches and (args.case != "ar" or max(args.batches) > args.batch):
@@ -56,7 +63,8 @@ def main():
         inner_method="mtp",
         inner_num_speculative_tokens=4,
         inner_num_rounds=4,
-        moe_skip_top_h=4,
+        moe_skip_top_h=args.top_h,
+        moe_skip_min_weight=args.min_weight,
         hierarchical_stop_policy="balanced",
         draft_sample_method="greedy",
     )
@@ -103,6 +111,7 @@ def main():
         "manifest.json",
         dict(
             config=config,
+            cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES"),
             args={
                 k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
             },
@@ -146,7 +155,8 @@ def main():
     llm.collective_rpc(
         "begin_batch_measurement", kwargs={"audit": True, "profile": args.profile}
     )
-    measured = [llm.generate(group, params, use_tqdm=False) for group in groups[:1]]
+    audit_groups = groups if args.audit_all else groups[:1]
+    measured = [llm.generate(group, params, use_tqdm=False) for group in audit_groups]
     profile_path = (
         str((args.output / "profile.json").resolve()) if args.profile else None
     )
@@ -155,14 +165,18 @@ def main():
     )[0]
     audit["instrumentation_equal"] = [
         [list(x.outputs[0].token_ids) for x in group] for group in measured
-    ] == expected[:1]
+    ] == expected[: len(audit_groups)]
     audit["requests"] = [
         dict(
             request_id=x.request_id,
             sample_id=sample["sample_id"],
             prompt_sha256=sample["prompt_sha256"],
         )
-        for x, sample in zip(measured[0], samples[: args.batch], strict=True)
+        for x, sample in zip(
+            [x for group in measured for x in group],
+            samples[: sum(map(len, audit_groups))],
+            strict=True,
+        )
     ]
     save("audit.json", audit)
     if args.quality and args.case != "ar":
