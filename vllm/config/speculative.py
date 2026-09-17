@@ -661,11 +661,52 @@ class SpeculativeConfig:
     Approximate modes retain one private SSM state after rejection.
     """
 
-    preverify_gdn_update_policy: Literal["exact", "three_level_p50"] = "exact"
+    preverify_gdn_update_policy: Literal[
+        "exact", "three_level_p50", "windowed_three_level"
+    ] = "exact"
     """Conditional recurrent updates, confined to replay-tail preverification."""
 
     preverify_gdn_tail_policy: Literal["carry", "repair_on_reject"] = "carry"
     """Optionally replay the consumed prefix before the next inner window."""
+
+    preverify_gdn_mode_window_size: int = 5
+    """Actual inputs sharing one action, restarting at each preverify call."""
+    preverify_gdn_tau_alpha: float = 0.95
+    """Strict Skip alpha threshold for windowed_three_level only."""
+    preverify_gdn_tau_beta: float = 0.36328125
+    """Inclusive Full threshold for BF16-rounded effective beta."""
+    preverify_gdn_optimization: Literal[
+        "none", "cumulative_decay", "multi_query", "combined"
+    ] = "none"
+
+    """Optional cumulative Decay and tiled queries for windowed updates."""
+
+    def _validate_windowed_gdn(self):
+        if self.preverify_gdn_update_policy != "windowed_three_level":
+            if (
+                self.preverify_gdn_mode_window_size != 5
+                or self.preverify_gdn_tau_alpha != 0.95
+                or self.preverify_gdn_tau_beta != 0.36328125
+                or self.preverify_gdn_optimization != "none"
+            ):
+                raise ValueError("Window parameters require windowed_three_level")
+            return
+        if (
+            self.method != "hierarchical"
+            or self.inner_method != "mtp"
+            or self.preverify_gdn_tail_policy != "carry"
+            or self.inner_num_rounds > 4
+        ):
+            raise ValueError(
+                "Windowed GDN requires hierarchical MTP, carry, <=4 rounds"
+            )
+        if not 1 <= self.preverify_gdn_mode_window_size <= 16:
+            raise ValueError("GDN window size must be 1..16")
+        if not (
+            0 <= self.preverify_gdn_tau_alpha <= 1
+            and 0 <= self.preverify_gdn_tau_beta <= 1
+        ):
+            raise ValueError("GDN thresholds must be finite probabilities")
 
     def make_inner_config(self) -> "SpeculativeConfig":
         from dataclasses import replace
@@ -681,6 +722,10 @@ class SpeculativeConfig:
             preverify_gdn_group_mode="none",
             preverify_gdn_update_policy="exact",
             preverify_gdn_tail_policy="carry",
+            preverify_gdn_mode_window_size=5,
+            preverify_gdn_tau_alpha=0.95,
+            preverify_gdn_tau_beta=0.36328125,
+            preverify_gdn_optimization="none",
             num_speculative_tokens=self.inner_num_speculative_tokens,
         )
 
@@ -718,6 +763,10 @@ class SpeculativeConfig:
                     self.preverify_gdn_group_mode,
                     self.preverify_gdn_update_policy,
                     self.preverify_gdn_tail_policy,
+                    self.preverify_gdn_mode_window_size,
+                    self.preverify_gdn_tau_alpha,
+                    self.preverify_gdn_tau_beta,
+                    self.preverify_gdn_optimization,
                     self.hierarchical_stop_policy,
                     inner.compute_hash(),
                 )
@@ -1199,6 +1248,7 @@ class SpeculativeConfig:
         if self.method == "hierarchical":
             self._init_hierarchical()
             return self
+        self._validate_windowed_gdn()
         if self.inner_method is not None:
             raise ValueError("inner_method requires method='hierarchical'")
         if self.preverify_gdn_mode != "none":
@@ -1690,6 +1740,10 @@ class SpeculativeConfig:
             preverify_gdn_group_mode="none",
             preverify_gdn_update_policy="exact",
             preverify_gdn_tail_policy="carry",
+            preverify_gdn_mode_window_size=5,
+            preverify_gdn_tau_alpha=0.95,
+            preverify_gdn_tau_beta=0.36328125,
+            preverify_gdn_optimization="none",
         )
         if not set(self.target_model_config.architectures or ()) <= {
             "Qwen3_5MoeForCausalLM",
@@ -1699,6 +1753,7 @@ class SpeculativeConfig:
         }:
             raise ValueError("hierarchical supports Qwen3.6 MoE and Gemma4 MoE only")
         self.moe_skip_top_h = preverify.moe_skip_top_h
+        self._validate_windowed_gdn()
         if self.preverify_gdn_update_policy != "exact":
             if (
                 self.preverify_gdn_mode != "replay_tail"

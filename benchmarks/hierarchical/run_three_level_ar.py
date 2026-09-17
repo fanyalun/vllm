@@ -14,6 +14,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--repeats", type=int, default=2)
+    parser.add_argument("--drain-device", action="store_true")
     args = parser.parse_args()
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["PATH"] = (
@@ -38,11 +40,16 @@ def main():
         limit_mm_per_prompt={"image": 0, "video": 0},
         disable_log_stats=True,
         seed=42,
+        **(
+            {"worker_extension_cls": "replay_tail_worker.ReplayTailWorker"}
+            if args.drain_device
+            else {}
+        ),
     )
     params = SamplingParams(temperature=0, max_tokens=256, ignore_eos=True, seed=42)
     llm.generate([samples[0]["prompt"]], params, use_tqdm=False)
     rows = []
-    for repeat in range(2):
+    for repeat in range(args.repeats):
         for index, sample in enumerate(samples):
             assert (
                 hashlib.sha256(sample["prompt"].encode()).hexdigest()
@@ -50,6 +57,8 @@ def main():
             )
             start = time.perf_counter()
             result = llm.generate([sample["prompt"]], params, use_tqdm=False)[0]
+            if args.drain_device:
+                llm.collective_rpc("drain_replay_device")
             elapsed = time.perf_counter() - start
             tokens = list(result.outputs[0].token_ids)
             assert len(tokens) == 256
@@ -74,6 +83,7 @@ def main():
                 rows=len(rows),
                 samples=len(samples),
                 repeatable=True,
+                drain_device_before_stopping_timer=args.drain_device,
                 seed=42,
                 dataset_sha256=hashlib.sha256(args.dataset.read_bytes()).hexdigest(),
             ),

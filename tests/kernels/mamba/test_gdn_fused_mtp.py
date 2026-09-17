@@ -56,6 +56,215 @@ PREFIX = "model.layers.0.linear_attn"
 EPS = 1e-6
 
 
+@pytest.mark.parametrize("tokens", [0, 1, 5, 6, 10, 16])
+@pytest.mark.parametrize(
+    "optimization", ["none", "cumulative_decay", "multi_query", "combined"]
+)
+@pytest.mark.parametrize("window", [1, 5])
+@torch.inference_mode()
+def test_windowed_gdn_actions_outputs_inplace_and_graph(tokens, optimization, window):
+    from vllm.model_executor.layers.mamba.gdn.replay_tail_update import (
+        windowed_replay_tail_update,
+    )
+
+    torch.manual_seed(42)
+    capacity, h, hv, dk, dv = 16, 2, 6, 32, 24
+    packed = torch.randn(
+        capacity, 2 * h * dk + hv * dv, device="cuda", dtype=torch.bfloat16
+    )
+    q, k, v = packed.split([h * dk, h * dk, hv * dv], -1)
+    q, k, v = q.view(capacity, h, dk), k.view(capacity, h, dk), v.view(capacity, hv, dv)
+    gates = torch.zeros(capacity, 2 * hv, device="cuda")
+    g, beta = gates.chunk(2, -1)
+    g.fill_(-0.02)
+    beta.fill_(0.1)
+    # Heads 0/3 Full, 1/4 Decay, 2/5 Skip; later windows change action.
+    beta[:, ::3] = 0.7
+    g[:, 1::3] = -0.2
+    beta[5:10, ::3] = 0.1
+    g[5:10, ::3] = -0.01
+    pool = torch.randn(3, hv, dv, dk, device="cuda") * 0.1
+    state = pool[1:2]
+    initial = pool.clone()
+    starts = torch.tensor([0, tokens], device="cuda", dtype=torch.int32)
+    valid = torch.ones(1, device="cuda", dtype=torch.int32)
+    thresholds = torch.tensor([0.95, 0.36328125], device="cuda")
+    counts = torch.zeros(8, device="cuda", dtype=torch.int64)
+    out = torch.full_like(v, 123)
+
+    def run():
+        return windowed_replay_tail_update(
+            q,
+            k,
+            v,
+            g,
+            beta,
+            None,
+            None,
+            state,
+            query_start_loc=starts,
+            valid=valid,
+            thresholds=thresholds,
+            window_size=window,
+            optimization=optimization,
+            effective_gates=True,
+            action_counts=counts,
+            out=out,
+        )
+
+    def reference(length):
+        current = initial[1].clone()
+        result = torch.full_like(v, 123)
+        for s in range(0, length, window):
+            full = beta[s].bfloat16().float() >= thresholds[1]
+            decay = (~full) & (g[s].exp() <= thresholds[0])
+            anchor = current.clone()
+            cumulative = torch.zeros(hv, device="cuda")
+            for t in range(s, min(s + window, length)):
+                # Match the kernel's squared-norm epsilon.
+                kt = (
+                    k[t].float()
+                    * (k[t].float().square().sum(-1, keepdim=True) + 1e-6).rsqrt()
+                )
+                qt = (
+                    q[t].float()
+                    * (q[t].float().square().sum(-1, keepdim=True) + 1e-6).rsqrt()
+                    * dk**-0.5
+                )
+                kt, qt = (
+                    kt.repeat_interleave(hv // h, 0),
+                    qt.repeat_interleave(hv // h, 0),
+                )
+                decayed = current * g[t].exp()[:, None, None]
+                delta = (v[t].float() - (decayed * kt[:, None]).sum(-1)) * beta[
+                    t, :, None
+                ]
+                updated = decayed + delta[:, :, None] * kt[:, None]
+                current = torch.where(full[:, None, None], updated, current)
+                cumulative += g[t]
+                ds = (
+                    anchor * cumulative.exp()[:, None, None]
+                    if optimization in ("cumulative_decay", "combined")
+                    else decayed
+                )
+                current = torch.where(decay[:, None, None], ds, current)
+                value = (current * qt[:, None]).sum(-1)
+                if optimization in ("cumulative_decay", "combined"):
+                    value = torch.where(
+                        decay[:, None],
+                        (anchor * qt[:, None]).sum(-1) * cumulative.exp()[:, None],
+                        value,
+                    )
+                result[t] = value.to(v.dtype)
+        return current, result
+
+    expected_state, expected_out = reference(tokens)
+    run()
+    torch.testing.assert_close(out, expected_out, atol=1e-3, rtol=1e-3)
+    torch.testing.assert_close(state[0], expected_state, atol=1e-3, rtol=1e-3)
+    assert torch.equal(pool[0], initial[0]) and torch.equal(pool[2], initial[2])
+    assert torch.equal(state[0, 2::3], initial[1, 2::3])
+    assert counts[:3].sum().item() == tokens * hv
+    pool.copy_(initial)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        run()
+    pool.copy_(initial)
+    graph.replay()
+    torch.testing.assert_close(state[0], expected_state, atol=1e-3, rtol=1e-3)
+    # Change gates and device lengths without recapture: all heads now Skip.
+    beta.fill_(0.1)
+    g.fill_(-0.01)
+    starts[1] = 6
+    pool.copy_(initial)
+    graph.replay()
+    assert torch.equal(pool, initial)
+    # Invalid slots must not touch state or output even when gates request Full.
+    beta.fill_(0.9)
+    valid.zero_()
+    before_out = out.clone()
+    graph.replay()
+    assert torch.equal(pool, initial) and torch.equal(out, before_out)
+
+
+@pytest.mark.parametrize("tokens", [1, 5])
+@torch.inference_mode()
+def test_windowed_force_full_matches_original_recurrence_bitwise(tokens):
+    from vllm.model_executor.layers.mamba.gdn.replay_tail_update import (
+        replay_tail_update,
+        windowed_replay_tail_update,
+    )
+
+    torch.manual_seed(42)
+    q, k = [
+        torch.randn(tokens, 2, 128, device="cuda", dtype=torch.bfloat16)
+        for _ in range(2)
+    ]
+    v = torch.randn(tokens, 4, 128, device="cuda", dtype=torch.bfloat16)
+    a, b = [
+        torch.randn(tokens, 4, device="cuda", dtype=torch.bfloat16) for _ in range(2)
+    ]
+    a_log, dt = [torch.randn(4, device="cuda") for _ in range(2)]
+    state = torch.randn(1, 4, 128, 128, device="cuda")
+    expected_state = state.clone()
+    expected = replay_tail_update(q, k, v, a, b, a_log, dt, expected_state)
+    actual = windowed_replay_tail_update(
+        q,
+        k,
+        v,
+        a,
+        b,
+        a_log,
+        dt,
+        state,
+        query_start_loc=torch.tensor([0, tokens], device="cuda", dtype=torch.int32),
+        valid=torch.ones(1, device="cuda", dtype=torch.int32),
+        thresholds=torch.tensor([0.95, 0.0], device="cuda"),
+    )
+    assert torch.equal(state, expected_state)
+    assert torch.equal(actual, expected)
+
+
+@torch.inference_mode()
+def test_windowed_boundary_classifies_only_first_input_and_preserves_fp32_beta():
+    from vllm.model_executor.layers.mamba.gdn.replay_tail_update import (
+        windowed_replay_tail_update,
+    )
+
+    hv, tokens = 6, 5
+    q = torch.ones(tokens, 1, 32, device="cuda")
+    v = torch.ones(tokens, hv, 32, device="cuda")
+    g = torch.zeros(tokens, hv, device="cuda")
+    beta = torch.ones(tokens, hv, device="cuda")
+    boundary = torch.tensor(0.36328125, device="cuda", dtype=torch.bfloat16)
+    below = torch.nextafter(boundary, torch.zeros_like(boundary)).float()
+    beta[0] = torch.stack([boundary.float(), below, below, below, below, below])
+    alpha = torch.tensor(0.95, device="cuda")
+    g[0, 1] = torch.nextafter(alpha, torch.zeros_like(alpha)).log()
+    g[0, 2] = torch.nextafter(alpha, torch.ones_like(alpha)).log()
+    g[0, 3] = alpha.log()
+    thresholds = torch.tensor([0.95, 0.36328125], device="cuda")
+    state = torch.ones(1, hv, 32, 32, device="cuda")
+    counts = torch.zeros(8, device="cuda", dtype=torch.int64)
+    windowed_replay_tail_update(
+        q,
+        q,
+        v,
+        g,
+        beta,
+        None,
+        None,
+        state,
+        effective_gates=True,
+        query_start_loc=torch.tensor([0, tokens], device="cuda", dtype=torch.int32),
+        valid=torch.ones(1, device="cuda", dtype=torch.int32),
+        thresholds=thresholds,
+        action_counts=counts,
+    )
+    assert counts[:6].tolist() == [5, 10, 15, 1, 2, 3]
+    assert torch.equal(state[0, [2, 4, 5]], torch.ones_like(state[0, [2, 4, 5]]))
+
+
 @pytest.mark.parametrize("tokens", [1, 2, 3, 4, 5])
 @pytest.mark.parametrize("extreme", [False, True])
 @torch.inference_mode()

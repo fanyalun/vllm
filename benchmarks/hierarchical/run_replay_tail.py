@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--grouped-gdn", action="store_true")
     parser.add_argument("--three-level", action="store_true")
+    parser.add_argument("--drain-device", action="store_true")
     parser.add_argument("--cases", nargs="+")
     parser.add_argument("--seed", type=int, default=20260908)
     parser.add_argument("--capture-inputs", type=Path)
@@ -119,6 +120,7 @@ def main():
             "samples": samples,
             "max_tokens": args.max_tokens,
             "repeats": args.repeats,
+            "drain_device_before_stopping_timer": args.drain_device,
             "cases": cases,
             "timed_cases": timed_cases,
             "gates": "per_token",
@@ -171,10 +173,14 @@ def main():
             llm.collective_rpc("begin_action_audit")
         start = time.perf_counter()
         result = llm.generate([sample["prompt"]], params, use_tqdm=False)[0]
+        if args.drain_device:
+            llm.collective_rpc("drain_replay_device")
         elapsed = time.perf_counter() - start
         tokens = list(result.outputs[0].token_ids)
         assert len(tokens) == args.max_tokens
         assert len(result.prompt_token_ids) == sample["prompt_token_count"]
+        if "prompt_token_ids" in sample:
+            assert list(result.prompt_token_ids) == sample["prompt_token_ids"]
         key = case, index
         if key in references:
             assert tokens == references[key], ("nonrepeatable output", key, phase)
@@ -191,6 +197,7 @@ def main():
                     phase=phase,
                     repeat=repeat,
                     sample=index,
+                    prompt_sha256=sample["prompt_sha256"],
                     seconds=elapsed,
                     token_ids=tokens,
                     text=result.outputs[0].text,
@@ -229,7 +236,7 @@ def main():
     expected = args.samples * (len(timed_cases) * args.repeats + len(cases))
     if args.action_audit:
         for case in cases:
-            if not case.startswith("three_level"):
+            if not case.startswith(("three_level", "windowed")):
                 continue
             llm.collective_rpc("set_replay_case", args=(case,))
             for index, sample in enumerate(samples):

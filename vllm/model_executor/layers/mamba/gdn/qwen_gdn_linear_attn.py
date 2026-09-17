@@ -904,8 +904,19 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         """
         if getattr(self, "enable_mean_preverify", False):
             output = torch.empty_like(hidden_states)
+            conv_state = temporal_state = None
+            if not torch.compiler.is_compiling():
+                private = get_forward_context().additional_kwargs.get(
+                    "preverify_gdn_state"
+                )
+                if private is not None and private.windowed:
+                    conv_state, temporal_state = self.kv_cache
             torch.ops.vllm.qwen_gdn_mean_forward(
-                hidden_states, output, _encode_layer_name(self.prefix)
+                hidden_states,
+                output,
+                _encode_layer_name(self.prefix),
+                conv_state,
+                temporal_state,
             )
             return output
         return self._forward_cuda_exact(hidden_states)
@@ -1932,11 +1943,21 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
 
 
 def qwen_gdn_mean_forward(
-    hidden_states: torch.Tensor, output: torch.Tensor, layer_name: LayerNameType
+    hidden_states: torch.Tensor,
+    output: torch.Tensor,
+    layer_name: LayerNameType,
+    conv_state: torch.Tensor | None = None,
+    temporal_state: torch.Tensor | None = None,
 ) -> None:
     context = get_forward_context()
     mode = context.additional_kwargs.get("preverify_gdn_mode")
     layer = context.no_compile_layers[_resolve_layer_name(layer_name)]
+    if conv_state is not None and (
+        temporal_state is None
+        or conv_state.data_ptr() != layer.kv_cache[0].data_ptr()
+        or temporal_state.data_ptr() != layer.kv_cache[1].data_ptr()
+    ):
+        raise RuntimeError("Preverify custom-op state binding changed")
     if mode in (None, "none"):
         output.copy_(layer._forward_cuda_exact(hidden_states))
         return
@@ -2000,6 +2021,7 @@ def qwen_gdn_mean_projected(layer, qkvz, ba, metadata, mode):
             v.reshape(n, layer.num_v_heads, layer.head_v_dim),
             a,
             b,
+            query_start_loc=metadata.spec_query_start_loc,
         )
     else:
         core = update(
@@ -2023,7 +2045,11 @@ def qwen_gdn_mean_projected(layer, qkvz, ba, metadata, mode):
 
 
 def qwen_gdn_mean_forward_fake(
-    hidden_states: torch.Tensor, output: torch.Tensor, layer_name: LayerNameType
+    hidden_states: torch.Tensor,
+    output: torch.Tensor,
+    layer_name: LayerNameType,
+    conv_state: torch.Tensor | None = None,
+    temporal_state: torch.Tensor | None = None,
 ) -> None:
     return
 
@@ -2031,7 +2057,7 @@ def qwen_gdn_mean_forward_fake(
 direct_register_custom_op(
     op_name="qwen_gdn_mean_forward",
     op_func=qwen_gdn_mean_forward,
-    mutates_args=["output"],
+    mutates_args=["output", "conv_state", "temporal_state"],
     fake_impl=qwen_gdn_mean_forward_fake,
 )
 

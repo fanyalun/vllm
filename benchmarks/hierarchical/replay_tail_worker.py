@@ -8,6 +8,9 @@ from vllm.v1.worker.gpu.spec_decode.hierarchical.state import PreverifyState
 
 
 class ReplayTailWorker:
+    def drain_replay_device(self):
+        torch.accelerator.synchronize()
+
     def set_replay_case(self, case):
         spec = self.model_runner.speculator
         if not hasattr(self, "_replay_cases"):

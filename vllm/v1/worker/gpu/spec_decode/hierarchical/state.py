@@ -13,6 +13,7 @@ from vllm.model_executor.layers.mamba.gdn.replay_tail_update import (
     advance_replay_tail_convs,
     begin_replay_tail_states,
     replay_tail_update,
+    windowed_replay_tail_update,
 )
 from vllm.model_executor.layers.mamba.mamba_utils import is_conv_state_dim_first
 
@@ -28,11 +29,22 @@ class PreverifyState:
         mode="none",
         update_policy="exact",
         tail_policy="carry",
+        window_size=5,
+        tau_alpha=0.95,
+        tau_beta=0.36328125,
+        optimization="none",
     ):
         self.width = width
         self.mode = mode
         self.update_policy = update_policy
         self.tail_policy = tail_policy
+        self.windowed = update_policy == "windowed_three_level"
+        self.window_size = window_size
+        self.optimization = optimization
+        self.request_id = None
+        self.outer_epoch = 0
+        self.valid = torch.zeros(1, dtype=torch.int32, device=device)
+        self.initialized = False
         self.direction = 0
         self.tails = {}
         self.repair_inputs = {}
@@ -46,9 +58,15 @@ class PreverifyState:
         self.kernel_tuned = update_policy != "exact"
         self.batch_constants = {}
         if update_policy != "exact":
-            if update_policy != "three_level_p50" or mode != "replay_tail":
+            if (
+                update_policy not in ("three_level_p50", "windowed_three_level")
+                or mode != "replay_tail"
+            ):
                 raise ValueError("Three-level GDN requires replay_tail")
-            self.thresholds = torch.tensor([0.98, 0.36328125], device=device)
+            self.thresholds = torch.tensor(
+                [tau_alpha, tau_beta] if self.windowed else [0.98, 0.36328125],
+                device=device,
+            )
             self.counts = torch.arange(width + 1, dtype=torch.int32, device=device)
             self.sequence_mask = torch.ones(1, dtype=torch.bool, device=device)
             for length in range(1, width + 1):
@@ -58,7 +76,7 @@ class PreverifyState:
                     torch.tensor([0, length], dtype=torch.int32, device=device),
                 )
         if tail_policy not in ("carry", "repair_on_reject") or (
-            tail_policy == "repair_on_reject" and update_policy == "exact"
+            tail_policy == "repair_on_reject" and update_policy != "three_level_p50"
         ):
             raise ValueError("Invalid three-level tail policy")
         if mode not in ("none", "ssm_mean", "input_mean", "replay_tail"):
@@ -86,7 +104,7 @@ class PreverifyState:
                 )
                 for shape, dtype in zip(shapes, layer.get_state_dtype(), strict=True)
             )
-            if self.thresholds is not None:
+            if self.thresholds is not None and not self.windowed:
                 self.tails[name] = torch.empty_like(self.caches[name][1])
                 if tail_policy == "repair_on_reject":
                     self.repair_inputs[name] = tuple(
@@ -128,10 +146,19 @@ class PreverifyState:
         destination.copy_(source.index_select(axis, positions))
 
     def begin(self, model_state, input_batch, block_tables, kv_cache_config):
+        if getattr(self, "windowed", False):
+            self.invalidate()
+            if len(input_batch.req_ids) != 1:
+                raise ValueError("Windowed GDN requires B1")
         if not self.layers:
             return
         if getattr(self, "execution_optimized", False) is True:
             self._begin_batched(model_state, input_batch, block_tables, kv_cache_config)
+            if self.windowed:
+                self.request_id = input_batch.req_ids[0]
+                self.outer_epoch += 1
+                self.valid.fill_(1)
+                self.initialized = True
             return
         req_idx = input_batch.idx_mapping
         bias = (model_state.num_accepted_tokens_gpu[req_idx] - 1).to(torch.int64)
@@ -231,11 +258,12 @@ class PreverifyState:
                 and accepted_drafts + 1 < self.window_width
             ):
                 self._repair(accepted_drafts + 1)
-            for name, (conv, initial) in self.caches.items():
-                tail = self.tails[name]
-                self.caches[name] = (conv, tail)
-                self.tails[name] = initial
-            self.direction = 1 - self.direction
+            if not getattr(self, "windowed", False):
+                for name, (conv, initial) in self.caches.items():
+                    tail = self.tails[name]
+                    self.caches[name] = (conv, tail)
+                    self.tails[name] = initial
+                self.direction = 1 - self.direction
             if self.execution_optimized and self.conv_pointers is not None:
                 advance_replay_tail_convs(
                     self.conv_pointers,
@@ -295,9 +323,33 @@ class PreverifyState:
                 num_warps=8 if self.kernel_tuned and length >= 3 else 4,
             )
 
-    def update(self, layer, q, k, v, a, b):
+    def invalidate(self):
+        self.valid.zero_()
+        self.initialized = False
+        self.request_id = None
+
+    def update(self, layer, q, k, v, a, b, query_start_loc=None):
         name = layer.prefix
         self.window_width = q.shape[0]
+        if self.windowed:
+            if not self.initialized or query_start_loc is None:
+                raise RuntimeError("Windowed GDN requires initialized request state")
+            return windowed_replay_tail_update(
+                q,
+                k,
+                v,
+                a,
+                b,
+                layer.A_log,
+                layer.dt_bias,
+                self.caches[name][1],
+                query_start_loc=query_start_loc,
+                valid=self.valid,
+                thresholds=self.thresholds,
+                window_size=self.window_size,
+                optimization=self.optimization,
+                action_counts=self.action_counts,
+            )
         if self.tail_policy == "repair_on_reject":
             for target, source in zip(
                 self.repair_inputs[name], (k, v, a, b), strict=True
@@ -337,6 +389,10 @@ class PreverifyState:
                 original[name] = layer.kv_cache
                 layer.kv_cache = self.caches[name]
             yield
+        except BaseException:
+            if getattr(self, "windowed", False):
+                self.invalidate()
+            raise
         finally:
             for name, cache in original.items():
                 self.layers[name].kv_cache = cache

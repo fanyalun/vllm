@@ -88,6 +88,13 @@ class InputProcessor:
     ) -> None:
         """Raise `ValueError` if SamplingParams or PoolingParams is not valid."""
         if isinstance(params, SamplingParams):
+            if (
+                self.speculative_config is not None
+                and self.speculative_config.preverify_gdn_update_policy
+                == "windowed_three_level"
+                and params.temperature != 0
+            ):
+                raise ValueError("Windowed GDN requires request temperature=0")
             supported_generation_tasks = [
                 task for task in supported_tasks if task in GENERATION_TASKS
             ]

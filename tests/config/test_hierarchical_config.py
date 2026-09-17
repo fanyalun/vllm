@@ -127,6 +127,65 @@ def test_three_level_requires_replay_and_isolated_tail_policy(monkeypatch):
     assert hashes[0] != hashes[1]
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"inner_method": "dspark"},
+        {"preverify_gdn_tail_policy": "repair_on_reject"},
+        {"inner_num_rounds": 5},
+        {"preverify_gdn_mode_window_size": 0},
+        {"preverify_gdn_tau_alpha": float("nan")},
+        {"preverify_gdn_tau_beta": 1.1},
+    ],
+)
+def test_windowed_gdn_rejects_unsupported_semantics(monkeypatch, overrides):
+    with pytest.raises(ValueError):
+        make_config(
+            monkeypatch,
+            preverify_gdn_mode="replay_tail",
+            preverify_gdn_update_policy="windowed_three_level",
+            **overrides,
+        )
+
+
+def test_windowed_gdn_hash_includes_window_thresholds_and_optimization(monkeypatch):
+    hashes = []
+    for overrides in (
+        {},
+        {"preverify_gdn_mode_window_size": 1},
+        {"preverify_gdn_tau_alpha": 0.96},
+        {"preverify_gdn_tau_beta": 0.4},
+        {"preverify_gdn_optimization": "cumulative_decay"},
+        {"preverify_gdn_optimization": "multi_query"},
+        {"preverify_gdn_optimization": "combined"},
+    ):
+        config = make_config(
+            monkeypatch,
+            preverify_gdn_mode="replay_tail",
+            preverify_gdn_update_policy="windowed_three_level",
+            **overrides,
+        )
+        hashes.append(config.compute_hash())
+    assert len(set(hashes)) == len(hashes)
+
+
+def test_windowed_gdn_rejects_stochastic_requests_at_cpu_input_boundary():
+    from vllm import SamplingParams
+    from vllm.v1.engine.input_processor import InputProcessor
+
+    processor = SimpleNamespace(
+        speculative_config=SimpleNamespace(
+            preverify_gdn_update_policy="windowed_three_level"
+        )
+    )
+    with pytest.raises(ValueError, match="temperature=0"):
+        InputProcessor._validate_params(
+            cast(InputProcessor, processor),
+            SamplingParams(temperature=0.5),
+            ("generate",),
+        )
+
+
 @pytest.mark.parametrize("group", ["projection", "full"])
 def test_grouped_gdn_is_independent_but_rejects_incompatible_modes(monkeypatch, group):
     assert (

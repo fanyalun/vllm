@@ -129,6 +129,7 @@ def test_unsupported_runtime_configuration_fails_before_loading(field, value, me
             setattr(owner, field, value)
     config = SimpleNamespace(
         speculative_config=SimpleNamespace(
+            preverify_gdn_update_policy="exact",
             inner_num_speculative_tokens=4,
             inner_num_rounds=4,
             num_speculative_tokens=20,
@@ -260,9 +261,10 @@ def test_attention_only_preverify_does_not_access_recurrent_state():
 @pytest.mark.parametrize("align", [False, True])
 @pytest.mark.parametrize("accepted", range(1, 6))
 @pytest.mark.parametrize("dim_first", [False, True])
+@pytest.mark.parametrize("policy", ["three_level_p50", "windowed_three_level"])
 @torch.inference_mode()
 def test_three_level_batched_begin_copies_accepted_canonical_state(
-    monkeypatch, align, accepted, dim_first
+    monkeypatch, align, accepted, dim_first, policy
 ):
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
@@ -297,7 +299,7 @@ def test_three_level_batched_begin_copies_accepted_canonical_state(
         5,
         torch.device("cuda"),
         "replay_tail",
-        "three_level_p50",
+        policy,
     )
     table = torch.tensor(
         [[5, 2, 7, 1, 4, 0, 6, 3, 9, 8]], dtype=torch.int32, device="cuda"
@@ -310,7 +312,8 @@ def test_three_level_batched_begin_copies_accepted_canonical_state(
         _align_mode=align,
     )
     batch = SimpleNamespace(
-        idx_mapping=torch.tensor([0], device="cuda", dtype=torch.int32)
+        idx_mapping=torch.tensor([0], device="cuda", dtype=torch.int32),
+        req_ids=["request"],
     )
     config = SimpleNamespace(kv_cache_groups=[SimpleNamespace(layer_names=["layer"])])
     start = 2 if align else 0
@@ -319,8 +322,12 @@ def test_three_level_batched_begin_copies_accepted_canonical_state(
         (torch.arange(8, device="cuda") + accepted - 1).clamp(max=9),
     )
     expected_state = canonical[1][table[0, start + accepted - 1]]
-    for _ in range(2):
+    for epoch in range(1, 3):
         state.begin(model_state, batch, (table,), config)
+        if state.windowed:
+            assert state.outer_epoch == epoch and state.request_id == "request"
+            assert state.initialized and state.valid.item() == 1
+            assert not state.tails and not state.repair_inputs
         torch.testing.assert_close(
             state.caches["layer"][0][0], expected_conv, rtol=0, atol=0
         )
@@ -470,8 +477,12 @@ def test_preverify_restores_conv_and_temporal_at_same_accepted_position(
     assert temporal[1].item() == accepted + 1
 
 
-def test_preverify_restores_target_cache_bindings_after_forward_failure():
+@pytest.mark.parametrize("windowed", [False, True])
+def test_preverify_restores_target_cache_bindings_after_forward_failure(windowed):
     state = object.__new__(PreverifyState)
+    state.windowed = windowed
+    state.valid = torch.ones(1, dtype=torch.int32)
+    state.initialized, state.request_id = True, "request"
     canonical = (torch.ones(2), torch.ones(2))
     private = (torch.zeros(2), torch.zeros(2))
     layer = SimpleNamespace(kv_cache=canonical)
@@ -481,6 +492,36 @@ def test_preverify_restores_target_cache_bindings_after_forward_failure():
         assert layer.kv_cache is private
         raise RuntimeError("forward failed")
     assert layer.kv_cache is canonical
+    if windowed:
+        assert state.valid.item() == 0
+        assert not state.initialized and state.request_id is None
+
+
+@pytest.mark.parametrize("accepted", [0, 2, 4])
+def test_windowed_rejection_keeps_single_tail_and_advances_only_conv(
+    monkeypatch, accepted
+):
+    monkeypatch.setattr(
+        "vllm.v1.worker.gpu.spec_decode.hierarchical.state.is_conv_state_dim_first",
+        lambda: False,
+    )
+    state = object.__new__(PreverifyState)
+    state.windowed, state.mode, state.tail_policy = True, "replay_tail", "carry"
+    state.thresholds = torch.tensor([0.95, 0.36328125])
+    state.execution_optimized, state.conv_pointers = False, None
+    state.direction = 0
+    state.tails, state.repair_inputs, state.repair_graphs = {}, {}, {}
+    conv = torch.arange(8).view(1, 8, 1).float()
+    temporal = torch.tensor([[[[7.0]]]])
+    state.caches = {"layer": (conv, temporal)}
+    original = temporal.clone()
+    for _ in range(3):
+        state.advance(accepted)
+        assert state.caches["layer"][1] is temporal
+        assert torch.equal(temporal, original)
+    assert state.direction == 0 and state.tails == {}
+    expected = (torch.arange(8) + 3 * accepted).clamp(max=7).float()
+    assert torch.equal(conv.flatten(), expected)
 
 
 @pytest.mark.parametrize("accepted", [1, 3, 5])
@@ -608,6 +649,10 @@ def test_grouped_gdn_rejects_float32_conv_before_kernel_setup(monkeypatch):
         preverify_gdn_group_mode="full",
         preverify_gdn_update_policy="exact",
         preverify_gdn_tail_policy="carry",
+        preverify_gdn_mode_window_size=5,
+        preverify_gdn_tau_alpha=0.95,
+        preverify_gdn_tau_beta=0.36328125,
+        preverify_gdn_optimization="none",
     )
     proposer.depth, proposer.device = 4, torch.device("cuda")
     proposer.vllm_config = SimpleNamespace(
@@ -619,16 +664,16 @@ def test_grouped_gdn_rejects_float32_conv_before_kernel_setup(monkeypatch):
         proposer.load_model(object())
 
 
-@pytest.mark.parametrize("three_level", [False, True])
+@pytest.mark.parametrize("policy", ["exact", "three_level_p50", "windowed_three_level"])
 @pytest.mark.parametrize("short_window", [False, True])
 def test_four_rounds_compact_recoveries_and_start_after_computed_prefix(
-    three_level, short_window
+    policy, short_window
 ):
     proposer = object.__new__(HierarchicalSpeculator)
     proposer.device = torch.device("cpu")
     proposer.config = SimpleNamespace(
         inner_method="mtp",
-        preverify_gdn_update_policy="three_level_p50" if three_level else "exact",
+        preverify_gdn_update_policy=policy,
     )
     proposer.vllm_config = SimpleNamespace(
         model_config=SimpleNamespace(max_model_len=9 if short_window else 128)
@@ -638,6 +683,7 @@ def test_four_rounds_compact_recoveries_and_start_after_computed_prefix(
     proposer.draft_lengths = torch.zeros(1, dtype=torch.int32)
     proposer.last_sampled = torch.zeros((1, 1), dtype=torch.int64)
     proposer.state = Mock()
+    proposer.state.windowed = policy == "windowed_three_level"
     proposer.model_state = Mock()
     proposer.kv_cache_config = Mock()
     proposer.block_tables = Mock()
@@ -688,4 +734,8 @@ def test_four_rounds_compact_recoveries_and_start_after_computed_prefix(
     assert result[0, len(expected_tokens) :].eq(-1).all()
     advances = [call.args[0] for call in proposer.state.advance.call_args_list]
     expected_advances = [0] if short_window else [0, 1, 3, 4]
-    assert advances == (expected_advances[:-1] if three_level else expected_advances)
+    assert advances == (
+        expected_advances[:-1] if policy != "exact" else expected_advances
+    )
+    if policy == "windowed_three_level":
+        proposer.state.invalidate.assert_called_once()

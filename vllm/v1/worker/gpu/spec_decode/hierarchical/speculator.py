@@ -106,6 +106,21 @@ class HierarchicalSpeculator(BaseSpeculator):
         model_config = vllm_config.model_config
         if model_config.enable_prompt_embeds:
             raise ValueError("hierarchical does not support prompt embeddings")
+        if config.preverify_gdn_update_policy == "windowed_three_level":
+            text = model_config.hf_text_config
+            if model_config.dtype != torch.bfloat16 or any(
+                getattr(text, key, None) != value
+                for key, value in {
+                    "hidden_size": 2048,
+                    "num_hidden_layers": 40,
+                    "num_experts": 256,
+                    "linear_num_key_heads": 16,
+                    "linear_num_value_heads": 32,
+                    "linear_key_head_dim": 128,
+                    "linear_value_head_dim": 128,
+                }.items()
+            ):
+                raise ValueError("Windowed GDN requires BF16 Qwen3.6-35B-A3B")
         mm_config = model_config.multimodal_config
         if mm_config is not None and any(
             mm_config.get_limit_per_prompt(modality) > 0
@@ -128,6 +143,10 @@ class HierarchicalSpeculator(BaseSpeculator):
             preverify_gdn_group_mode="none",
             preverify_gdn_update_policy="exact",
             preverify_gdn_tail_policy="carry",
+            preverify_gdn_mode_window_size=5,
+            preverify_gdn_tau_alpha=0.95,
+            preverify_gdn_tau_beta=0.36328125,
+            preverify_gdn_optimization="none",
         )
         self.preverify = MoeSkipSpeculator(self.preverify_config, device)
         self.buffers = InputBuffers(
@@ -184,6 +203,10 @@ class HierarchicalSpeculator(BaseSpeculator):
             self.config.preverify_gdn_mode,
             self.config.preverify_gdn_update_policy,
             self.config.preverify_gdn_tail_policy,
+            self.config.preverify_gdn_mode_window_size,
+            self.config.preverify_gdn_tau_alpha,
+            self.config.preverify_gdn_tau_beta,
+            self.config.preverify_gdn_optimization,
         )
         self.grouped_gdn = None
         if (
@@ -430,6 +453,19 @@ class HierarchicalSpeculator(BaseSpeculator):
             if self.state.action_counts is not None:
                 key = (width, self.state.direction, "actions")
             self.state.window_width = width
+            if self.state.windowed:
+                if (
+                    not self.state.initialized
+                    or self.state.request_id != batch.req_ids[0]
+                ):
+                    raise RuntimeError("Windowed GDN request slot is invalid")
+                key = (
+                    width,
+                    self.state.update_policy,
+                    self.state.window_size,
+                    self.state.optimization,
+                    self.state.action_counts is not None,
+                )
         if not self.use_preverify_graphs or self.check_preverify:
             return self._verify_eager(batch, metadata, slots)
         if key not in self.preverify_graphs:
@@ -570,6 +606,8 @@ class HierarchicalSpeculator(BaseSpeculator):
             )
             return self.draft_tokens[: input_batch.num_reqs]
         if input_batch.num_reqs == 0:
+            if getattr(self.state, "windowed", False):
+                self.state.invalidate()
             return self.draft_tokens[:0]
         if mm_inputs is not None:
             raise ValueError("hierarchical supports unstructured text requests only")
@@ -731,9 +769,7 @@ class HierarchicalSpeculator(BaseSpeculator):
                 break
             if getattr(
                 self.config, "preverify_gdn_update_policy", "exact"
-            ) == "three_level_p50" and (
-                round_idx == self.rounds - 1 or width < self.depth + 1
-            ):
+            ) != "exact" and (round_idx == self.rounds - 1 or width < self.depth + 1):
                 break
             anchor = predictions[accepted : accepted + 1].clone()
             position += emitted
@@ -753,4 +789,6 @@ class HierarchicalSpeculator(BaseSpeculator):
                 break
         self.draft_lengths.fill_(count)
         self.pending_req_id = input_batch.req_ids[0]
+        if getattr(self.state, "windowed", False) is True:
+            self.state.invalidate()
         return self.draft_tokens

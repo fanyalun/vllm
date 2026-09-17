@@ -29,6 +29,7 @@ class ThreeLevelWorker(ReplayTailWorker):
         rows = []
         for fn in (
             impl._replay_tail_update,
+            impl._windowed_update,
             impl._advance_conv_many,
             impl._begin_private_states,
         ):
@@ -76,7 +77,7 @@ class ThreeLevelWorker(ReplayTailWorker):
         state = self.model_runner.speculator.state
         if not hasattr(state, "_action_counts_buffer"):
             state._action_counts_buffer = torch.zeros(
-                3, dtype=torch.int64, device="cuda"
+                8 if state.windowed else 3, dtype=torch.int64, device="cuda"
             )
         state.action_counts = state._action_counts_buffer
         state.action_counts.zero_()
@@ -88,6 +89,14 @@ class ThreeLevelWorker(ReplayTailWorker):
             action_order=["full", "decay", "skip"],
             repair_included=False,
         )
+        if state.windowed:
+            values = state.action_counts.tolist()
+            result.update(
+                forward_action_counts=values[:3],
+                head_window_counts=values[3:6],
+                unchanged_heads=values[6],
+                total_heads=values[7],
+            )
         state.action_counts = None
         return result
 
@@ -134,6 +143,47 @@ class ThreeLevelWorker(ReplayTailWorker):
                 key = self._replay_case, batch.num_tokens, spec.state.direction
                 if key in self._three_checked:
                     return verify_original(batch, *args)
+                state = spec.state
+                if state.windowed and not getattr(
+                    state, "initialization_checked", False
+                ):
+                    from vllm.model_executor.layers.mamba.mamba_utils import (
+                        is_conv_state_dim_first,
+                    )
+
+                    request = int(batch.idx_mapping[0])
+                    model_state = spec.model_state
+                    bias = int(model_state.num_accepted_tokens_gpu[request]) - 1
+                    source = (
+                        int(model_state._mamba_state_idx_gpu[request])
+                        if model_state._align_mode
+                        else 0
+                    )
+                    tables = spec.block_tables.gather_block_tables(batch.idx_mapping, 1)
+                    axis = 2 if is_conv_state_dim_first() else 1
+                    for gid, group in enumerate(spec.kv_cache_config.kv_cache_groups):
+                        for name in group.layer_names:
+                            if name not in state.layers:
+                                continue
+                            conv, temporal = state.layers[name].kv_cache
+                            private_conv, private_state = state.caches[name]
+                            conv_idx = int(tables[gid][0, source])
+                            ssm_idx = int(tables[gid][0, source + bias])
+                            expected = temporal[ssm_idx : ssm_idx + 1]
+                            assert torch.equal(private_state, expected)
+                            positions = (
+                                torch.arange(
+                                    private_conv.shape[axis], device=conv.device
+                                )
+                                + bias
+                            ).clamp(max=conv.shape[axis] - 1)
+                            assert torch.equal(
+                                private_conv,
+                                conv[conv_idx : conv_idx + 1].index_select(
+                                    axis, positions
+                                ),
+                            )
+                    state.initialization_checked = True
                 before = spec.state.snapshot()
                 result = verify_original(batch, *args)
                 after = spec.state.snapshot()
@@ -177,10 +227,27 @@ class ThreeLevelWorker(ReplayTailWorker):
             spec.small.propose = draft
         update, tail, stop = case.split(":")
         mode = "none" if update == "none" else "replay_tail"
-        policy = "three_level_p50" if update.startswith("three_level") else "exact"
+        windowed = update.startswith("windowed")
+        policy = (
+            "windowed_three_level"
+            if windowed
+            else ("three_level_p50" if update.startswith("three_level") else "exact")
+        )
         if case not in self._three_cases:
             state = PreverifyState(
-                spec.model, spec.depth + 1, spec.device, mode, policy, tail
+                spec.model,
+                spec.depth + 1,
+                spec.device,
+                mode,
+                policy,
+                tail,
+                window_size=1 if update == "windowed_token" else 5,
+                tau_beta=0.0 if update == "windowed_full" else 0.36328125,
+                optimization={
+                    "windowed_decay": "cumulative_decay",
+                    "windowed_query": "multi_query",
+                    "windowed_combined": "combined",
+                }.get(update, "none"),
             )
             if update == "three_level_base":
                 state.execution_optimized = False
@@ -211,7 +278,7 @@ class ThreeLevelWorker(ReplayTailWorker):
         self._replay_audit = False
         state = spec.state
         auxiliary = [state.state_indices, state.num_accepted]
-        for attr in ("thresholds", "counts", "sequence_mask", "conv_pointers"):
+        for attr in ("thresholds", "counts", "sequence_mask", "conv_pointers", "valid"):
             value = getattr(state, attr, None)
             if isinstance(value, torch.Tensor):
                 auxiliary.append(value)
@@ -219,6 +286,12 @@ class ThreeLevelWorker(ReplayTailWorker):
         auxiliary.extend(value[1] for value in state.begin_descriptors.values())
         return dict(
             case=case,
+            outer_epoch=state.outer_epoch,
+            request_slot_valid=state.initialized,
+            initialization_checked=getattr(state, "initialization_checked", False),
+            ssm_slots=[cache[1].shape[0] for cache in state.caches.values()],
+            tail_buffers=len(state.tails),
+            repair_buffers=len(state.repair_inputs),
             graphs=len(spec.preverify_graphs) + len(state.repair_graphs),
             auxiliary_bytes=sum(x.numel() * x.element_size() for x in auxiliary),
             worker_allocated_bytes=torch.accelerator.memory_allocated(),
