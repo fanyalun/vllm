@@ -7,6 +7,7 @@ import os
 from contextlib import contextmanager
 from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -91,12 +92,24 @@ class HierarchicalSpeculator(BaseSpeculator):
         )
         if self.max_num_reqs > 1 and not (
             architectures
-            and architectures <= {"Gemma4ForCausalLM", "Gemma4ForConditionalGeneration"}
+            and architectures
+            <= {
+                "Gemma4ForCausalLM",
+                "Gemma4ForConditionalGeneration",
+                "Qwen3_5MoeForConditionalGeneration",
+                "Qwen3_5ForConditionalGeneration",
+            }
             and config.inner_method == "mtp"
         ):
-            raise ValueError(
-                "hierarchical batching requires Gemma4 MTP; otherwise max_num_seqs=1"
+            raise ValueError("hierarchical batching requires Qwen or Gemma MTP")
+        if self.max_num_reqs > 1 and (
+            config.preverify_gdn_group_mode != "none"
+            or (
+                config.preverify_gdn_mode != "none"
+                and config.preverify_gdn_update_policy != "windowed_three_level"
             )
+        ):
+            raise ValueError("Batched GDN requires native or ungrouped windowed state")
         if scheduler.async_scheduling:
             raise ValueError("hierarchical currently requires async_scheduling=False")
         if vllm_config.cache_config.enable_prefix_caching:
@@ -196,7 +209,16 @@ class HierarchicalSpeculator(BaseSpeculator):
         self.preverify.load_model(target_model)
         self.model = self.preverify.model
         self.logits_model = target_model
-        self.state = PreverifyState(
+        state_cls: Any = PreverifyState
+        state_kwargs = {}
+        if getattr(self, "max_num_reqs", 1) > 1:
+            from vllm.v1.worker.gpu.spec_decode.hierarchical.batched_state import (
+                BatchedPreverifyState,
+            )
+
+            state_cls = BatchedPreverifyState
+            state_kwargs["max_num_reqs"] = self.max_num_reqs
+        self.state = state_cls(
             self.model,
             self.depth + 1,
             self.device,
@@ -207,6 +229,7 @@ class HierarchicalSpeculator(BaseSpeculator):
             self.config.preverify_gdn_tau_alpha,
             self.config.preverify_gdn_tau_beta,
             self.config.preverify_gdn_optimization,
+            **state_kwargs,
         )
         self.grouped_gdn = None
         if (
@@ -427,20 +450,23 @@ class HierarchicalSpeculator(BaseSpeculator):
         )
 
     def _set_gdn_metadata(self, batch, width, metadata):
+        n = batch.num_reqs
+        if getattr(self, "max_num_reqs", 1) > 1:
+            self.state.select(batch.req_ids)
         gdn = GDNAttentionMetadata(
             num_prefills=0,
             num_prefill_tokens=0,
             num_decodes=0,
             num_decode_tokens=0,
-            num_spec_decodes=1,
-            num_spec_decode_tokens=width,
-            num_actual_tokens=width,
+            num_spec_decodes=n,
+            num_spec_decode_tokens=batch.num_tokens,
+            num_actual_tokens=batch.num_tokens,
             spec_query_start_loc=batch.query_start_loc,
-            spec_state_indices_tensor=self.state.state_indices[:, :width],
-            spec_sequence_masks=self.state.sequence_mask
-            if getattr(self.state, "execution_optimized", False) is True
-            else torch.ones(1, dtype=torch.bool, device=self.device),
-            num_accepted_tokens=self.state.num_accepted,
+            spec_state_indices_tensor=self.state.state_indices[:n, :width],
+            spec_sequence_masks=self.state.sequence_mask[:n]
+            if hasattr(self.state, "sequence_mask")
+            else torch.ones(n, dtype=torch.bool, device=self.device),
+            num_accepted_tokens=self.state.num_accepted[:n],
         )
         for name in self.state.layers:
             metadata[name] = gdn
@@ -454,12 +480,13 @@ class HierarchicalSpeculator(BaseSpeculator):
                 key = (width, self.state.direction, "actions")
             self.state.window_width = width
             if self.state.windowed:
-                if (
-                    not self.state.initialized
-                    or self.state.request_id != batch.req_ids[0]
+                if not self.state.initialized or (
+                    getattr(self, "max_num_reqs", 1) == 1
+                    and self.state.request_id != batch.req_ids[0]
                 ):
                     raise RuntimeError("Windowed GDN request slot is invalid")
                 key = (
+                    batch.num_reqs,
                     width,
                     self.state.update_policy,
                     self.state.window_size,
@@ -578,6 +605,7 @@ class HierarchicalSpeculator(BaseSpeculator):
             self.draft_lengths = self._draft_lengths[: input_batch.num_reqs]
         self.draft_tokens.fill_(-1)
         self.draft_lengths.zero_()
+        self.last_trace = []
         if input_batch.req_ids and all(
             req_id.startswith("_warmup_") for req_id in input_batch.req_ids
         ):

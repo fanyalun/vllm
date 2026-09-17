@@ -57,6 +57,7 @@ def test_batched_stop_compacts_survivors_and_preserves_request_mapping(monkeypat
     HierarchicalSpeculator.reset_policy_metrics(spec)
     batch = SimpleNamespace(
         num_reqs=3,
+        req_ids=["a", "b", "c"],
         idx_mapping=torch.tensor([2, 0, 1]),
         seq_lens=torch.tensor([10, 20, 30]),
         has_structured_output_reqs=False,
@@ -113,7 +114,7 @@ def test_batched_stop_compacts_survivors_and_preserves_request_mapping(monkeypat
 @pytest.mark.parametrize(
     "field,value,message",
     [
-        ("max_num_seqs", 2, "max_num_seqs=1"),
+        ("max_num_seqs", 2, "batching requires"),
         ("async_scheduling", True, "async_scheduling=False"),
         ("enable_prefix_caching", True, "prefix caching disabled"),
         ("enable_prompt_embeds", True, "prompt embeddings"),
@@ -337,6 +338,101 @@ def test_three_level_batched_begin_copies_accepted_canonical_state(
         state.advance(4)
     for actual, expected in zip(layer.kv_cache, canonical, strict=True):
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("dim_first", [False, True])
+@pytest.mark.parametrize("mode", ["none", "replay_tail"])
+@pytest.mark.parametrize("size", [4, 8, 16, 32])
+@torch.inference_mode()
+def test_batched_private_state_tracks_compaction_rejection_and_new_epoch(
+    monkeypatch, dim_first, mode, size
+):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required")
+    from vllm.model_executor.layers.mamba import mamba_utils
+    from vllm.v1.worker.gpu.spec_decode.hierarchical import state as impl
+    from vllm.v1.worker.gpu.spec_decode.hierarchical.batched_state import (
+        BatchedPreverifyState,
+    )
+
+    class Layer:
+        prefix = "layer"
+        conv_kernel_size = 4
+        kv_cache: tuple[torch.Tensor, torch.Tensor]
+
+        def get_state_shape(self):
+            return ((7, 10) if dim_first else (10, 7), (2, 8, 8))
+
+        def get_state_dtype(self):
+            return (torch.bfloat16, torch.float32)
+
+    monkeypatch.setattr(impl, "QwenGatedDeltaNetAttention", Layer)
+    monkeypatch.setattr(impl, "is_conv_state_dim_first", lambda: dim_first)
+    monkeypatch.setattr(mamba_utils, "is_conv_state_dim_first", lambda: dim_first)
+    layer = Layer()
+    layer.kv_cache = (
+        torch.randn(
+            (10 * size, 7, 10) if dim_first else (10 * size, 10, 7),
+            device="cuda",
+            dtype=torch.bfloat16,
+        ),
+        torch.randn(10 * size, 2, 8, 8, device="cuda"),
+    )
+    canonical = tuple(x.clone() for x in layer.kv_cache)
+    state = BatchedPreverifyState(
+        SimpleNamespace(modules=lambda: [layer]),
+        5,
+        torch.device("cuda"),
+        mode,
+        "exact" if mode == "none" else "windowed_three_level",
+        max_num_reqs=size,
+    )
+    table = torch.arange(10 * size, device="cuda", dtype=torch.int32).view(size, 10)
+    model_state = SimpleNamespace(
+        num_accepted_tokens_gpu=torch.arange(size, device="cuda") % 4 + 1,
+        _align_mode=False,
+    )
+    batch = SimpleNamespace(
+        num_reqs=size,
+        req_ids=[f"request_{i}" for i in range(size)],
+        idx_mapping=torch.arange(size, device="cuda", dtype=torch.int32).flip(0),
+    )
+    config = SimpleNamespace(kv_cache_groups=[SimpleNamespace(layer_names=["layer"])])
+    state.begin(model_state, batch, [table], config)
+    initial = state.snapshot()
+    width = state.slots_per_req
+    for i in range(size):
+        bias = (size - 1 - i) % 4
+        slot = i * width + (mode == "none")
+        torch.testing.assert_close(
+            initial["layer"][1][slot], canonical[1][i * 10 + bias], atol=0, rtol=0
+        )
+    state.select([batch.req_ids[-1], batch.req_ids[1]])
+    consumed = torch.tensor([0, 2], device="cuda", dtype=torch.int64)
+    state.advance(consumed)
+    after = state.snapshot()
+    for i in set(range(size)) - {1}:
+        for x, y in zip(initial["layer"], after["layer"], strict=True):
+            torch.testing.assert_close(
+                x[i * width : (i + 1) * width],
+                y[i * width : (i + 1) * width],
+                atol=0,
+                rtol=0,
+            )
+    if mode == "replay_tail":
+        torch.testing.assert_close(
+            initial["layer"][1], after["layer"][1], atol=0, rtol=0
+        )
+    state.invalidate()
+    with pytest.raises(RuntimeError, match="invalid"):
+        state.select(["request_1"])
+    batch.req_ids = [f"new_{i}" for i in range(size)]
+    state.begin(model_state, batch, [table], config)
+    assert state.outer_epoch == 2
+    with pytest.raises(RuntimeError, match="invalid"):
+        state.select(["request_1"])
+    for x, y in zip(layer.kv_cache, canonical, strict=True):
+        torch.testing.assert_close(x, y, atol=0, rtol=0)
 
 
 @pytest.mark.parametrize("accepted", range(5))

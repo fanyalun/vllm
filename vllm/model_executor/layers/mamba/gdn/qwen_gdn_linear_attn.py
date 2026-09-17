@@ -1970,10 +1970,16 @@ def qwen_gdn_mean_forward(
     ):
         raise ValueError("Approximate GDN requires Qwen3.5 layout and preverify mode")
     conv, state = layer.kv_cache
-    if state.shape[0] != 1 or conv.shape[0] != 1 or metadata.num_spec_decodes != 1:
+    private = context.additional_kwargs.get("preverify_gdn_state")
+    batched = private is not None and hasattr(private, "active_count")
+    if not batched and (
+        state.shape[0] != 1 or conv.shape[0] != 1 or metadata.num_spec_decodes != 1
+    ):
         raise ValueError("Mean GDN requires private single-request state")
     tokens = hidden_states.shape[0]
-    if tokens != metadata.num_actual_tokens or not 1 <= tokens <= 5:
+    if tokens != metadata.num_actual_tokens or not (
+        1 <= tokens <= 5 * metadata.num_spec_decodes
+    ):
         raise ValueError("Mean GDN requires 1..5 actual, unpadded query tokens")
     if mode == "input_mean":
         hidden_states = (
@@ -1992,23 +1998,25 @@ def qwen_gdn_mean_projected(layer, qkvz, ba, metadata, mode):
     qkv, z = qkvz.split([qkv_size, layer.value_dim], dim=-1)
     b, a = layer.split_ba(ba)
     conv = conv if is_conv_state_dim_first() else conv.transpose(-1, -2)
-    convolved = (
-        causal_conv1d_update(
-            qkv.transpose(0, 1).unsqueeze(0),
-            conv,
-            layer.conv1d.weight.view(layer.conv_dim, layer.conv_kernel_size),
-            layer.conv1d.bias,
-            layer.activation,
-            conv_state_indices=metadata.spec_state_indices_tensor[:, 0],
-            num_accepted_tokens=metadata.num_accepted_tokens
-            if mode in ("ssm_mean", "replay_tail")
-            else None,
-            null_block_id=-1,
-            validate_data=False,
-        )
-        .squeeze(0)
-        .transpose(0, 1)
+    private = get_forward_context().additional_kwargs.get("preverify_gdn_state")
+    batched = private is not None and hasattr(private, "active_count")
+    convolved = causal_conv1d_update(
+        qkv if batched else qkv.transpose(0, 1).unsqueeze(0),
+        conv,
+        layer.conv1d.weight.view(layer.conv_dim, layer.conv_kernel_size),
+        layer.conv1d.bias,
+        layer.activation,
+        conv_state_indices=metadata.spec_state_indices_tensor[:, 0],
+        num_accepted_tokens=metadata.num_accepted_tokens
+        if mode in ("ssm_mean", "replay_tail")
+        else None,
+        null_block_id=-1,
+        validate_data=False,
+        query_start_loc=metadata.spec_query_start_loc if batched else None,
+        max_query_len=private.width if batched and private is not None else -1,
     )
+    if not batched:
+        convolved = convolved.squeeze(0).transpose(0, 1)
     q, k, v = convolved.split([layer.key_dim, layer.key_dim, layer.value_dim], -1)
     n = qkvz.shape[0]
     update = replay_tail_update if mode == "replay_tail" else mean_state_update

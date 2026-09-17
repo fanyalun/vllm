@@ -187,8 +187,9 @@ class PreverifyState:
                 )
 
     def _begin_batched(self, model_state, input_batch, block_tables, kv_cache_config):
+        batched = getattr(self, "max_num_reqs", 1) > 1
         channel_axis, time_axis = (1, 2) if is_conv_state_dim_first() else (2, 1)
-        rows = []
+        rows: list[tuple] = []
         elements = 0
         for gid, group in enumerate(kv_cache_config.kv_cache_groups):
             for name in group.layer_names:
@@ -223,13 +224,21 @@ class PreverifyState:
                         conv.shape[time_axis],
                         out_conv.shape[time_axis],
                         out_conv.shape[channel_axis],
-                        out_temporal.numel(),
+                        out_temporal[0].numel(),
                         temporal.stride(0),
                     )
                 )
-                elements = max(elements, out_conv.numel(), out_temporal.numel())
+                if batched:
+                    rows[-1] += (
+                        block_tables[gid].stride(0),
+                        out_conv.stride(0),
+                        out_temporal.stride(0),
+                    )
+                elements = max(elements, out_conv[0].numel(), out_temporal[0].numel())
         signature = tuple(rows)
-        if len(rows) != len(self.layers) or input_batch.idx_mapping.numel() != 1:
+        if len(rows) != len(self.layers) or (
+            not batched and input_batch.idx_mapping.numel() != 1
+        ):
             raise ValueError("Private initialization requires all GDN layers and B1")
         cached = self.begin_descriptors.get(self.direction)
         if cached is None or cached[0] != signature:
@@ -248,6 +257,7 @@ class PreverifyState:
             if model_state._align_mode
             else input_batch.idx_mapping,
             model_state._align_mode,
+            batched=batched,
         )
 
     def advance(self, accepted_drafts: int):

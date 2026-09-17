@@ -56,6 +56,95 @@ PREFIX = "model.layers.0.linear_attn"
 EPS = 1e-6
 
 
+@pytest.mark.parametrize("batch", [1, 4, 8, 16, 32])
+@pytest.mark.parametrize(
+    "optimization", ["none", "cumulative_decay", "multi_query", "combined"]
+)
+def test_windowed_batch_matches_independent_slots_and_compacted_graph(
+    batch, optimization
+):
+    from vllm.model_executor.layers.mamba.gdn.replay_tail_update import (
+        windowed_replay_tail_update,
+    )
+
+    torch.manual_seed(42)
+    lengths = [0, 1, 5, 6, 10, 16]
+    starts_cpu = [0]
+    for i in range(batch):
+        starts_cpu.append(starts_cpu[-1] + lengths[i % len(lengths)])
+    t = starts_cpu[-1]
+    q = torch.randn(t, 2, 32, device="cuda", dtype=torch.bfloat16)
+    k = torch.randn_like(q)
+    v = torch.randn(t, 4, 24, device="cuda", dtype=torch.bfloat16)
+    g = torch.full((t, 4), -0.01, device="cuda")
+    beta = torch.full_like(g, 0.1)
+    beta[:, 0] = 0.7
+    g[:, 1] = -0.2
+    pool = torch.randn(batch + 2, 4, 24, 32, device="cuda")
+    initial = pool.clone()
+    slots = torch.arange(batch, 0, -1, device="cuda", dtype=torch.int32)
+    valid = torch.ones(batch + 2, device="cuda", dtype=torch.int32)
+    valid[batch] = 0
+    starts = torch.tensor(starts_cpu, device="cuda", dtype=torch.int32)
+    thresholds = torch.tensor([0.95, 0.36328125], device="cuda")
+    expected = torch.full_like(v, 123)
+    expected_state = initial.clone()
+    for i in range(batch):
+        s, e = starts_cpu[i : i + 2]
+        slot = batch - i
+        windowed_replay_tail_update(
+            q[s:e],
+            k[s:e],
+            v[s:e],
+            g[s:e],
+            beta[s:e],
+            None,
+            None,
+            expected_state[slot : slot + 1],
+            query_start_loc=torch.tensor([0, e - s], device="cuda", dtype=torch.int32),
+            valid=valid[slot : slot + 1],
+            thresholds=thresholds,
+            optimization=optimization,
+            effective_gates=True,
+            out=expected[s:e],
+        )
+    actual = torch.full_like(v, 123)
+
+    def run():
+        windowed_replay_tail_update(
+            q,
+            k,
+            v,
+            g,
+            beta,
+            None,
+            None,
+            pool,
+            query_start_loc=starts,
+            valid=valid,
+            thresholds=thresholds,
+            state_slots=slots,
+            optimization=optimization,
+            effective_gates=True,
+            out=actual,
+        )
+
+    run()
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+    torch.testing.assert_close(pool, expected_state, atol=0, rtol=0)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        run()
+    pool.copy_(initial)
+    graph.replay()
+    torch.testing.assert_close(pool, expected_state, atol=0, rtol=0)
+    # Reusing the graph after slot invalidation must never write any state.
+    valid.zero_()
+    pool.copy_(initial)
+    graph.replay()
+    torch.testing.assert_close(pool, initial, atol=0, rtol=0)
+
+
 @pytest.mark.parametrize("tokens", [0, 1, 5, 6, 10, 16])
 @pytest.mark.parametrize(
     "optimization", ["none", "cumulative_decay", "multi_query", "combined"]

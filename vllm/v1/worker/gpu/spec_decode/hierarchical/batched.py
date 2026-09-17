@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Compact active Gemma MTP requests between hierarchical inner rounds."""
+"""Compact active MTP requests between hierarchical inner rounds."""
 
 from dataclasses import replace
 
@@ -75,6 +75,8 @@ def make_batch(spec, template, rows, positions, tokens):
     metadata = spec.model_state.prepare_attn(
         batch, CUDAGraphMode.NONE, tables, slots, spec.attn_groups, spec.kv_cache_config
     )
+    if spec.state.layers:
+        spec._set_gdn_metadata(batch, width, metadata)
     return batch, metadata, build_slot_mappings_by_layer(slots, spec.kv_cache_config)
 
 
@@ -94,13 +96,23 @@ def propose_gemma(
     if original.has_structured_output_reqs:
         raise ValueError("hierarchical supports unstructured text requests only")
     positions = (original.seq_lens - rejected).cpu().tolist()
+    spec.outer_positions = dict(zip(original.req_ids, positions, strict=True))
     sampled_cpu = sampled.cpu().tolist()
     limit = spec.vllm_config.model_config.max_model_len
     rows = [i for i, count in enumerate(sampled_cpu) if count and positions[i] < limit]
     if not rows:
         return spec.draft_tokens[: original.num_reqs]
     if spec.state.layers:
-        raise ValueError("Batched hierarchical decoding requires attention-only state")
+        initialized = replace(
+            original,
+            req_ids=[original.req_ids[i] for i in rows],
+            idx_mapping=original.idx_mapping[rows],
+            num_reqs=len(rows),
+        )
+        tables = spec.block_tables.gather_block_tables(
+            initialized.idx_mapping, initialized.num_reqs
+        )
+        spec.state.begin(spec.model_state, initialized, tables, spec.kv_cache_config)
     small = spec.small.propose(
         original,
         metadata,
@@ -128,12 +140,15 @@ def propose_gemma(
         matches = tokens[:, 1:].eq(predictions[:, :-1])
         accepted_gpu = matches.int().cumprod(1).sum(1)
         accepted = accepted_gpu.cpu().tolist()
+        if spec.state.layers:
+            spec.state.advance(accepted_gpu)
         margins = (
             spec.last_margins.view(len(rows), width)
             .gather(1, accepted_gpu[:, None])[:, 0]
             .cpu()
             .tolist()
         )
+        corrections = predictions.gather(1, accepted_gpu[:, None])[:, 0].cpu().tolist()
         keep = []
         spec.policy_metrics["batch_round_calls"] += 1
         for local, (row, count, margin) in enumerate(
@@ -145,6 +160,17 @@ def propose_gemma(
             ]
             spec.draft_tokens[row, offset + count] = predictions[local, count]
             counts[row] += count + 1
+            spec.last_trace.append(
+                {
+                    "request_id": original.req_ids[row],
+                    "round": round_idx,
+                    "active_batch": len(rows),
+                    "proposed": width - 1,
+                    "accepted": count,
+                    "position": positions[local],
+                    "correction": corrections[local],
+                }
+            )
             spec.policy_metrics["inner_rounds"] += 1
             spec.policy_metrics["inner_proposed"] += width - 1
             spec.policy_metrics["inner_accepted"] += count

@@ -26,6 +26,58 @@ from benchmarks.hierarchical.summarize_policy_matrix import summarize
 from benchmarks.hierarchical.summarize_replay_tail import summarize as summarize_replay
 
 
+def test_batch_metrics_weight_time_and_exclude_correction_from_acceptance(tmp_path):
+    from benchmarks.hierarchical.summarize_batch import summarize as summarize_batch
+
+    (tmp_path / "timings.json").write_text(
+        json.dumps(
+            [
+                dict(output_tokens=10, elapsed_s=1, repeat_equal=True),
+                dict(output_tokens=20, elapsed_s=4, repeat_equal=True),
+            ]
+        )
+    )
+    (tmp_path / "audit.json").write_text(
+        json.dumps(
+            dict(
+                stages=[],
+                private_bytes=100,
+                instrumentation_equal=True,
+                outer=[
+                    dict(
+                        request_ids=["a", "b"],
+                        scheduled=[4, 4],
+                        sampled=[1, 4],
+                        proposal_cycles=[2, 3],
+                    )
+                ],
+                inner=[
+                    dict(accepted=0, proposed=4, active_batch=2),
+                    dict(accepted=3, proposed=4, active_batch=2),
+                ],
+            )
+        )
+    )
+    result = summarize_batch(tmp_path)
+    assert result["throughput_tokens_s"] == 6
+    assert result["outer_accepted"]["mean"] == 1.5
+    assert result["inner_accepted"]["mean"] == 1.5
+    assert result["outer_matched"][1]["proposal_cycle"] == 3
+
+
+def test_completed_generation_does_not_claim_unobserved_batch_coverage():
+    from benchmarks.hierarchical.run_batch import completion
+
+    result = completion(
+        8,
+        [dict(repeat_equal=True)],
+        dict(inner=[dict(active_batch=4)], instrumentation_equal=True),
+    )
+    assert result["completed"]
+    assert not result["full_batch_observed"]
+    assert result["observed_max_active_batch"] == 4
+
+
 def test_full_acceptance_is_per_nonempty_sequence_not_per_token():
     result = acceptance_stats(
         [

@@ -59,10 +59,27 @@ def _windowed_update(
     EFFECTIVE: tl.constexpr,
     FORCE_FULL: tl.constexpr,
     RECORD: tl.constexpr,
+    SLOTS,
+    NUM_SLOTS: tl.constexpr,
+    BATCHED: tl.constexpr,
 ):
+    if BATCHED:
+        request = tl.program_id(2)
+        slot = tl.load(SLOTS + request).to(tl.int64)
+        if (slot < 0) | (slot >= NUM_SLOTS):
+            return
+        STATE += slot * HV * DV * DK
+        VALID += slot
+        STARTS += request
     start = tl.load(STARTS)
     end = tl.load(STARTS + 1)
-    if (tl.load(VALID) == 0) | (start < 0) | (end <= start) | (end > CAPACITY):
+    if (
+        (tl.load(VALID) == 0)
+        | (start < 0)
+        | (end <= start)
+        | (end > CAPACITY)
+        | (end - start > 16)
+    ):
         return
     head = tl.program_id(0)
     vs = tl.program_id(1) * BV + tl.arange(0, BV)
@@ -200,6 +217,7 @@ def windowed_replay_tail_update(
     query_tile=2,
     num_warps=4,
     out=None,
+    state_slots=None,
 ):
     """Read all actual queries and mutate one private FP32 state in place.
 
@@ -208,14 +226,16 @@ def windowed_replay_tail_update(
     """
     tokens, heads, dk = q.shape
     hv, dv = v.shape[1:]
-    if not 0 <= tokens <= 16 or not 1 <= window_size <= 16 or hv % heads:
+    requests = 1 if state_slots is None else state_slots.numel()
+    if not 0 <= tokens <= 16 * requests or not 1 <= window_size <= 16 or hv % heads:
         raise ValueError("Windowed GDN requires T=0..16 and window=1..16")
     if optimization not in ("none", "cumulative_decay", "multi_query", "combined"):
         raise ValueError("Unknown windowed GDN optimization")
     if k.shape != q.shape or a.shape != (tokens, hv) or b.shape != a.shape:
         raise ValueError("Windowed GDN requires matching Q/K and per-token gates")
     if (
-        state.shape != (1, hv, dv, dk)
+        state.shape[1:] != (hv, dv, dk)
+        or (state_slots is None and state.shape[0] != 1)
         or state.dtype != torch.float32
         or not state.is_contiguous()
     ):
@@ -224,9 +244,9 @@ def windowed_replay_tail_update(
         x.stride(1) != x.shape[2] for x in (q, k, v)
     ):
         raise ValueError("Windowed GDN requires packed head dimensions")
-    if query_start_loc.shape != (2,) or query_start_loc.dtype != torch.int32:
+    if query_start_loc.shape != (requests + 1,) or query_start_loc.dtype != torch.int32:
         raise ValueError("Expected two int32 query offsets")
-    if valid.numel() != 1 or valid.dtype not in (torch.bool, torch.int32):
+    if valid.numel() != state.shape[0] or valid.dtype not in (torch.bool, torch.int32):
         raise ValueError("Expected one device validity flag")
     if thresholds.shape != (2,) or thresholds.dtype != torch.float32:
         raise ValueError("Expected two FP32 thresholds")
@@ -234,14 +254,22 @@ def windowed_replay_tail_update(
         action_counts.shape != (8,) or action_counts.dtype != torch.int64
     ):
         raise ValueError("Expected eight int64 audit counters")
-    inputs = (q, k, v, a, b, query_start_loc, valid, thresholds)
+    inputs = [q, k, v, a, b, query_start_loc, valid, thresholds]
+    if state_slots is not None:
+        if (
+            state_slots.dtype != torch.int32
+            or state_slots.ndim != 1
+            or not state_slots.is_contiguous()
+        ):
+            raise ValueError("Expected unique int32 private slot indices")
+        inputs.append(state_slots)
     if not state.is_cuda or any(x.device != state.device for x in inputs):
         raise ValueError("Windowed GDN inputs must share a CUDA device")
     if out is None:
         out = torch.empty(v.shape, dtype=v.dtype, device=v.device)
     if out.shape != v.shape or not out.is_contiguous() or out.device != v.device:
         raise ValueError("Output must be contiguous and match values")
-    _windowed_update[(hv, triton.cdiv(dv, value_tile))](
+    _windowed_update[(hv, triton.cdiv(dv, value_tile), requests)](
         q,
         k,
         v,
@@ -274,6 +302,9 @@ def windowed_replay_tail_update(
         effective_gates,
         force_full,
         action_counts is not None,
+        state_slots,
+        state.shape[0],
+        state_slots is not None,
         num_warps=num_warps,
     )
     return out
@@ -497,16 +528,29 @@ def _advance_conv_many(
     CS: tl.constexpr,
     TS: tl.constexpr,
     BT: tl.constexpr,
+    SLOTS,
+    STRIDE: tl.constexpr,
+    BATCHED: tl.constexpr,
 ):
     conv = tl.load(POINTERS + tl.program_id(1)).to(tl.pointer_type(tl.bfloat16))
+    if BATCHED:
+        row = tl.program_id(2)
+        conv += tl.load(SLOTS + row).to(tl.int64) * STRIDE
+        accepted = tl.load(accepted + row)
     _advance_conv(conv, accepted, CHANNELS, LENGTH, CS, TS, 32, BT)
 
 
-def advance_replay_tail_convs(pointers, template, accepted, dim_first):
+def advance_replay_tail_convs(pointers, template, accepted, dim_first, slots=None):
     """Advance identically laid out private BF16 histories in one launch."""
     channel_axis, time_axis = (1, 2) if dim_first else (2, 1)
     channels, length = template.shape[channel_axis], template.shape[time_axis]
-    _advance_conv_many[(triton.cdiv(channels, 32), pointers.numel())](
+    _advance_conv_many[
+        (
+            triton.cdiv(channels, 32),
+            pointers.numel(),
+            1 if slots is None else slots.numel(),
+        )
+    ](
         pointers,
         accepted,
         channels,
@@ -514,21 +558,35 @@ def advance_replay_tail_convs(pointers, template, accepted, dim_first):
         template.stride(channel_axis),
         template.stride(time_axis),
         triton.next_power_of_2(length),
+        slots,
+        template.stride(0),
+        slots is not None,
         num_warps=4,
     )
 
 
 @triton.jit
 def _begin_private_states(
-    DESCRIPTORS, REQUEST, ACCEPTED, SOURCE, ALIGN: tl.constexpr, BLOCK: tl.constexpr
+    DESCRIPTORS,
+    REQUEST,
+    ACCEPTED,
+    SOURCE,
+    ALIGN: tl.constexpr,
+    BLOCK: tl.constexpr,
+    BATCHED: tl.constexpr,
 ):
-    row = DESCRIPTORS + tl.program_id(1) * 15
+    row = DESCRIPTORS + tl.program_id(1) * (18 if BATCHED else 15)
     conv = tl.load(row).to(tl.pointer_type(tl.bfloat16))
     state = tl.load(row + 1).to(tl.pointer_type(tl.float32))
     out_conv = tl.load(row + 2).to(tl.pointer_type(tl.bfloat16))
     out_state = tl.load(row + 3).to(tl.pointer_type(tl.float32))
     table = tl.load(row + 4).to(tl.pointer_type(tl.int32))
-    request = tl.load(REQUEST)
+    local = tl.program_id(2) if BATCHED else 0
+    request = tl.load(REQUEST + local)
+    if BATCHED:
+        table += local * tl.load(row + 15)
+        out_conv += local * tl.load(row + 16)
+        out_state += local * tl.load(row + 17)
     bias = tl.load(ACCEPTED + request).to(tl.int64) - 1
     source = tl.load(SOURCE + request).to(tl.int64) if ALIGN else 0
     conv_index = tl.load(table + source).to(tl.int64)
@@ -565,14 +623,23 @@ def _begin_private_states(
     )
 
 
-def begin_replay_tail_states(descriptors, elements, request, accepted, source, align):
+def begin_replay_tail_states(
+    descriptors, elements, request, accepted, source, align, batched=False
+):
     """Copy canonical accepted states to disjoint private buffers."""
-    _begin_private_states[(triton.cdiv(elements, 1024), descriptors.shape[0])](
+    _begin_private_states[
+        (
+            triton.cdiv(elements, 1024),
+            descriptors.shape[0],
+            request.numel() if batched else 1,
+        )
+    ](
         descriptors,
         request,
         accepted,
         source,
         align,
         1024,
+        batched,
         num_warps=4,
     )
