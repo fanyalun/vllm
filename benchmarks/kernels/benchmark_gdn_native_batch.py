@@ -30,6 +30,7 @@ def main():
     parser.add_argument("--repeat", type=int, default=100)
     parser.add_argument("--warmup", type=int, default=30)
     parser.add_argument("--wait-for-idle", action="store_true")
+    parser.add_argument("--forced-paths", action="store_true")
     args = parser.parse_args()
     if args.wait_for_idle:
         gpu = os.environ.get("CUDA_VISIBLE_DEVICES")
@@ -191,11 +192,34 @@ def probe(batch, layer, args, saved, flush, rows):
     thresholds[1] = 0.36328125
     del exact_output, exact_tail
     cases = ["v0", "v2", "v3", "v2_core", "v3_core"]
+    if args.forced_paths:
+        cases = ["v0", "v2_full", "v2_decay", "v2_skip"]
     if layer % 2:
         cases.reverse()
     for case in cases:
+        action = {"v2_full": 0, "v2_decay": 1, "v2_skip": 2}.get(case)
+        if action is not None:
+            thresholds.copy_(
+                torch.tensor(
+                    [
+                        float("-inf") if action == 2 else float("inf"),
+                        0.0 if action == 0 else float("inf"),
+                    ],
+                    device="cuda",
+                )
+            )
         reset()
         run(case)
+        if action == 2:
+            torch.testing.assert_close(state, initial, atol=0, rtol=0)
+        if action == 1:
+            decay_reference = initial.clone()
+            gates = -al.float().exp() * torch.nn.functional.softplus(
+                a0.float() + dt.float(), threshold=20
+            )
+            for gate in gates:
+                decay_reference *= gate.exp()[None, :, None, None]
+            torch.testing.assert_close(state, decay_reference, atol=1e-3, rtol=1e-3)
         result = core if case.endswith("_core") else out
         expected = result.clone()
         tail = native.clone() if case == "v0" else state.clone()
@@ -236,6 +260,11 @@ def probe(batch, layer, args, saved, flush, rows):
         if case != "v0":
             reset()
             run(case, counts)
+        if action is not None:
+            recorded = counts.tolist()
+            assert recorded[action] == batch * t * hv
+            assert sum(recorded[:3]) == recorded[action]
+            assert recorded[6] == (batch * hv if action == 2 else 0)
         rows.append(
             dict(
                 batch=batch,
