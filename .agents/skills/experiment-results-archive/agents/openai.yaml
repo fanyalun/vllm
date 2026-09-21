@@ -1,0 +1,4 @@
+interface:
+  display_name: "实验结果分类归档"
+  short_description: "按优化组合、模型和参数归档实验结果，保留指标口径、来源证据并校验迁移"
+  default_prompt: "使用 $experiment-results-archive 整理实验结果，按优化类别、组合、模型和参数归档，生成索引并校验来源。"
