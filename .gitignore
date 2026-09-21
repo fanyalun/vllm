@@ -233,6 +233,9 @@ hip_compat.h
 # Benchmark dataset
 benchmarks/**/*.json
 
+# Local benchmark archives; add selected lightweight reports explicitly.
+/benchmark_results/
+
 # Linting
 actionlint
 shellcheck*/
