@@ -32,6 +32,35 @@ def test_moe_skip_scratch_avoids_accepted_temporal_state() -> None:
     assert torch.all(scratch != source + accepted_bias)
 
 
+def test_moe_skip_scratch_padding_uses_null_block_after_batch_shrinks() -> None:
+    state = object.__new__(MambaHybridModelState)
+    state.device = torch.device("cpu")
+    state.max_num_reqs = 4
+    state.recoverssm = None
+    state.cache_config = SimpleNamespace(mamba_cache_mode="none")
+    state._align_mode = False
+    state._moe_skip_state_indices = None
+    state._get_mamba_group_info = Mock(
+        return_value=([0], SimpleNamespace(num_speculative_blocks=1))
+    )
+    state._ensure_align_ctx = Mock(return_value=Mock())
+    state.num_accepted_tokens_gpu = torch.ones(4, dtype=torch.int32)
+    state._moe_skip_source_idx_gpu = torch.empty(4, dtype=torch.int32)
+    state._moe_skip_token_bias_gpu = torch.empty(4, dtype=torch.int32)
+    state._moe_skip_scratch_idx_gpu = torch.empty(4, dtype=torch.int32)
+    config = Mock()
+    indices = state.moe_skip_state_index_buffers(config)[0]
+    assert indices.tolist() == [0, 0, 0, 0]
+    indices.fill_(99)
+    batch = SimpleNamespace(num_reqs=3, idx_mapping=torch.arange(3))
+    blocks = (torch.tensor([[1, 2], [3, 4], [5, 6], [7, 8]]),)
+
+    updated = state.prepare_moe_skip_scratch(batch, blocks, config)[0]
+
+    assert updated.data_ptr() == indices.data_ptr()
+    assert updated.tolist() == [2, 4, 6, 0]
+
+
 def test_prepare_attn_forwards_positions(monkeypatch: pytest.MonkeyPatch) -> None:
     state = object.__new__(MambaHybridModelState)
     state.vllm_config = SimpleNamespace(num_speculative_tokens=0)

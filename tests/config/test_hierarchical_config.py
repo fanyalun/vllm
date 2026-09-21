@@ -61,6 +61,45 @@ def test_gemma4_uses_shared_moe_preverification_with_full_outer_capacity(monkeyp
     assert config.moe_skip_min_weight == 0.125
 
 
+@pytest.mark.parametrize("policy", ["batch_top_half", "batch_max_gap"])
+def test_preverify_revalidates_resolved_batch_policy_without_top_h_conflict(
+    monkeypatch, policy
+):
+    from vllm.v1.worker.gpu import spec_decode
+    from vllm.v1.worker.gpu.spec_decode.hierarchical import speculator
+
+    config = make_config(monkeypatch, moe_skip_batch_policy=policy)
+    target = config.target_model_config
+    assert target is not None
+    target.enable_prompt_embeds = False
+    target.multimodal_config = None
+    runtime = SimpleNamespace(
+        speculative_config=config,
+        model_config=target,
+        scheduler_config=SimpleNamespace(max_num_seqs=1, async_scheduling=False),
+        cache_config=SimpleNamespace(enable_prefix_caching=False),
+        lora_config=None,
+    )
+    monkeypatch.setattr(spec_decode, "init_speculator", lambda *args: None)
+    derived = []
+
+    class StopBeforeDeviceAllocation(Exception):
+        pass
+
+    def capture_config(runtime, device):
+        derived.append(runtime.speculative_config)
+        raise StopBeforeDeviceAllocation
+
+    monkeypatch.setattr(speculator, "MoeSkipSpeculator", capture_config)
+    with pytest.raises(StopBeforeDeviceAllocation):
+        speculator.HierarchicalSpeculator(runtime, None)
+    assert derived[0].method == "moe_skip"
+    assert derived[0].moe_skip_batch_policy == policy
+    assert derived[0].moe_skip_top_h == 8
+    assert derived[0].moe_skip_min_weight is None
+    assert config.method == "hierarchical"
+
+
 def test_graph_hash_distinguishes_inner_method_depth_rounds_and_top_h(monkeypatch):
     configs = [
         make_config(monkeypatch, **overrides)
@@ -71,6 +110,8 @@ def test_graph_hash_distinguishes_inner_method_depth_rounds_and_top_h(monkeypatc
             {"inner_num_rounds": 2},
             {"moe_skip_top_h": 2},
             {"moe_skip_weight_mode": "renormalize"},
+            {"moe_skip_batch_policy": "batch_top_half"},
+            {"moe_skip_batch_policy": "batch_max_gap"},
             {"preverify_gdn_mode": "ssm_mean"},
             {"preverify_gdn_mode": "input_mean"},
             {"preverify_gdn_mode": "replay_tail"},

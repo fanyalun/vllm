@@ -17,6 +17,7 @@ from vllm.v1.attention.backends.short_conv_attn import (
     PleShortConvAttentionMetadataBuilder,
     ShortConvAttentionMetadataBuilder,
 )
+from vllm.v1.attention.backends.utils import NULL_BLOCK_ID
 from vllm.v1.core.sched.output import NewRequestData
 from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec
 from vllm.v1.utils import CpuGpuBuffer
@@ -293,7 +294,7 @@ class MambaHybridModelState(DefaultModelState):
         state_indices_by_group = self.moe_skip_state_index_buffers(kv_cache_config)
         assert self._moe_skip_state_indices is not None
         state_indices = self._moe_skip_state_indices
-        state_indices[:, num_reqs:].fill_(-1)
+        state_indices[:, num_reqs:].fill_(NULL_BLOCK_ID)
         rows = torch.arange(num_reqs, dtype=torch.int64, device=self.device)
         cols = self._moe_skip_scratch_idx_gpu[input_batch.idx_mapping].to(torch.int64)
         for group_idx, group_id in enumerate(mamba_group_ids):
@@ -311,7 +312,7 @@ class MambaHybridModelState(DefaultModelState):
         ] != len(mamba_group_ids):
             self._moe_skip_state_indices = torch.full(
                 (len(mamba_group_ids), self.max_num_reqs),
-                -1,
+                NULL_BLOCK_ID,
                 dtype=torch.int32,
                 device=self.device,
             )

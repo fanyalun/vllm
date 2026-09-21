@@ -41,6 +41,11 @@ def main():
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-h", type=int, default=4)
+    parser.add_argument("--batch-policy", choices=("batch_top_half", "batch_max_gap"))
+    parser.add_argument("--batch-size", type=int, choices=(1, 4), default=1)
+    parser.add_argument("--draft-tokens", type=int)
+    parser.add_argument("--inner-rounds", type=int, default=4)
+    parser.add_argument("--ar-reference", type=Path)
     parser.add_argument("--eager", action="store_true")
     parser.add_argument("--device", default="0")
     parser.add_argument("--log")
@@ -52,6 +57,10 @@ def main():
     args = parser.parse_args()
     if args.gdn_mode != "none" and args.method != "hierarchical":
         parser.error("--gdn-mode requires --method hierarchical")
+    if args.batch_policy and args.method not in ("moe_skip", "hierarchical"):
+        parser.error("--batch-policy requires moe_skip or hierarchical")
+    if args.num_samples % args.batch_size:
+        parser.error("--num-samples must be divisible by --batch-size")
     if args.log:
         with open(args.log, "w") as log_file:
             os.dup2(log_file.fileno(), 1)
@@ -76,16 +85,27 @@ def main():
         config = {
             "method": args.method,
             "num_speculative_tokens": (
-                20 if args.method in ("moe_skip", "hierarchical") else 4
+                args.draft_tokens
+                if args.draft_tokens is not None
+                else (
+                    args.inner_rounds * 5
+                    if args.method == "hierarchical"
+                    else 20
+                    if args.method == "moe_skip"
+                    else 4
+                )
             ),
             "draft_sample_method": "greedy",
         }
         if args.method in ("moe_skip", "hierarchical"):
-            config["moe_skip_top_h"] = args.top_h
+            if args.batch_policy:
+                config["moe_skip_batch_policy"] = args.batch_policy
+            else:
+                config["moe_skip_top_h"] = args.top_h
         if args.method == "hierarchical":
             config.update(
                 inner_method=args.inner_method,
-                inner_num_rounds=4,
+                inner_num_rounds=args.inner_rounds,
                 inner_num_speculative_tokens=4,
                 preverify_gdn_mode=args.gdn_mode,
             )
@@ -106,7 +126,7 @@ def main():
         tensor_parallel_size=1,
         enforce_eager=args.eager,
         max_model_len=1024,
-        max_num_seqs=1,
+        max_num_seqs=args.batch_size,
         max_num_batched_tokens=1024,
         gpu_memory_utilization=0.95,
         enable_prefix_caching=False,
@@ -117,12 +137,14 @@ def main():
         per_request_spec_decode_metrics="detailed" if config else "none",
         disable_log_stats=True,
         seed=20260908,
+        kernel_config={"moe_backend": "triton"},
     )
     result = {
         "args": vars(args),
         "speculative_config": config,
         "init_seconds": time.perf_counter() - started,
         "outputs": [],
+        "batches": [],
     }
     params = SamplingParams(
         temperature=args.temperature,
@@ -131,44 +153,104 @@ def main():
         ignore_eos=True,
         seed=20260908,
     )
-    llm.generate([samples[0]["prompt"]], params, use_tqdm=False)
+    llm.generate(
+        [s["prompt"] for s in samples[: args.batch_size]], params, use_tqdm=False
+    )
     print("WARMUP_COMPLETE", flush=True)
     for repeat in range(args.repeats):
-        for index, sample in enumerate(samples):
-            digest = hashlib.sha256(sample["prompt"].encode()).hexdigest()
-            assert digest == sample["prompt_sha256"]
-            params.seed = 20260908 + index
+        for start in range(0, len(samples), args.batch_size):
+            group = samples[start : start + args.batch_size]
+            group_params = [
+                SamplingParams(
+                    temperature=args.temperature,
+                    top_p=0.95 if args.temperature else 1.0,
+                    max_tokens=args.max_tokens,
+                    ignore_eos=True,
+                    seed=20260908 + start + i,
+                )
+                for i in range(len(group))
+            ]
             started = time.perf_counter()
-            request = llm.generate([sample["prompt"]], params, use_tqdm=False)[0]
-            elapsed = time.perf_counter() - started
-            tokens = list(request.outputs[0].token_ids)
-            assert len(tokens) == args.max_tokens
-            spec_metrics = getattr(request.outputs[0], "spec_decode_metrics", None)
-            if dataclasses.is_dataclass(spec_metrics):
-                spec_metrics = dataclasses.asdict(spec_metrics)
-            timing = request.metrics
-            ttft = decode_seconds = None
-            if timing is not None and timing.first_token_ts > 0:
-                ttft = timing.first_token_latency
-                decode_seconds = timing.last_token_ts - timing.first_token_ts
-            result["outputs"].append(
-                {
-                    "repeat": repeat,
-                    "sample_index": index,
-                    "prompt_sha256": digest,
-                    "token_ids": tokens,
-                    "e2e_seconds": elapsed,
-                    "ttft_seconds": ttft,
-                    "decode_seconds": decode_seconds,
-                    "seed": params.seed,
-                    "spec_decode_metrics": spec_metrics,
-                }
+            requests = llm.generate(
+                [s["prompt"] for s in group], group_params, use_tqdm=False
             )
+            elapsed = time.perf_counter() - started
+            result["batches"].append(
+                dict(
+                    repeat=repeat,
+                    start=start,
+                    elapsed_seconds=elapsed,
+                    returned_tokens=sum(len(r.outputs[0].token_ids) for r in requests),
+                )
+            )
+            for offset, (sample, request) in enumerate(zip(group, requests)):
+                index = start + offset
+                digest = hashlib.sha256(sample["prompt"].encode()).hexdigest()
+                assert digest == sample["prompt_sha256"]
+                tokens = list(request.outputs[0].token_ids)
+                assert len(tokens) == args.max_tokens
+                spec_metrics = getattr(request.outputs[0], "spec_decode_metrics", None)
+                if dataclasses.is_dataclass(spec_metrics):
+                    spec_metrics = dataclasses.asdict(spec_metrics)
+                timing = request.metrics
+                ttft = decode_seconds = None
+                if timing is not None and timing.first_token_ts > 0:
+                    ttft = timing.first_token_latency
+                    decode_seconds = timing.last_token_ts - timing.first_token_ts
+                result["outputs"].append(
+                    {
+                        "repeat": repeat,
+                        "sample_index": index,
+                        "prompt_sha256": digest,
+                        "token_ids": tokens,
+                        "e2e_seconds": elapsed if args.batch_size == 1 else None,
+                        "batch_start": start,
+                        "ttft_seconds": ttft,
+                        "decode_seconds": decode_seconds,
+                        "seed": 20260908 + index,
+                        "spec_decode_metrics": spec_metrics,
+                    }
+                )
             output.write_text(json.dumps(result, indent=2, default=str) + "\n")
             print(
-                f"SAMPLE_COMPLETE repeat={repeat} index={index} seconds={elapsed:.3f}",
+                f"BATCH_COMPLETE repeat={repeat} start={start} seconds={elapsed:.3f}",
                 flush=True,
             )
+    result["returned_token_throughput"] = sum(
+        b["returned_tokens"] for b in result["batches"]
+    ) / sum(b["elapsed_seconds"] for b in result["batches"])
+    metrics = [
+        r["spec_decode_metrics"]
+        for r in result["outputs"]
+        if r["spec_decode_metrics"] is not None
+    ]
+    if metrics:
+        drafted = sum(m["num_draft_tokens"] for m in metrics)
+        accepted = sum(
+            sum(i * n for i, n in enumerate(m["histogram"])) for m in metrics
+        )
+        steps = sum(sum(m["histogram"]) for m in metrics)
+        result["acceptance"] = dict(
+            drafted=drafted,
+            accepted=accepted,
+            steps=steps,
+            acceptance_rate=accepted / drafted if drafted else None,
+            mean_acceptance_length=1 + accepted / steps if steps else None,
+        )
+    if args.ar_reference:
+        ar = json.loads(args.ar_reference.read_text())
+        assert ar.get("complete") and ar["speculative_config"] is None
+        assert ar["args"]["batch_size"] == args.batch_size
+        reference = {(r["repeat"], r["sample_index"]): r for r in ar["outputs"]}
+        parity = []
+        for row in result["outputs"]:
+            ref = reference[row["repeat"], row["sample_index"]]
+            assert row["prompt_sha256"] == ref["prompt_sha256"]
+            assert row["seed"] == ref["seed"]
+            parity.append(row["token_ids"] == ref["token_ids"])
+        result["ar_parity"] = dict(matched=sum(parity), total=len(parity))
+    result["complete"] = True
+    output.write_text(json.dumps(result, indent=2, default=str) + "\n")
 
 
 if __name__ == "__main__":

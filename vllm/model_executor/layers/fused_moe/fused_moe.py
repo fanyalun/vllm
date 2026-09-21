@@ -1557,9 +1557,9 @@ def _prepare_expert_assignment(
     """Prepare expert assignments for the aligned and low-latency Triton paths."""
     from vllm.forward_context import get_forward_context, is_forward_context_available
 
-    if (
-        is_forward_context_available()
-        and get_forward_context().additional_kwargs.get("routing_min_weight")
+    if is_forward_context_available() and (
+        get_forward_context().additional_kwargs.get("routing_min_weight") is not None
+        or get_forward_context().additional_kwargs.get("routing_batch_policy")
         is not None
     ):
         from .threshold_assignment import threshold_expert_assignment

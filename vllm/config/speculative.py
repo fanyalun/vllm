@@ -606,6 +606,9 @@ class SpeculativeConfig:
     threshold. The target keeps its configured routing top-k.
     """
 
+    moe_skip_batch_policy: Literal["batch_top_half", "batch_max_gap"] | None = None
+    """Batch-wide expert pruning with a protected union of per-token Top-2."""
+
     moe_skip_min_weight: float | None = Field(default=None, gt=0, le=1)
     """Retain native top-k experts with normalized gate probability >= this value.
 
@@ -717,6 +720,7 @@ class SpeculativeConfig:
             inner_method=None,
             moe_skip_top_h=None,
             moe_skip_min_weight=None,
+            moe_skip_batch_policy=None,
             moe_skip_weight_mode="preserve",
             preverify_gdn_mode="none",
             preverify_gdn_group_mode="none",
@@ -749,6 +753,7 @@ class SpeculativeConfig:
             inner.num_speculative_tokens = self.inner_num_speculative_tokens
             inner.moe_skip_top_h = None
             inner.moe_skip_min_weight = None
+            inner.moe_skip_batch_policy = None
             inner.moe_skip_weight_mode = "preserve"
             factors.extend(
                 (
@@ -758,6 +763,7 @@ class SpeculativeConfig:
                     self.inner_num_rounds,
                     self.moe_skip_top_h,
                     self.moe_skip_min_weight,
+                    self.moe_skip_batch_policy,
                     self.moe_skip_weight_mode,
                     self.preverify_gdn_mode,
                     self.preverify_gdn_group_mode,
@@ -810,6 +816,7 @@ class SpeculativeConfig:
                     self.num_speculative_tokens,
                     self.moe_skip_top_h,
                     self.moe_skip_min_weight,
+                    self.moe_skip_batch_policy,
                     self.moe_skip_weight_mode,
                 )
             )
@@ -1289,6 +1296,8 @@ class SpeculativeConfig:
             raise ValueError("moe_skip_top_h is only supported with method='moe_skip'")
         if self.method != "moe_skip" and self.moe_skip_min_weight is not None:
             raise ValueError("moe_skip_min_weight requires moe_skip or hierarchical")
+        if self.method != "moe_skip" and self.moe_skip_batch_policy is not None:
+            raise ValueError("moe_skip_batch_policy requires moe_skip or hierarchical")
         if self.method != "moe_skip" and self.moe_skip_weight_mode != "preserve":
             raise ValueError("moe_skip_weight_mode requires moe_skip or hierarchical")
 
@@ -1839,8 +1848,25 @@ class SpeculativeConfig:
         if is_gemma4 and not getattr(text_config, "num_experts", 0):
             raise ValueError("Gemma4 method='moe_skip' requires routed experts")
 
+        if self.moe_skip_batch_policy is not None:
+            import torch
+
+            if not is_qwen:
+                raise ValueError("moe_skip_batch_policy requires Qwen3.6 MoE")
+            if getattr(self.target_model_config, "quantization", None) is not None:
+                raise ValueError("moe_skip_batch_policy requires unquantized weights")
+            dtype = getattr(self.target_model_config, "dtype", torch.bfloat16)
+            if dtype != torch.bfloat16:
+                raise ValueError("moe_skip_batch_policy requires BF16")
+            if self.moe_skip_top_h is not None or self.moe_skip_min_weight is not None:
+                raise ValueError("moe_skip_batch_policy excludes top-h and min-weight")
+            if self.moe_skip_weight_mode != "preserve":
+                raise ValueError("moe_skip_batch_policy requires preserve weights")
+            if target_top_k < 2:
+                raise ValueError("moe_skip_batch_policy requires native top-k >= 2")
+
         if self.moe_skip_top_h is None:
-            if self.moe_skip_min_weight is None:
+            if self.moe_skip_min_weight is None and self.moe_skip_batch_policy is None:
                 self.moe_skip_min_weight = 0.125
             self.moe_skip_top_h = target_top_k
         if self.moe_skip_min_weight is not None and self.moe_skip_top_h != target_top_k:
@@ -2075,6 +2101,11 @@ class SpeculativeConfig:
 
     @model_validator(mode="after")
     def _verify_args(self) -> Self:
+        if (
+            self.method not in ("moe_skip", "hierarchical")
+            and self.moe_skip_batch_policy is not None
+        ):
+            raise ValueError("moe_skip_batch_policy requires moe_skip or hierarchical")
         if self.tensor_parallel_size is not None:
             raise ValueError(
                 "'tensor_parallel_size' is not a valid argument in the "

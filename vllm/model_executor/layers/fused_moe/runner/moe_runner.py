@@ -613,7 +613,11 @@ class MoERunner(MoERunnerInterface):
 
         if self.routed_experts.quant_method.is_monolithic:
             routing_top_k = get_forward_context().additional_kwargs.get("routing_top_k")
-            if routing_top_k is not None:
+            if (
+                routing_top_k is not None
+                or get_forward_context().additional_kwargs.get("routing_batch_policy")
+                is not None
+            ):
                 raise ValueError(
                     "Call-level routing_top_k requires a modular FusedMoE backend"
                 )
@@ -628,6 +632,8 @@ class MoERunner(MoERunnerInterface):
             if (
                 get_forward_context().additional_kwargs.get("routing_min_weight")
                 is not None
+                or get_forward_context().additional_kwargs.get("routing_batch_policy")
+                is not None
             ):
                 from vllm.model_executor.layers.fused_moe.experts.triton_moe import (
                     TritonExperts,
@@ -638,6 +644,25 @@ class MoERunner(MoERunnerInterface):
                     raise ValueError(
                         "MoE-Skip threshold routing requires TritonExperts"
                     )
+                if get_forward_context().additional_kwargs.get("routing_batch_policy"):
+                    from vllm.model_executor.layers.fused_moe.router import (
+                        fused_topk_router,
+                    )
+
+                    if (
+                        type(self.router) is not fused_topk_router.FusedTopKRouter
+                        or not self.router.renormalize
+                        or self.router.scoring_func != "softmax"
+                        or hidden_states.dtype != torch.bfloat16
+                        or not hidden_states.is_cuda
+                        or kernel.fused_experts.quant_config.quant_dtype is not None
+                        or kernel.fused_experts.quant_config.weight_quant_dtype
+                        is not None
+                    ):
+                        raise ValueError(
+                            "Batch routing requires unquantized CUDA BF16 "
+                            "normalized softmax FusedTopKRouter"
+                        )
             topk_weights, topk_ids = self.router.select_experts(
                 hidden_states=hidden_states,
                 router_logits=router_logits,

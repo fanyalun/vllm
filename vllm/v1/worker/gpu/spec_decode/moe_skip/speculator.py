@@ -72,6 +72,7 @@ class MoeSkipSpeculator(BaseSpeculator):
         assert speculative_config.moe_skip_top_h is not None
         self.top_h = speculative_config.moe_skip_top_h
         self.min_weight = speculative_config.moe_skip_min_weight
+        self.batch_policy = speculative_config.moe_skip_batch_policy
         self.preserve_weights = speculative_config.moe_skip_weight_mode == "preserve"
         self.num_speculative_steps = speculative_config.num_speculative_tokens
 
@@ -356,17 +357,13 @@ class MoeSkipSpeculator(BaseSpeculator):
         num_tokens_across_dp: torch.Tensor | None,
         cudagraph_runtime_mode: CUDAGraphMode,
     ) -> torch.Tensor:
-        inputs_embeds = self.model.embed_input_ids(
-            self.input_buffers.input_ids[:num_tokens]
-        )
         positions = self.input_buffers.positions[:num_tokens]
         if self.position_dims > 1:
             self.mrope_positions[:, :num_tokens].copy_(positions.unsqueeze(0))
             positions = self.mrope_positions[:, :num_tokens]
         model_inputs = {
-            "input_ids": None,
+            "input_ids": self.input_buffers.input_ids[:num_tokens],
             "positions": positions,
-            "inputs_embeds": inputs_embeds,
         }
         with set_forward_context(
             attn_metadata,
@@ -380,6 +377,7 @@ class MoeSkipSpeculator(BaseSpeculator):
             additional_forward_kwargs={
                 "routing_top_k": self.top_h,
                 "routing_min_weight": self.min_weight,
+                "routing_batch_policy": self.batch_policy,
                 "routing_preserve_weights": self.preserve_weights,
             },
         ):
@@ -465,10 +463,12 @@ class MoeSkipSpeculator(BaseSpeculator):
             return self.draft_tokens[: input_batch.num_reqs]
 
         num_reqs = input_batch.num_reqs
+        seq_lens = input_batch.seq_lens[:num_reqs]
+        num_rejected = num_rejected[:num_reqs]
         self.idx_mapping[:num_reqs].copy_(input_batch.idx_mapping)
         self.idx_mapping[num_reqs:].zero_()
         self.initial_tokens[:num_reqs].copy_(last_sampled[input_batch.idx_mapping, 0])
-        self.input_buffers.positions[:num_reqs].copy_(input_batch.seq_lens)
+        self.input_buffers.positions[:num_reqs].copy_(seq_lens)
         self.input_buffers.positions[:num_reqs].sub_(num_rejected)
         self.input_buffers.positions[:num_reqs].sub_(1)
         self.sample_src_positions[:num_reqs].copy_(
@@ -476,7 +476,7 @@ class MoeSkipSpeculator(BaseSpeculator):
         )
         prepare_decode_inputs(
             self.initial_tokens[:num_reqs],
-            input_batch.seq_lens,
+            seq_lens,
             num_rejected,
             self.input_buffers,
             self.sample_src_positions,

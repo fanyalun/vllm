@@ -212,12 +212,33 @@ class BaseRouter(FusedMoERouter):
             return None
         return get_forward_context().additional_kwargs.get("routing_min_weight")
 
+    def get_routing_batch_policy(self) -> str | None:
+        if not is_forward_context_available():
+            return None
+        return get_forward_context().additional_kwargs.get("routing_batch_policy")
+
     def select_routing_top_k(
         self,
         weights: torch.Tensor,
         ids: torch.Tensor,
         router_logits: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        batch_policy = self.get_routing_batch_policy()
+        if batch_policy is not None:
+            from .batch_expert_selection import select_batch_experts
+
+            if self.get_routing_min_weight() is not None:
+                raise ValueError("Batch routing excludes threshold routing")
+            if weights.shape[1] != self.top_k:
+                raise ValueError("Batch routing requires native top-k")
+            padding = get_forward_context().is_padding
+            return select_batch_experts(
+                weights,
+                ids,
+                router_logits,
+                batch_policy,
+                None if padding is None else padding[: weights.shape[0]],
+            )
         threshold = self.get_routing_min_weight()
         if threshold is not None:
             from .weight_threshold import threshold_experts

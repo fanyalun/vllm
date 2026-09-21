@@ -56,6 +56,7 @@ def test_moe_skip_defaults_and_has_no_draft_model():
     assert config.moe_skip_top_h == 8
     assert config.moe_skip_min_weight == 0.125
     assert config.moe_skip_weight_mode == "preserve"
+    assert config.moe_skip_batch_policy is None
     assert config.model is None
     assert config.draft_model_config is None
     assert config.draft_parallel_config is None
@@ -78,6 +79,45 @@ def test_moe_skip_rejects_invalid_top_h():
         _make_config(moe_skip_top_h=9)
     with pytest.raises(ValueError, match="num_experts_per_tok"):
         _make_config(target_model_config=_target_config(top_k=0))
+
+
+@pytest.mark.parametrize("policy", ["batch_top_half", "batch_max_gap"])
+def test_batch_policy_disables_default_threshold_and_has_distinct_hash(policy):
+    config = EngineArgs(
+        spec_method="moe_skip", spec_tokens=4, moe_skip_batch_policy=policy
+    ).create_speculative_config(_target_config(), ParallelConfig())
+    assert config is not None
+    assert config.moe_skip_min_weight is None
+    assert config.moe_skip_top_h == 8
+    assert config.moe_skip_batch_policy == policy
+    assert (
+        config.compute_hash() != _make_config(num_speculative_tokens=4).compute_hash()
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"moe_skip_top_h": 8},
+        {"moe_skip_top_h": 4},
+        {"moe_skip_min_weight": 0.125},
+        {"moe_skip_weight_mode": "renormalize"},
+        {"target_model_config": _gemma4_target_config()},
+        {"target_model_config": _target_config(top_k=1)},
+    ],
+)
+def test_batch_policy_rejects_incompatible_routes(overrides):
+    with pytest.raises(ValueError, match="moe_skip_batch_policy"):
+        _make_config(moe_skip_batch_policy="batch_top_half", **overrides)
+
+
+def test_batch_policy_rejects_unrelated_method():
+    with pytest.raises(ValueError, match="moe_skip_batch_policy"):
+        SpeculativeConfig(
+            method="ngram",
+            num_speculative_tokens=4,
+            moe_skip_batch_policy="batch_top_half",
+        )
 
 
 def test_threshold_configuration_and_cli():

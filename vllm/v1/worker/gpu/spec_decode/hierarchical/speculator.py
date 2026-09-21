@@ -149,6 +149,10 @@ class HierarchicalSpeculator(BaseSpeculator):
         self.preverify_config.speculative_config = replace(
             config,
             method="moe_skip",
+            # Revalidate without the previously resolved native top-k.
+            moe_skip_top_h=None
+            if config.moe_skip_batch_policy is not None
+            else config.moe_skip_top_h,
             model=None,
             inner_method=None,
             dspark_draft_topk=None,
@@ -550,6 +554,7 @@ class HierarchicalSpeculator(BaseSpeculator):
                 additional_forward_kwargs={
                     "routing_top_k": self.config.moe_skip_top_h,
                     "routing_min_weight": self.config.moe_skip_min_weight,
+                    "routing_batch_policy": self.config.moe_skip_batch_policy,
                     "routing_preserve_weights": self.config.moe_skip_weight_mode
                     == "preserve",
                     "preverify_gdn_mode": self.config.preverify_gdn_mode,

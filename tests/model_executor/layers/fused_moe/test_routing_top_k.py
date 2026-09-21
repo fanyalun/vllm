@@ -14,6 +14,102 @@ from vllm.model_executor.layers.fused_moe.router.fused_topk_router import (
 )
 
 
+@pytest.mark.parametrize(
+    "policy, expected",
+    [
+        ("batch_top_half", [1, 3, 0, 2, -1, -1]),
+        ("batch_max_gap", [1, 3, 0, -1, -1, -1]),
+    ],
+)
+def test_batch_reference_protects_union_and_sorts_unsorted_slots(policy, expected):
+    from benchmarks.kernels.moe_batch_policy_reference import batch_policy_reference
+
+    ids = torch.tensor([[1, 3, 0, 2, 4, 5]], dtype=torch.int32)
+    weights = torch.tensor([[0.25, 0.125, 0.5, 0.0625, 0.03125, 0.03125]])
+    logits = torch.zeros(1, 8).scatter_(1, ids.long(), weights.log())
+    w, actual, stats = batch_policy_reference(weights, ids, logits, policy)
+    assert actual.tolist() == [expected]
+    assert stats["protected_unique"] == 2
+    assert torch.equal(w, weights.masked_fill(actual < 0, 0))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("policy", ["batch_top_half", "batch_max_gap"])
+@pytest.mark.parametrize("case", ["union", "singleton", "empty", "gap_tie"])
+def test_batch_policy_boundary_sets_and_ties(policy, case):
+    from vllm.model_executor.layers.fused_moe.router.batch_expert_selection import (
+        select_batch_experts,
+    )
+
+    if case == "union":
+        ids = [[0, 1, 2, 3, 4], [2, 3, 0, 1, 5]]
+        weights = [[0.5, 0.25, 0.125, 0.0625, 0.0625]] * 2
+        expected = [
+            [0, 1, 2, 3, 4],
+            [2, 3, 0, 1, -1 if policy == "batch_top_half" else 5],
+        ]
+    elif case == "singleton":
+        ids, weights = [[0, 1, 2]], [[0.5, 0.375, 0.125]]
+        expected = ids
+    elif case == "empty":
+        ids, weights = [[0, 1]], [[0.75, 0.25]]
+        expected = ids
+    else:
+        ids = [[0, 1, 2, 3, 4]]
+        weights = [[0.40625, 0.3125, 0.125, 0.09375, 0.0625]]
+        expected = [[0, 1, 2, 3 if policy == "batch_top_half" else -1, -1]]
+    ids = torch.tensor(ids, dtype=torch.int32, device="cuda")
+    weights = torch.tensor(weights, device="cuda")
+    logits = torch.full((ids.shape[0], 8), -100.0, device="cuda")
+    logits.scatter_(1, ids.long(), weights.log())
+    actual_w, actual_i = select_batch_experts(weights, ids, logits, policy)
+    assert actual_i.tolist() == expected
+    assert torch.equal(actual_w, weights.masked_fill(actual_i < 0, 0))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("policy", ["batch_top_half", "batch_max_gap"])
+@pytest.mark.parametrize("tokens", [0, 1, 5, 33, 320, 640])
+@pytest.mark.parametrize("uniform", [False, True])
+def test_batch_routing_matches_reference_and_replays_padding(policy, tokens, uniform):
+    from benchmarks.kernels.moe_batch_policy_reference import batch_policy_reference
+    from vllm.model_executor.layers.fused_moe.router.batch_expert_selection import (
+        select_batch_experts,
+    )
+
+    torch.manual_seed(34)
+    logits = torch.randn(tokens, 256, device="cuda")
+    if uniform:
+        logits.zero_()
+    scores, ids = logits.topk(8, dim=-1, sorted=False)
+    ids = ids.int()
+    weights = scores.softmax(-1)
+    padding = torch.arange(tokens, device="cuda") % 3 == 2
+    expected_w, expected_i, _ = batch_policy_reference(
+        weights, ids, logits, policy, padding
+    )
+    actual_w, actual_i = select_batch_experts(weights, ids, logits, policy, padding)
+    assert torch.equal(actual_i, expected_i)
+    assert torch.equal(actual_w, expected_w)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured_w, captured_i = select_batch_experts(
+            weights, ids, logits, policy, padding
+        )
+    for all_padding in (True, False, True):
+        padding.fill_(all_padding)
+        logits.neg_()
+        scores, fresh_ids = logits.topk(8, dim=-1, sorted=False)
+        ids.copy_(fresh_ids)
+        weights.copy_(scores.softmax(-1))
+        graph.replay()
+        expected_w, expected_i, _ = batch_policy_reference(
+            weights, ids, logits, policy, padding
+        )
+        assert torch.equal(captured_i, expected_i)
+        assert torch.equal(captured_w, expected_w)
+
+
 def test_call_level_routing_top_k_does_not_leak(monkeypatch):
     selected_top_ks = []
 
@@ -45,6 +141,53 @@ def test_call_level_routing_top_k_does_not_leak(monkeypatch):
     assert weights.shape == ids.shape == (2, 4)
     assert selected_top_ks == [8, 4, 8]
     assert router.top_k == 8
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("policy", ["batch_top_half", "batch_max_gap"])
+@pytest.mark.parametrize("tokens", [1, 5, 33])
+def test_batch_router_dispatch_and_target_isolation(policy, tokens):
+    from benchmarks.kernels.moe_batch_policy_reference import batch_policy_reference
+    from vllm.model_executor.layers.fused_moe.fused_moe import fused_experts
+
+    torch.manual_seed(47)
+    logits = torch.randn(tokens, 128, device="cuda")
+    x = torch.randn(tokens, 128, device="cuda", dtype=torch.bfloat16)
+    w1 = torch.randn(128, 128, 128, device="cuda", dtype=torch.bfloat16) / 16
+    w2 = torch.randn(128, 128, 64, device="cuda", dtype=torch.bfloat16) / 16
+    router = FusedTopKRouter(top_k=8, global_num_experts=128)
+    native_w, native_i = router.select_experts(x, logits)
+    expected_w, _, _ = batch_policy_reference(native_w, native_i, logits, policy)
+    reference = fused_experts(x, w1, w2, expected_w, native_i)
+    context = ForwardContext(
+        no_compile_layers={},
+        attn_metadata={},
+        slot_mapping={},
+        is_padding=torch.zeros(tokens, device="cuda", dtype=torch.bool),
+        additional_kwargs={
+            "routing_batch_policy": policy,
+            "routing_preserve_weights": True,
+        },
+    )
+
+    def forward():
+        w, ids = router.select_experts(x, logits)
+        return fused_experts(x, w1, w2, w, ids)
+
+    with override_forward_context(context):
+        actual = forward()
+        torch.testing.assert_close(actual, reference, rtol=0.02, atol=0.01)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            captured = forward()
+        graph.replay()
+        torch.testing.assert_close(captured, reference, rtol=0.02, atol=0.01)
+        context.is_padding.fill_(True)
+        graph.replay()
+        assert torch.count_nonzero(captured) == 0
+    after_w, after_i = router.select_experts(x, logits)
+    assert torch.equal(after_i, native_i)
+    assert torch.equal(after_w, native_w)
 
 
 def test_call_level_routing_top_k_validates_range(monkeypatch):
