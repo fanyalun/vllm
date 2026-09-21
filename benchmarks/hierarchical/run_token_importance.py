@@ -29,6 +29,10 @@ def write_json(path, value):
 def worker(path):
     config = json.loads(path.read_text())
     os.environ["PREVERIFY_EXPERT_POOL"] = config["pool"]
+    if config.get("acceptance_audit"):
+        os.environ["PREVERIFY_POOL_ACCEPTANCE_AUDIT"] = "1"
+    else:
+        os.environ.pop("PREVERIFY_POOL_ACCEPTANCE_AUDIT", None)
     from vllm import LLM, SamplingParams
 
     dataset = Path(config["dataset"])
@@ -45,6 +49,9 @@ def worker(path):
             "inner_num_rounds": 4,
             "num_speculative_tokens": 20,
             "moe_skip_top_h": config["h"],
+            "moe_skip_weight_mode": "renormalize",
+            "hierarchical_stop_policy": "none",
+            "preverify_gdn_mode": "none",
             "draft_sample_method": "greedy",
         }
     )
@@ -54,7 +61,7 @@ def worker(path):
         max_model_len=1024,
         max_num_seqs=1,
         max_num_batched_tokens=1024,
-        gpu_memory_utilization=0.95,
+        gpu_memory_utilization=config.get("gpu_memory_utilization", 0.95),
         enable_prefix_caching=False,
         limit_mm_per_prompt={"image": 0, "video": 0},
         enforce_eager=False,
@@ -66,6 +73,15 @@ def worker(path):
         worker_extension_cls="token_importance_worker.TokenImportanceWorker",
     )
     params = SamplingParams(temperature=0, max_tokens=128, ignore_eos=True, seed=0)
+    resolved = llm.llm_engine.vllm_config.speculative_config
+    effective_spec = (
+        {key: getattr(resolved, key) for key in spec if key != "model"}
+        if spec
+        else None
+    )
+    if spec:
+        assert effective_spec["hierarchical_stop_policy"] == "none"
+        assert effective_spec["moe_skip_weight_mode"] == "renormalize"
     for sample in samples:
         llm.generate([sample["prompt"]], params, use_tqdm=False)
     llm.collective_rpc("begin_pool_measurement")
@@ -92,7 +108,7 @@ def worker(path):
         write_json(path.parent / "progress.json", outputs)
         print(f"SAMPLE_COMPLETE {len(outputs)}/4 {elapsed:.3f}s", flush=True)
     measurement = llm.collective_rpc("collect_pool_measurement")
-    if config["pool"] != "none":
+    if config["pool"] != "none" or (config.get("acceptance_audit") and config["h"]):
         assert (
             len([v for w in measurement for v in w["layers"].values() if v[-1] > 0])
             == 30
@@ -103,6 +119,7 @@ def worker(path):
             **config,
             "outputs": outputs,
             "measurement": measurement,
+            "effective_speculative_config": effective_spec,
             "e2e_seconds": sum(o["e2e_seconds"] for o in outputs),
             "output_tokens": 512,
         },
@@ -116,6 +133,8 @@ def main():
     parser.add_argument("--gpu", default="1")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--cell", type=Path)
+    parser.add_argument("--acceptance-only", action="store_true")
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.95)
     args = parser.parse_args()
     if args.cell:
         worker(args.cell)
@@ -141,7 +160,11 @@ def main():
     ]
     fingerprints = {
         name: digest(Path(__file__).parent / name)
-        for name in ("run_token_importance.py", "token_importance_worker.py")
+        for name in (
+            "run_token_importance.py",
+            "token_importance_worker.py",
+            "analyze_token_importance.py",
+        )
     }
     contract = {
         "model_path": MODEL,
@@ -149,6 +172,7 @@ def main():
         "assistant_config_sha256": digest(Path(ASSISTANT) / "config.json"),
         "model_config_sha256": digest(Path(MODEL) / "config.json"),
         "gpu": args.gpu,
+        "gpu_memory_utilization": args.gpu_memory_utilization,
         "cells": cells,
         "source_sha256": fingerprints,
         "dataset_sha256": digest(source),
@@ -159,6 +183,13 @@ def main():
         "inner_D": 4,
         "rounds": 4,
         "outer_D": 20,
+        "hierarchical_stop_policy": "none",
+        "moe_skip_weight_mode": "renormalize",
+        "preverify_gdn_mode": "none",
+        "acceptance_audit": args.acceptance_only,
+        "primary_metrics": "acceptance, mean acceptance length, expert skip fraction"
+        if args.acceptance_only
+        else "performance",
         "budget": "ceil(0.6 * union of native top8 experts on draft rows 1..D)",
         "score": "mean-head full-context attention from last draft to earlier "
         "draft rows times normalized native top8 gate probability",
@@ -209,6 +240,8 @@ def main():
             "dataset": str(dataset),
             "dataset_sha256": digest(dataset),
             "source_sha256": fingerprints,
+            "acceptance_audit": args.acceptance_only,
+            "gpu_memory_utilization": args.gpu_memory_utilization,
         }
         if (directory / "CELL_COMPLETE").exists():
             previous = json.loads((directory / "result.json").read_text())

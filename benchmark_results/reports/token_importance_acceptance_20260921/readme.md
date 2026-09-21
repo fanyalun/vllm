@@ -1,0 +1,61 @@
+# m10：token importance 专家池接受与跳过指标
+
+Gemma4，TP1/B1，greedy，4 个原始 prompt × 128 输出 token；MTP D4 × 固定 4 轮（stop_policy=none），外层容量 20，weight_mode=renormalize。attention60/routing60 与固定 h4/h6/h8 均在当前代码上重新测量；每配置 4 个完整请求 warmup 不计入结果。
+
+主表与 m06 使用同一接受指标定义：接受率 = accepted/proposed；平均接受长度 = 1 + accepted/verify_steps，包含 bonus token。这里主表是外层 Pre-Verify→Target；m06 是独立 Draft→Target，两者协议不同，不直接比较数值高低。
+
+专家跳过率 = 1 − retained_edges/(8 × token_layer_rows)，分母为原生 top8；不是从全模型专家总数计算。attention60 的 60% 是候选专家 union 的保留预算，并不意味着每个 token 固定跳过 40%。所有五个 Pre-Verify 位置（含 anchor 和末尾 draft）及 30 个 MoE 层均计入。
+
+| 方法 | 接受/提出 | 接受率 | 平均接受长度 | 平均保留专家 | 平均跳过专家 | 专家跳过率 | 零专家率 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| attention60 | 492/756 | 65.08% | 9.945 | 5.564 | 2.436 | 30.45% | 0.68% |
+| routing60 | 498/699 | 71.24% | 10.960 | 5.603 | 2.397 | 29.96% | 0.59% |
+| h4 | 512/774 | 66.15% | 10.143 | 4.000 | 4.000 | 50.00% | 0.00% |
+| h6 | 514/631 | 81.46% | 13.238 | 6.000 | 2.000 | 25.00% | 0.00% |
+| h8 | 512/545 | 93.94% | 17.000 | 8.000 | 0.000 | 0.00% | 0.00% |
+
+| 方法 | 内层接受/提出 | 内层接受率 | 内层平均接受长度 | 内层轮数 |
+| --- | ---: | ---: | ---: | ---: |
+| attention60 | 600/944 | 63.56% | 3.542 | 236 |
+| routing60 | 559/864 | 64.70% | 3.588 | 216 |
+| h4 | 610/960 | 63.54% | 3.542 | 240 |
+| h6 | 524/736 | 71.20% | 3.848 | 184 |
+| h8 | 471/576 | 81.77% | 4.271 | 144 |
+
+内层 MTP→Pre-Verify 的计数和专家预算包含测量请求发起的所有 proposal，包括最后未被 Target 消费的 proposal；外层接受计数来自实际 Target verify，按 m06 口径保留最后一步截断前的验证接受计数。
+
+attention60/routing60 保持原来的候选相关专家池算法与权重归一化；Target 路由不变。输出一致性单独列出，接受率不代表质量或 lossless 保证。
+
+| 方法 | 对照 | 完整输出相同请求数 |
+| --- | --- | ---: |
+| attention60 | ar_start | 1/4 |
+| attention60 | h8 | 1/4 |
+| ar_start | ar_start | 4/4 |
+| ar_start | h8 | 1/4 |
+| routing60 | ar_start | 1/4 |
+| routing60 | h8 | 2/4 |
+| h4 | ar_start | 1/4 |
+| h4 | h8 | 1/4 |
+| h6 | ar_start | 1/4 |
+| h6 | h8 | 1/4 |
+| h8 | ar_start | 1/4 |
+| h8 | h8 | 4/4 |
+| ar_end | ar_start | 2/4 |
+| ar_end | h8 | 1/4 |
+
+[完整指标](summary.csv) · [逐层预算整数计数](layer_budgets.csv) · [审计](audit.json) · [实验契约](contract.json)
+
+本报告不展示耗时、吞吐或加速比。结果仅覆盖原实验的 4 个样本。
+
+显存预算：`gpu_memory_utilization=0.70`，经用户授权在 GPU 1 共享运行；其余样本与生成配置保持原 m10 条件。
+
+停止策略和权重模式已显式固定为 `none` 与 `renormalize`，并逐 cell 核对引擎实际生效配置，避免当前默认值漂移。
+
+复现命令（使用新的输出目录）：
+
+```bash
+.venv/bin/python benchmarks/hierarchical/run_token_importance.py --run-dir <fresh_directory> --gpu 1 --gpu-memory-utilization 0.70 --acceptance-only
+.venv/bin/python benchmarks/hierarchical/analyze_token_importance.py <fresh_directory> --acceptance-only
+```
+
+[本地原始测量与源码快照](<../../.sources/gemma_token_importance_acceptance_20260921>)

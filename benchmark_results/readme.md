@@ -6,12 +6,12 @@
 
 按“优化类别 → 优化组合 → 模型 → 参数配置 → 运行来源”浏览。所有原实验已迁出根目录；跨配置共享材料集中存放，单配置结果文件实际放在对应运行目录的 `raw/` 中。
 
-本次归档 63 个原实验目录，拆出 618 个配置来源；配置来源数不是独立正式实验数。
+本次归档 64 个原实验目录，拆出 625 个配置来源；配置来源数不是独立正式实验数。
 
 | 分类 | 配置来源数 | 入口 |
 | --- | --- | --- |
-| 基线与方法比较 | 96 | [00_baselines](<00_baselines/readme.md>) |
-| MoE 专家优化 | 139 | [01_moe](<01_moe/readme.md>) |
+| 基线与方法比较 | 98 | [00_baselines](<00_baselines/readme.md>) |
+| MoE 专家优化 | 144 | [01_moe](<01_moe/readme.md>) |
 | GDN 与状态优化 | 145 | [02_gdn](<02_gdn/readme.md>) |
 | 早停与轮数 | 78 | [03_early_exit](<03_early_exit/readme.md>) |
 | 执行与批处理 | 160 | [04_execution](<04_execution/readme.md>) |
@@ -30,15 +30,17 @@
 ## 报告与查询
 
 - [四类优化结论总报告](<reports/preverify_optimization_summary_20260921/readme.md>)：保留性能、接受率、负面结果与公平性限制。
-- [原实验与共用材料索引](<reports/study_index.md>)：覆盖全部 63 个原目录。
+- [原实验与共用材料索引](<reports/study_index.md>)：覆盖全部 64 个原目录。
 - [配置索引 CSV](<reports/configuration_index.csv>)：按模型、组合、参数、测量类型筛选。
 - [完整配置与指标 JSON](<.archive/configuration_catalog.json>)。
 - [旧路径到新路径及 SHA-256](<.archive/relocation_manifest.json>)；[迁移验证](<.archive/validation.json>)。
 
 ## 数据解释
 
-每个运行目录包含配置、指标、来源及原始数据入口。原始多配置 JSON 保留一份，使用 selector 与原始行号定位；没有重新运行 GPU 实验。端到端、kernel、审计与调参记录保持区别。
+每个运行目录包含配置、指标、来源及原始数据入口。原始多配置 JSON 保留一份，使用 selector 与原始行号定位；首次归档未重新运行 GPU 实验；m10 的后续重跑见下方最新更新。端到端、kernel、审计与调参记录保持区别。
 
 旧报告中的吞吐统计方式保持不变；新 metrics.json 如有 pooled_tokens_per_second，表示所选 e2e 记录总 token / 总时间，不能直接替代原报告的逐轮中位数。接受率分母以原始字段和报告为准。有效负面结果继续保留。
 
 原始文件内嵌的历史绝对路径保留用于复现，不批量改写证据；使用 relocation_manifest.json 查当前位置。新实验建议直接使用本结构并在 run 目录保存 contract/config 与 completion marker。
+
+最新更新：[m10 专家池接受率、接受长度与跳过率重跑（2026-09-21）](<reports/token_importance_acceptance_20260921/readme.md>)。

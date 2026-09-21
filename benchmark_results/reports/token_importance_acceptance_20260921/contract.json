@@ -1,0 +1,70 @@
+{
+  "model_path": "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it",
+  "assistant_path": "/home/fanya/data1/fanya/models/gemma-4-26B-A4B-it-assistant",
+  "assistant_config_sha256": "f393dd4bbdbb1de9bfade9de224493de4e728ba020f9078db8de93cc66a551b2",
+  "model_config_sha256": "ed0c1eb3633de771906e9ba004a44cc5635bcc06ee2062077c3d2e88a50707d3",
+  "gpu": "1",
+  "gpu_memory_utilization": 0.7,
+  "cells": [
+    {
+      "name": "attention60",
+      "pool": "attention",
+      "h": 8
+    },
+    {
+      "name": "ar_start",
+      "pool": "none",
+      "h": 0
+    },
+    {
+      "name": "routing60",
+      "pool": "routing",
+      "h": 8
+    },
+    {
+      "name": "h4",
+      "pool": "none",
+      "h": 4
+    },
+    {
+      "name": "h6",
+      "pool": "none",
+      "h": 6
+    },
+    {
+      "name": "h8",
+      "pool": "none",
+      "h": 8
+    },
+    {
+      "name": "ar_end",
+      "pool": "none",
+      "h": 0
+    }
+  ],
+  "source_sha256": {
+    "run_token_importance.py": "83bcf2c883486da9e9b6b10a9634729e91762c65cf25969193140d1ca0ca9ee2",
+    "token_importance_worker.py": "6232313ee7e6ba0bd76a80ac6a1127485babf8cf5982eca65d353082919da1ee",
+    "analyze_token_importance.py": "caa806c7c5da767849c86fa02f1a954fce5aeba86ca717e3068e51cbbe54e033"
+  },
+  "dataset_sha256": "5fd81da0e4f7e224f5c6ab63cace65beb5b84d5391dd57b6d890006779e14136",
+  "samples": 4,
+  "output_length": 128,
+  "B": 1,
+  "inner_method": "mtp",
+  "inner_D": 4,
+  "rounds": 4,
+  "outer_D": 20,
+  "hierarchical_stop_policy": "none",
+  "moe_skip_weight_mode": "renormalize",
+  "preverify_gdn_mode": "none",
+  "acceptance_audit": true,
+  "primary_metrics": "acceptance, mean acceptance length, expert skip fraction",
+  "budget": "ceil(0.6 * union of native top8 experts on draft rows 1..D)",
+  "score": "mean-head full-context attention from last draft to earlier draft rows times normalized native top8 gate probability",
+  "score_rows": "exclude anchor row 0 and last row D; routing ablation uses the same rows with unit importance",
+  "mask_rows": "all Pre-Verify rows, including anchor and last draft",
+  "zero_expert_rows": "routed contribution zero; no budget-expanding fallback",
+  "weights": "renormalize retained gate probabilities, preserve per-expert scale",
+  "timer": "llm.generate wall time includes scoring, selection, MTP, Pre-Verify, Target, API and metrics"
+}

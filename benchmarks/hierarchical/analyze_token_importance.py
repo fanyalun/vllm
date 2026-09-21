@@ -20,9 +20,12 @@ def write_csv(path, rows):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path)
+    parser.add_argument("--acceptance-only", action="store_true")
     args = parser.parse_args()
     root = args.root
     contract = json.loads((root / "contract.json").read_text())
+    if args.acceptance_only:
+        assert contract["acceptance_audit"]
     assert digest(root / "dataset.jsonl") == contract["dataset_sha256"]
     assert (
         digest(Path(contract["model_path"]) / "config.json")
@@ -87,7 +90,12 @@ def main():
                     continue
                 assert count[-1] == inner[2]
                 assert count[4] == count[-1] * 5
-                assert 0.6 * count[0] <= count[1] < 0.6 * count[0] + count[-1]
+                if result["pool"] != "none":
+                    assert 0.6 * count[0] <= count[1] < 0.6 * count[0] + count[-1]
+                else:
+                    assert count[0] == count[1] == 0
+                    assert count[2] == result["h"] * count[4]
+                    assert count[3] == 0
                 budgets = [a + b for a, b in zip(budgets, count, strict=True)]
                 layers.append(
                     {
@@ -102,26 +110,65 @@ def main():
                     }
                 )
         mean_h = budgets[2] / budgets[4] if budgets[4] else result["h"]
-        rows.append(
-            {
+        if args.acceptance_only and result["h"]:
+            effective = result["effective_speculative_config"]
+            assert effective["hierarchical_stop_policy"] == "none"
+            assert effective["moe_skip_weight_mode"] == "renormalize"
+            assert effective["preverify_gdn_mode"] == "none"
+            assert effective["inner_num_speculative_tokens"] == 4
+            assert effective["inner_num_rounds"] == 4
+            assert len(result["measurement"]) == 1
+            assert (
+                len([c for c in result["measurement"][0]["layers"].values() if c[-1]])
+                == 30
+            )
+            assert inner[0] == 4 * inner[2]
+            assert inner[2] % 4 == 0
+            assert 0 <= inner[1] <= inner[0]
+            assert budgets[4] == 30 * 5 * inner[2]
+        row = {
+            "method": name,
+            "ms_per_output_token": seconds * 1000 / 512,
+            "ms_per_accepted_token": seconds * 1000 / emitted if emitted else None,
+            "outer_accepted_per_step": accepted / steps if steps else None,
+            "inner_accepted_per_round": inner[1] / inner[2] if inner[2] else None,
+            "emitted_accepted_tokens": emitted,
+            "outer_drafted": drafted,
+            "outer_steps": steps,
+            "inner_rounds": inner[2],
+            "mean_h": mean_h,
+            "mean_union": budgets[0] / budgets[5] if budgets[5] else None,
+            "mean_selected": budgets[1] / budgets[5] if budgets[5] else None,
+            "zero_expert_row_fraction": budgets[3] / budgets[4] if budgets[4] else 0,
+            "speedup_vs_ar_async": ar / seconds,
+        }
+        if args.acceptance_only:
+            row = {
                 "method": name,
-                "ms_per_output_token": seconds * 1000 / 512,
-                "ms_per_accepted_token": seconds * 1000 / emitted if emitted else None,
-                "outer_accepted_per_step": accepted / steps if steps else None,
-                "inner_accepted_per_round": inner[1] / inner[2] if inner[2] else None,
-                "emitted_accepted_tokens": emitted,
-                "outer_drafted": drafted,
-                "outer_steps": steps,
+                "accepted": accepted,
+                "proposed": drafted,
+                "verify_steps": steps,
+                "acceptance_rate": accepted / drafted if drafted else None,
+                "mean_acceptance_length": 1 + accepted / steps if steps else None,
+                "inner_accepted": inner[1],
+                "inner_proposed": inner[0],
                 "inner_rounds": inner[2],
-                "mean_h": mean_h,
-                "mean_union": budgets[0] / budgets[5] if budgets[5] else None,
-                "mean_selected": budgets[1] / budgets[5] if budgets[5] else None,
+                "inner_acceptance_rate": inner[1] / inner[0] if inner[0] else None,
+                "inner_mean_acceptance_length": 1 + inner[1] / inner[2]
+                if inner[2]
+                else None,
+                "retained_expert_edges": budgets[2],
+                "native_expert_edges": 8 * budgets[4],
+                "token_layer_rows": budgets[4],
+                "mean_kept_experts": mean_h if result["h"] else None,
+                "mean_skipped_experts": 8 - mean_h if result["h"] else None,
+                "expert_skip_fraction": 1 - mean_h / 8 if result["h"] else None,
+                "zero_expert_rows": budgets[3],
                 "zero_expert_row_fraction": budgets[3] / budgets[4]
                 if budgets[4]
-                else 0,
-                "speedup_vs_ar_async": ar / seconds,
+                else None,
             }
-        )
+        rows.append(row)
         for reference in ("ar_start", "h8"):
             matches = sum(
                 a["token_ids"] == b["token_ids"]
@@ -155,12 +202,86 @@ def main():
             else "passed",
         },
     )
-    plot(root, rows)
-    report(root, rows, parity)
+    if args.acceptance_only:
+        acceptance_report(root, rows, parity)
+    else:
+        plot(root, rows)
+        report(root, rows, parity)
     (root / "ANALYSIS_COMPLETE").write_text(
         "7 x 4 x 128 audited; output parity reported separately\n"
     )
     print(json.dumps(rows, indent=2))
+
+
+def acceptance_report(root, rows, parity):
+    lines = [
+        "# m10：token importance 专家池接受与跳过指标",
+        "",
+        "Gemma4，TP1/B1，greedy，4 个原始 prompt × 128 输出 token；"
+        "MTP D4 × 固定 4 轮（stop_policy=none），外层容量 20，"
+        "weight_mode=renormalize。attention60/routing60 与固定 h4/h6/h8 "
+        "均在当前代码上重新测量；每配置 4 个完整请求 warmup 不计入结果。",
+        "",
+        "主表与 m06 使用同一接受指标定义：接受率 = accepted/proposed；"
+        "平均接受长度 = 1 + accepted/verify_steps，包含 bonus token。"
+        "这里主表是外层 Pre-Verify→Target；m06 是独立 Draft→Target，"
+        "两者协议不同，不直接比较数值高低。",
+        "",
+        "专家跳过率 = 1 − retained_edges/(8 × token_layer_rows)，"
+        "分母为原生 top8；不是从全模型专家总数计算。"
+        "attention60 的 60% 是候选专家 union 的保留预算，"
+        "并不意味着每个 token 固定跳过 40%。所有五个 Pre-Verify 位置"
+        "（含 anchor 和末尾 draft）及 30 个 MoE 层均计入。",
+        "",
+        "| 方法 | 接受/提出 | 接受率 | 平均接受长度 | 平均保留专家 | "
+        "平均跳过专家 | 专家跳过率 | 零专家率 |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for r in rows:
+        if not r["proposed"]:
+            continue
+        lines.append(
+            f"| {r['method']} | {r['accepted']}/{r['proposed']} | "
+            f"{r['acceptance_rate']:.2%} | {r['mean_acceptance_length']:.3f} | "
+            f"{r['mean_kept_experts']:.3f} | {r['mean_skipped_experts']:.3f} | "
+            f"{r['expert_skip_fraction']:.2%} | {r['zero_expert_row_fraction']:.2%} |"
+        )
+    lines += [
+        "",
+        "| 方法 | 内层接受/提出 | 内层接受率 | 内层平均接受长度 | 内层轮数 |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for r in rows:
+        if r["inner_proposed"]:
+            lines.append(
+                f"| {r['method']} | {r['inner_accepted']}/{r['inner_proposed']} | "
+                f"{r['inner_acceptance_rate']:.2%} | "
+                f"{r['inner_mean_acceptance_length']:.3f} | {r['inner_rounds']} |"
+            )
+    lines += [
+        "",
+        "内层 MTP→Pre-Verify 的计数和专家预算包含测量请求发起的所有 proposal，"
+        "包括最后未被 Target 消费的 proposal；外层接受计数来自实际 Target verify，"
+        "按 m06 口径保留最后一步截断前的验证接受计数。",
+        "",
+        "attention60/routing60 保持原来的候选相关专家池算法与权重归一化；"
+        "Target 路由不变。输出一致性单独列出，接受率不代表质量或 lossless 保证。",
+        "",
+        "| 方法 | 对照 | 完整输出相同请求数 |",
+        "| --- | --- | ---: |",
+    ]
+    lines += [
+        f"| {p['method']} | {p['reference']} | {p['exact_matches']}/{p['requests']} |"
+        for p in parity
+    ]
+    lines += [
+        "",
+        "[完整指标](summary.csv) · [逐层预算整数计数](layer_budgets.csv) · "
+        "[审计](audit.json) · [实验契约](contract.json)",
+        "",
+        "本报告不展示耗时、吞吐或加速比。结果仅覆盖原实验的 4 个样本。",
+    ]
+    (root / "readme.md").write_text("\n".join(lines) + "\n")
 
 
 def report(root, rows, parity):

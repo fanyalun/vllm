@@ -1,0 +1,223 @@
+{
+  "passed": true,
+  "cells": 7,
+  "measured_requests": 28,
+  "measured_output_tokens": 3584,
+  "warmup_requests_excluded": 28,
+  "formula_checks": "accepted/proposed; (accepted+steps)/steps; (native-kept)/native",
+  "source_files": [
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_attention60__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_attention60/raw/CELL_COMPLETE",
+      "sha256": "603eed62a0ae4529d30a82786d11b6b5c402a219219c046ad31260b965883fbf",
+      "bytes": 18
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_attention60__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_attention60/raw/result.json",
+      "sha256": "e042d720b2b0716a7c9764a7064b0b3250aa42c89a61741d7fe850f68727a12b",
+      "bytes": 18632
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_attention60__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_attention60/raw/config.json",
+      "sha256": "5a3e36e949df73abbe41765ae5d2ce85474c760563585db1547d973bd072dbf4",
+      "bytes": 725
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_attention60__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_attention60/raw/run_1789975941902616403.log",
+      "sha256": "902fb6d1560c73dd019d2331a74f26dcc006216ab6feb11e8bb6e55702a692e4",
+      "bytes": 29686
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_attention60__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_attention60/raw/command.json",
+      "sha256": "089c780d758e2324dd3c0345e46a19c4a574ae5450f5104aca9097214e6b518e",
+      "bytes": 240
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_attention60__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_attention60/raw/progress.json",
+      "sha256": "6be7ad2e858c5891eb2ea698082e5b375398f93ef54366792c66926ef6df0e4c",
+      "bytes": 10989
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/00_baselines/ar/gemma4/b1_tp1_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_ar_start/raw/CELL_COMPLETE",
+      "sha256": "603eed62a0ae4529d30a82786d11b6b5c402a219219c046ad31260b965883fbf",
+      "bytes": 18
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/00_baselines/ar/gemma4/b1_tp1_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_ar_start/raw/run_1789976134446661400.log",
+      "sha256": "7e0316f4355b05e9343cab55fb1c57a4460c16781ca4a7e9d6aee65390307c34",
+      "bytes": 14156
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/00_baselines/ar/gemma4/b1_tp1_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_ar_start/raw/result.json",
+      "sha256": "23bdcb279742d81442ea16ec08690e7ad369c7639e70aa3c3d2cf34a458470d6",
+      "bytes": 13718
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/00_baselines/ar/gemma4/b1_tp1_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_ar_start/raw/config.json",
+      "sha256": "e83d5530cf54e1182fb4fdcdb281b47a77c20f6287fe39a130b59cd830111de0",
+      "bytes": 717
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/00_baselines/ar/gemma4/b1_tp1_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_ar_start/raw/command.json",
+      "sha256": "4a33872299aacb2bd392cf2b627466129d7085e3d15b3a2903a273ea4a5f9e24",
+      "bytes": 237
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/00_baselines/ar/gemma4/b1_tp1_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_ar_start/raw/progress.json",
+      "sha256": "ec6fa3f4eddf33e3b469251a8019461b44bd2ccaac9cd4e953060d2e4b0c2cbc",
+      "bytes": 7345
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_routing60__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_routing60/raw/CELL_COMPLETE",
+      "sha256": "603eed62a0ae4529d30a82786d11b6b5c402a219219c046ad31260b965883fbf",
+      "bytes": 18
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_routing60__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_routing60/raw/result.json",
+      "sha256": "f31938a2a3565daae31d3411a3d86777ac25c69d4561631565483d9a5555930a",
+      "bytes": 18393
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_routing60__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_routing60/raw/config.json",
+      "sha256": "6d6175338a2a2593062359aab23965622dfc417e4e81c190ae56750ba82df79e",
+      "bytes": 721
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_routing60__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_routing60/raw/run_1789976206164321743.log",
+      "sha256": "bda7c22c4991f7ca9ddcb1847c4064b56d6a140a1b806529bbd3abf0f30c4aae",
+      "bytes": 26927
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_routing60__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_routing60/raw/command.json",
+      "sha256": "dc7743f6abb406c90d09c99f125b5bbfc1ce7b93898ff4ad30819cb8423874e1",
+      "bytes": 238
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_routing60__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_routing60/raw/progress.json",
+      "sha256": "e3823278f4fa5d76c774b73e81aa0f4dc427d4a58ee01db901394e534e817716",
+      "bytes": 10777
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h4_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h4/raw/CELL_COMPLETE",
+      "sha256": "603eed62a0ae4529d30a82786d11b6b5c402a219219c046ad31260b965883fbf",
+      "bytes": 18
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h4_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h4/raw/result.json",
+      "sha256": "2f26477bf628e592d7dbe729061fc6133431af651748db9755e35ae16dd4efe9",
+      "bytes": 18448
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h4_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h4/raw/config.json",
+      "sha256": "5b9adadbe9705f4c1aed7d248b44d71ceaaea56dd166179ec8ad01f0b4f44cc7",
+      "bytes": 711
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h4_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h4/raw/command.json",
+      "sha256": "91d59703cee174de091b3cf0c692a1a0a3c01d482943fb5a8e3e1717fddf50e4",
+      "bytes": 231
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h4_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h4/raw/progress.json",
+      "sha256": "c36af5474656e868fa56af9bc465c6dc07a0234eb5209e461c3872f866824fc7",
+      "bytes": 11003
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h4_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h4/raw/run_1789976297145236346.log",
+      "sha256": "8219a4ff56e62370b6853bda7cf27dcbd52ce3bff11edbd52e0e9c1939f644b1",
+      "bytes": 29473
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h6_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h6/raw/CELL_COMPLETE",
+      "sha256": "603eed62a0ae4529d30a82786d11b6b5c402a219219c046ad31260b965883fbf",
+      "bytes": 18
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h6_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h6/raw/result.json",
+      "sha256": "b28fd48f652e2327005762a37a49bfca6a004b108e7b211d08f5fdd7a67825b2",
+      "bytes": 18061
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h6_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h6/raw/run_1789976491462368031.log",
+      "sha256": "dcb40ec279557097dd39ab67d728624987db7c9d49c6e98c7fb87ebe0455517e",
+      "bytes": 29385
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h6_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h6/raw/config.json",
+      "sha256": "4dfaf7974a32d018d0a3c139f47c36a7af16b3ea8f19219ccb10f3b3bfc60db8",
+      "bytes": 711
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h6_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h6/raw/command.json",
+      "sha256": "08198eec86b697cc7061552bc19cee529b9ab189563f6f6cb89903a00b845b10",
+      "bytes": 231
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h6_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h6/raw/progress.json",
+      "sha256": "726e1b2f3020beba07501f7c96a21172d984f812cc22e28424d05a2f828555b4",
+      "bytes": 10701
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h8/raw/CELL_COMPLETE",
+      "sha256": "603eed62a0ae4529d30a82786d11b6b5c402a219219c046ad31260b965883fbf",
+      "bytes": 18
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h8/raw/run_1789976685884327905.log",
+      "sha256": "549dead6c3658990f556313df98e14a65cef996ff1d896d321f62fb6af932446",
+      "bytes": 27142
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h8/raw/result.json",
+      "sha256": "3d6cf8c77c74812c7c8802870ba4257a3e7ba87af6590098a16913ac1b710051",
+      "bytes": 17864
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h8/raw/config.json",
+      "sha256": "c69012c2274ee71c526e5dc305891d7e67a23cc32aa5264c69593414a063e447",
+      "bytes": 711
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h8/raw/command.json",
+      "sha256": "c66caab7beff6629d3be1833b1705590430c469f79b0f7b60929b47030f1dfde",
+      "bytes": 231
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/01_moe/draft_mtp__moe_top_h__weights_renormalize__stop_none/gemma4/b1_tp1_d4_r4_h8_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_h8/raw/progress.json",
+      "sha256": "28fde2bdf417ac38279a264f78d037c17c76fcfc83354c5f837aabd8c73f109d",
+      "bytes": 10545
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/00_baselines/ar/gemma4/b1_tp1_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_ar_end/raw/CELL_COMPLETE",
+      "sha256": "603eed62a0ae4529d30a82786d11b6b5c402a219219c046ad31260b965883fbf",
+      "bytes": 18
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/00_baselines/ar/gemma4/b1_tp1_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_ar_end/raw/result.json",
+      "sha256": "9658d64954d5bc740476473960d80f4061a73eaab1d801b96a6202f3e2491852",
+      "bytes": 13617
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/00_baselines/ar/gemma4/b1_tp1_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_ar_end/raw/config.json",
+      "sha256": "2bf9e807c58a14a19e273c1d9c6a4388600acf1898c99cdcc547dec9c71b1003",
+      "bytes": 715
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/00_baselines/ar/gemma4/b1_tp1_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_ar_end/raw/command.json",
+      "sha256": "f11074e0730e443ccdc424c5a3836354baf3f75c7212bbad0318a832b0820a17",
+      "bytes": 235
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/00_baselines/ar/gemma4/b1_tp1_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_ar_end/raw/progress.json",
+      "sha256": "55fc3efb3b94ca2614bcd276de70b496ed515f41bd45a5fb29a5a19e2d8dee8c",
+      "bytes": 7246
+    },
+    {
+      "path": "/home/fanya/vllm/benchmark_results/00_baselines/ar/gemma4/b1_tp1_n4_out128_greedy_graph_mem0p70/run_20260921_token_importance_acceptance_ar_end/raw/run_1789976771394664450.log",
+      "sha256": "cf6c139cb3c67f34789fed51fd1bbf8d0ff5d56bc7c25300570721171c0ab2b8",
+      "bytes": 14251
+    }
+  ],
+  "report_links_checked": 629,
+  "configuration_sources_hash_checked": 625,
+  "errors": []
+}

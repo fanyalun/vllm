@@ -252,7 +252,22 @@ def install():
                 if MODE == "attention"
                 else torch.ones(ids.shape[0], device=ids.device)
             )
-            weights, POOL, counts = select_pool(weights, ids, router_logits, relevance)
+            if MODE in ("attention", "routing"):
+                weights, POOL, counts = select_pool(
+                    weights, ids, router_logits, relevance
+                )
+            else:
+                retained = (ids >= 0) & (weights != 0)
+                counts = torch.stack(
+                    (
+                        torch.zeros((), dtype=torch.int64, device=ids.device),
+                        torch.zeros((), dtype=torch.int64, device=ids.device),
+                        retained.sum(),
+                        (retained.sum(-1) == 0).sum(),
+                        torch.full((), ids.shape[0], device=ids.device),
+                        torch.ones((), dtype=torch.int64, device=ids.device),
+                    )
+                )
             self.pool_counters.add_(counts)
         return weights, ids
 
@@ -260,7 +275,7 @@ def install():
 
     def assignment(*args, **kwargs):
         sorted_ids, expert_ids, padded = original_assignment(*args, **kwargs)
-        if is_preverify():
+        if MODE in ("attention", "routing") and is_preverify():
             expert_ids = mask_assignment(expert_ids, POOL)
         return sorted_ids, expert_ids, padded
 
@@ -314,5 +329,7 @@ class TokenImportanceWorker:
         }
 
 
-if MODE in ("attention", "routing"):
+if MODE in ("attention", "routing") or os.environ.get(
+    "PREVERIFY_POOL_ACCEPTANCE_AUDIT"
+):
     install()
