@@ -206,3 +206,22 @@ PYTHONPATH="$PWD/benchmarks/hierarchical:$PWD" \
 正式运行默认 16 请求、每条 256 token、两遍无探针计时及独立 audit。
 只有运行结束且重复/探针输出一致才生成 complete.json；这仍不等于
 已通过 AR parity。512 格完整 forward harness 尚待实现及 GPU 验证。
+
+## 8. GPU 空闲自动队列
+
+`watch_long_draft.py --output <新目录>` 每 10 秒查询 GPU，连续三次
+确认同卡无计算进程、显存占用低于 1024 MiB、利用率不超过 2%，
+且总显存至少 80000 MiB 后自动运行。首次选卡后各阶段保持同一 GPU UUID。
+执行顺序为 fixed smoke、balanced smoke、fixed 正式、balanced 正式。
+smoke 为 1 请求、64 token、一遍测量；正式为 16 请求、256 token、两遍测量。
+
+进度原子写入 output/status.json；命令、各任务日志、结果和成功回执
+分别保存。只有子进程成功退出且 complete.json 有效时才继续。
+已成功任务可在同一源码版本恢复时跳过；失败或未完成任务保留产物并
+要求检查，避免无人值守重复启动有问题的配置。GPU 查询失败会保持等待，
+不会误判为空闲；运行中查询失败、源码变化或外部 GPU 进程进入则停止
+自己的实验并保留失败信息。文件锁仅协调使用本脚本的进程，不是系统独占。
+
+创建 output/STOP 文件可停止等待或结束本程序启动的实验进程组，
+不终止其他人的任务。队列完成状态为 ACCEPTANCE_QUEUE_COMPLETE，
+不代表第 3 项已完成。本队列没有自动修复失败实验的能力。
