@@ -32,7 +32,7 @@ def main():
         "--dataset",
         type=Path,
         default=Path(
-            "benchmark_results/sampling_acceptance_t1_p095_4x256_d16_d32_"
+            "benchmark_results/.sources/sampling_acceptance_t1_p095_4x256_d16_d32_"
             "20260908/datasets/qwen36_first4.jsonl"
         ),
     )

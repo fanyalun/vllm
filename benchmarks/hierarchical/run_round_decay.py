@@ -18,7 +18,9 @@ def main():
     args = parser.parse_args()
     root = args.root.resolve()
     root.mkdir(parents=True, exist_ok=False)
-    previous = ROOT / "benchmark_results/gemma_token_importance_4x128_20260915_run3"
+    previous = (
+        ROOT / "benchmark_results/.sources/gemma_token_importance_4x128_20260915_run3"
+    )
     (root / "dataset.jsonl").write_bytes((previous / "dataset.jsonl").read_bytes())
     sources = {}
     for name in (

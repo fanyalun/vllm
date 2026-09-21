@@ -172,7 +172,8 @@ def main():
             time.sleep(30)
     source = (
         ROOT
-        / "benchmark_results/gemma_h4_confidence_late_16x128_20260915/dataset.jsonl"
+        / "benchmark_results/.sources/gemma_h4_confidence_late_16x128_20260915"
+        / "dataset.jsonl"
     )
     if not (root / "dataset.jsonl").exists():
         (root / "dataset.jsonl").write_bytes(source.read_bytes())

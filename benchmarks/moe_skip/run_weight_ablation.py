@@ -51,7 +51,7 @@ def main():
 
     dataset = args.dataset or (
         ROOT
-        / "benchmark_results/moe_skip_top_p_4x128_20260915"
+        / "benchmark_results/.sources/moe_skip_top_p_4x128_20260915_run2"
         / args.model
         / "dataset.jsonl"
     )

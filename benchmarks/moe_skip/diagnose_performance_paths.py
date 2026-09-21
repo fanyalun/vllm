@@ -14,7 +14,7 @@ from pathlib import Path
 from run_static_budget import MODELS
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = ROOT / "benchmark_results/moe_skip_static_budget_16x512_20260914"
+SOURCE = ROOT / "benchmark_results/.sources/moe_skip_static_budget_16x512_20260914"
 
 
 def write(path, value):

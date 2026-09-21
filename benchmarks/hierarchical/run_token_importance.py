@@ -126,7 +126,8 @@ def main():
     folder.mkdir(parents=True, exist_ok=True)
     source = (
         ROOT
-        / "benchmark_results/moe_skip_top_p_4x128_20260915_run2/gemma4/dataset.jsonl"
+        / "benchmark_results/.sources/moe_skip_top_p_4x128_20260915_run2"
+        / "gemma4/dataset.jsonl"
     )
     dataset = folder / "dataset.jsonl"
     cells = [

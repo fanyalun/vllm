@@ -18,7 +18,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     from vllm import LLM, SamplingParams
 
-    root = Path("benchmark_results/gemma_h4_policy_16x512_20260915_run3")
+    root = Path("benchmark_results/.sources/gemma_h4_policy_16x512_20260915_run3")
     dataset = root / "dataset.jsonl"
     samples = [json.loads(line) for line in dataset.read_text().splitlines()]
     ar = json.loads((root / "b16_ar/result.json").read_text())["outputs"]

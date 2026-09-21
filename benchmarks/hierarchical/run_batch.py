@@ -25,7 +25,9 @@ def main():
     parser.add_argument(
         "--dataset",
         type=Path,
-        default=Path("benchmark_results/three_level_p50_20260916/final_prompts.jsonl"),
+        default=Path(
+            "benchmark_results/.sources/three_level_p50_20260916/final_prompts.jsonl"
+        ),
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--eager", action="store_true")

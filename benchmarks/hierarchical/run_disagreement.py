@@ -106,7 +106,7 @@ def main():
         return
     root = args.root.resolve()
     root.mkdir(exist_ok=False)
-    prior = ROOT / "benchmark_results/gemma_round_decay_4x128_20260915"
+    prior = ROOT / "benchmark_results/.sources/gemma_round_decay_4x128_20260915"
     dataset = args.dataset or prior / "dataset.jsonl"
     (root / "dataset.jsonl").write_bytes(dataset.read_bytes())
     hypotheses = dataset.with_name("hypotheses.json")

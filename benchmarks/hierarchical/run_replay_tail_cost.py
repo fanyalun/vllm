@@ -27,7 +27,8 @@ def main():
 
     dataset = (
         REPO
-        / "benchmark_results/sampling_acceptance_t1_p095_4x256_d16_d32_20260908"
+        / "benchmark_results/.sources"
+        / "sampling_acceptance_t1_p095_4x256_d16_d32_20260908"
         / "datasets/qwen36_first4.jsonl"
     )
     samples = [json.loads(line) for line in dataset.read_text().splitlines()][:3]

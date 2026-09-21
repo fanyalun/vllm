@@ -13,10 +13,10 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PREVIOUS = ROOT / "benchmark_results/moe_skip_e2e_16x512_b1_20260908_run2"
+PREVIOUS = ROOT / "benchmark_results/.sources/moe_skip_e2e_16x512_b1_20260908_run2"
 DATASET = (
     ROOT
-    / "benchmark_results/moe_skip_qwen36_multicategory_128x512_20260906"
+    / "benchmark_results/.sources/moe_skip_qwen36_multicategory_128x512_20260906"
     / "dataset/multicategory_128.jsonl"
 )
 

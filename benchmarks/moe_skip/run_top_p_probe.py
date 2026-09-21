@@ -108,7 +108,7 @@ def main():
     folder = args.run_dir.resolve() / args.model
     folder.mkdir(parents=True, exist_ok=True)
     model, _ = MODELS[args.model]
-    source = ROOT / "benchmark_results/moe_skip_static_budget_16x512_20260914"
+    source = ROOT / "benchmark_results/.sources/moe_skip_static_budget_16x512_20260914"
     samples = [
         json.loads(s)
         for s in (source / args.model / "dataset.jsonl").read_text().splitlines()

@@ -143,7 +143,10 @@ def main():
             "CUDA_VISIBLE_DEVICES=0 .venv/bin/python "
             "benchmarks/kernels/benchmark_gdn_native_batch.py \\"
         ),
-        "  --inputs benchmark_results/three_level_p50_20260916/raw_inputs.pt \\",
+        (
+            "  --inputs benchmark_results/.sources/"
+            "three_level_p50_20260916/raw_inputs.pt \\"
+        ),
         "  --output benchmark_results/gdn_forced_paths_reproduction/run --forced-paths",
         ".venv/bin/python benchmarks/kernels/plot_gdn_forced_paths.py \\",
         f"  --input {args.input} --output {args.output}",
