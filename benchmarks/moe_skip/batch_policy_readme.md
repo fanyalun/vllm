@@ -4,6 +4,9 @@
 MoE-Skip drafts and hierarchical pre-verification. The final Target forward
 retains native routing. The default threshold policy is unchanged.
 
+Completed real-generation BS32/R4 acceptance and routing-count results:
+[Top-1 versus Top-2, 2026-09-22](top1_b32_r4_results_20260922.md).
+
 ## Semantics
 
 Each MoE layer aggregates its own current forward's non-padding token rows.
