@@ -77,7 +77,10 @@ def test_batch_policy_boundary_sets_and_ties(policy, case):
 @pytest.mark.parametrize("policy", ["batch_top_half", "batch_max_gap"])
 @pytest.mark.parametrize("tokens", [0, 1, 5, 33, 320, 640])
 @pytest.mark.parametrize("uniform", [False, True])
-def test_batch_routing_matches_reference_and_replays_padding(policy, tokens, uniform):
+@pytest.mark.parametrize("protected_top_k", [1, 2])
+def test_batch_routing_matches_reference_and_replays_padding(
+    policy, tokens, uniform, protected_top_k
+):
     from benchmarks.kernels.moe_batch_policy_reference import batch_policy_reference
     from vllm.model_executor.layers.fused_moe.router.batch_expert_selection import (
         select_batch_experts,
@@ -92,15 +95,18 @@ def test_batch_routing_matches_reference_and_replays_padding(policy, tokens, uni
     weights = scores.softmax(-1)
     padding = torch.arange(tokens, device="cuda") % 3 == 2
     expected_w, expected_i, _ = batch_policy_reference(
-        weights, ids, logits, policy, padding
+        weights, ids, logits, policy, padding, protected_top_k=protected_top_k
     )
-    actual_w, actual_i = select_batch_experts(weights, ids, logits, policy, padding)
+    cuda_policy = policy + ("_top1" if protected_top_k == 1 else "")
+    actual_w, actual_i = select_batch_experts(
+        weights, ids, logits, cuda_policy, padding
+    )
     assert torch.equal(actual_i, expected_i)
     assert torch.equal(actual_w, expected_w)
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         captured_w, captured_i = select_batch_experts(
-            weights, ids, logits, policy, padding
+            weights, ids, logits, cuda_policy, padding
         )
     for all_padding in (True, False, True):
         padding.fill_(all_padding)
@@ -110,7 +116,7 @@ def test_batch_routing_matches_reference_and_replays_padding(policy, tokens, uni
         weights.copy_(scores.softmax(-1))
         graph.replay()
         expected_w, expected_i, _ = batch_policy_reference(
-            weights, ids, logits, policy, padding
+            weights, ids, logits, policy, padding, protected_top_k=protected_top_k
         )
         assert torch.equal(captured_i, expected_i)
         assert torch.equal(captured_w, expected_w)
@@ -152,7 +158,8 @@ def test_call_level_routing_top_k_does_not_leak(monkeypatch):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize("policy", ["batch_top_half", "batch_max_gap"])
 @pytest.mark.parametrize("tokens", [1, 5, 33])
-def test_batch_router_dispatch_and_target_isolation(policy, tokens):
+@pytest.mark.parametrize("protected_top_k", [1, 2])
+def test_batch_router_dispatch_and_target_isolation(policy, tokens, protected_top_k):
     from benchmarks.kernels.moe_batch_policy_reference import batch_policy_reference
     from vllm.model_executor.layers.fused_moe.fused_moe import fused_experts
 
@@ -163,7 +170,10 @@ def test_batch_router_dispatch_and_target_isolation(policy, tokens):
     w2 = torch.randn(128, 128, 64, device="cuda", dtype=torch.bfloat16) / 16
     router = FusedTopKRouter(top_k=8, global_num_experts=128)
     native_w, native_i = router.select_experts(x, logits)
-    expected_w, _, _ = batch_policy_reference(native_w, native_i, logits, policy)
+    expected_w, _, _ = batch_policy_reference(
+        native_w, native_i, logits, policy, protected_top_k=protected_top_k
+    )
+    policy += "_top1" if protected_top_k == 1 else ""
     reference = fused_experts(x, w1, w2, expected_w, native_i)
     context = ForwardContext(
         no_compile_layers={},

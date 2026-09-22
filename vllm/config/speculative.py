@@ -606,8 +606,16 @@ class SpeculativeConfig:
     threshold. The target keeps its configured routing top-k.
     """
 
-    moe_skip_batch_policy: Literal["batch_top_half", "batch_max_gap"] | None = None
-    """Batch-wide expert pruning with a protected union of per-token Top-2."""
+    moe_skip_batch_policy: (
+        Literal[
+            "batch_top_half",
+            "batch_max_gap",
+            "batch_top_half_top1",
+            "batch_max_gap_top1",
+        ]
+        | None
+    ) = None
+    """Batch-wide pruning protecting per-token Top-2, or Top-1 for *_top1."""
 
     moe_skip_min_weight: float | None = Field(default=None, gt=0, le=1)
     """Retain native top-k experts with normalized gate probability >= this value.

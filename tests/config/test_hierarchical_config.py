@@ -61,7 +61,10 @@ def test_gemma4_uses_shared_moe_preverification_with_full_outer_capacity(monkeyp
     assert config.moe_skip_min_weight == 0.125
 
 
-@pytest.mark.parametrize("policy", ["batch_top_half", "batch_max_gap"])
+@pytest.mark.parametrize(
+    "policy",
+    ["batch_top_half", "batch_max_gap", "batch_top_half_top1", "batch_max_gap_top1"],
+)
 def test_preverify_revalidates_resolved_batch_policy_without_top_h_conflict(
     monkeypatch, policy
 ):
@@ -112,6 +115,8 @@ def test_graph_hash_distinguishes_inner_method_depth_rounds_and_top_h(monkeypatc
             {"moe_skip_weight_mode": "renormalize"},
             {"moe_skip_batch_policy": "batch_top_half"},
             {"moe_skip_batch_policy": "batch_max_gap"},
+            {"moe_skip_batch_policy": "batch_top_half_top1"},
+            {"moe_skip_batch_policy": "batch_max_gap_top1"},
             {"preverify_gdn_mode": "ssm_mean"},
             {"preverify_gdn_mode": "input_mean"},
             {"preverify_gdn_mode": "replay_tail"},

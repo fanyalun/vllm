@@ -13,6 +13,11 @@ token's Top-2 experts, selected by gate logits with ascending expert-ID ties.
 All original connections to a protected expert survive, including that expert's
 lower-ranked connections on other tokens. No new connections are introduced.
 
+The opt-in `batch_top_half_top1` and `batch_max_gap_top1` variants protect the
+per-token Top-1 union instead. Their remaining selection and weight semantics
+are identical. Existing policy names continue to protect Top-2. The policy
+name participates in the compilation hash and is cleared in the inner drafter.
+
 Only active experts outside that protected union are candidates:
 
 - `batch_top_half`: keep `ceil(candidate_count / 2)` by descending aggregate
@@ -113,6 +118,22 @@ The batch timer is counted once, not once per request. `matrix_complete.json`
 requires every cell. Acceptance length is `1 + accepted_draft_tokens / steps`;
 an AR mismatch remains a reported mismatch, not a claim of lossless decoding.
 The four-prompt smoke is integration evidence, not a broad quality evaluation.
+
+For a four-round outer acceptance comparison, use `--inner-rounds 4
+--hierarchical-only --include-top1`. The inner MTP depth remains four, and
+outer candidate capacity becomes twenty. `mean_outer_accepted` excludes the
+Target bonus/correction token; `mean_outer_submitted` counts candidates actually
+submitted for verification. Both divide by the number of request verify steps.
+Their ratio equals total accepted candidates divided by submitted candidates.
+It is not an average of per-step acceptance ratios or returned output length.
+
+`--policy-family half` or `--policy-family max_gap` restricts each matrix to AR,
+native hierarchical, and the selected family's Top-2/Top-1 pair. This permits
+paired acceptance runs on separate GPUs with a native control on each device.
+For shared GPUs, `--cpu-offload-gb` and `--gpu-memory-utilization` are applied
+identically to every cell and stored in the manifest. Such runs do not establish
+unloaded-GPU throughput. Summarize a B4-only matrix with
+`--batches 4` in `summarize_batch_policy_matrix`.
 
 ## Tests
 

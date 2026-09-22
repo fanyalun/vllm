@@ -81,7 +81,10 @@ def test_moe_skip_rejects_invalid_top_h():
         _make_config(target_model_config=_target_config(top_k=0))
 
 
-@pytest.mark.parametrize("policy", ["batch_top_half", "batch_max_gap"])
+@pytest.mark.parametrize(
+    "policy",
+    ["batch_top_half", "batch_max_gap", "batch_top_half_top1", "batch_max_gap_top1"],
+)
 def test_batch_policy_disables_default_threshold_and_has_distinct_hash(policy):
     config = EngineArgs(
         spec_method="moe_skip", spec_tokens=4, moe_skip_batch_policy=policy

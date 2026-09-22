@@ -7,7 +7,7 @@ from vllm.triton_utils import tl, triton
 
 
 @triton.jit
-def _top_two(
+def _protected_top_k(
     IDS,
     LOGITS,
     PAD,
@@ -16,6 +16,7 @@ def _top_two(
     E: tl.constexpr,
     HAS_PAD: tl.constexpr,
     BK: tl.constexpr,
+    PROTECTED_K: tl.constexpr,
 ):
     row = tl.program_id(0)
     col = tl.arange(0, BK)
@@ -29,7 +30,7 @@ def _top_two(
         | ((scores[None, :] == scores[:, None]) & (ids[None, :] < ids[:, None]))
     )
     rank = tl.sum(ahead.to(tl.int32), 1)
-    tl.store(TOP + row * K + col, valid & (rank < 2), col < K)
+    tl.store(TOP + row * K + col, valid & (rank < PROTECTED_K), col < K)
 
 
 @triton.jit
@@ -128,7 +129,9 @@ def _mask(
 
 
 def select_batch_experts(weights, ids, logits, policy, is_padding=None):
-    """Prune native normalized Qwen routes with a batch-wide Top-2 union."""
+    """Prune native normalized Qwen routes with a protected expert union."""
+    protected_k = 1 if policy.endswith("_top1") else 2
+    policy = policy.removesuffix("_top1")
     if policy not in ("batch_top_half", "batch_max_gap"):
         raise ValueError(f"Unknown MoE-Skip batch policy: {policy}")
     if not weights.is_cuda:
@@ -153,8 +156,16 @@ def select_batch_experts(weights, ids, logits, policy, is_padding=None):
     active = torch.empty_like(protected)
     keep = torch.empty((e,), device=ids.device, dtype=torch.bool)
     has_pad = is_padding is not None
-    _top_two[(m,)](
-        ids, logits, is_padding, top, k, e, has_pad, triton.next_power_of_2(k)
+    _protected_top_k[(m,)](
+        ids,
+        logits,
+        is_padding,
+        top,
+        k,
+        e,
+        has_pad,
+        triton.next_power_of_2(k),
+        protected_k,
     )
     _aggregate[(e, chunks)](
         weights,

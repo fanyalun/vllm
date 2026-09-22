@@ -9,18 +9,15 @@ import math
 from pathlib import Path
 
 
-def summarize(root):
+def summarize(root, batches=(1, 4)):
     rows = []
-    for batch in (1, 4):
+    for batch in batches:
         folder = root / f"b{batch}"
         matrix = json.loads((folder / "matrix_complete.json").read_text())
         ar_outputs = json.loads((folder / "ar_native.json").read_text())["outputs"]
-        assert len(matrix["results"]) == 7
-        expected = {("ar", "native")} | {
-            (m, p)
-            for m in ("moe_skip", "hierarchical")
-            for p in ("native", "batch_top_half", "batch_max_gap")
-        }
+        expected = {tuple(cell) for cell in matrix["manifest"]["cells"]}
+        assert len(matrix["results"]) == len(expected)
+        rounds = matrix["manifest"].get("inner_rounds", 1)
         assert {(r["method"], r["policy"]) for r in matrix["results"]} == expected
         for cell in matrix["results"]:
             name = f"{cell['method']}_{cell['policy']}"
@@ -38,6 +35,12 @@ def summarize(root):
             if cell["method"] != "ar" and cell["policy"] == "native":
                 assert spec["moe_skip_top_h"] == 8
             assert data["args"]["batch_size"] == batch
+            assert data["args"].get("cpu_offload_gb", 0) == matrix["manifest"].get(
+                "cpu_offload_gb", 0
+            )
+            assert data["args"].get("gpu_memory_utilization", 0.95) == matrix[
+                "manifest"
+            ].get("gpu_memory_utilization", 0.95)
             assert data["args"]["gdn_mode"] == "none"
             assert data["args"]["temperature"] == 0
             assert data["args"]["repeats"] == 1
@@ -48,8 +51,8 @@ def summarize(root):
             elif cell["method"] == "hierarchical":
                 assert spec["inner_method"] == "mtp"
                 assert spec["inner_num_speculative_tokens"] == 4
-                assert spec["inner_num_rounds"] == 1
-                assert spec["num_speculative_tokens"] == 5
+                assert spec["inner_num_rounds"] == rounds
+                assert spec["num_speculative_tokens"] == rounds * 5
             assert len(data["batches"]) == 4 // batch
             assert sum(b["returned_tokens"] for b in data["batches"]) == 512
             assert all(b["elapsed_seconds"] > 0 for b in data["batches"])
@@ -82,13 +85,19 @@ def summarize(root):
                 accepted = sum(sum(m["per_step_accepted"]) for m in metrics)
                 drafted = sum(m["num_draft_tokens"] for m in metrics)
                 steps = sum(len(m["per_step_accepted"]) for m in metrics)
-                assert data["acceptance"] == dict(
+                expected_acceptance = dict(
                     drafted=drafted,
                     accepted=accepted,
                     steps=steps,
                     acceptance_rate=accepted / drafted,
                     mean_acceptance_length=1 + accepted / steps,
                 )
+                if "mean_outer_accepted" in data["acceptance"]:
+                    expected_acceptance.update(
+                        mean_outer_accepted=accepted / steps,
+                        mean_outer_submitted=drafted / steps,
+                    )
+                assert data["acceptance"] == expected_acceptance
                 assert data["acceptance"] == cell["acceptance"]
             log = (folder / f"{name}.log").read_text()
             assert "WARMUP_COMPLETE" in log
@@ -113,8 +122,9 @@ def summarize(root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--batches", type=int, nargs="+", default=[1, 4])
     args = parser.parse_args()
-    rows = summarize(args.root)
+    rows = summarize(args.root, args.batches)
     (args.root / "generation_summary.json").write_text(
         json.dumps(rows, indent=2) + "\n"
     )
@@ -125,8 +135,10 @@ def main():
         "Each batch has its own same-device AR and native-route controls.",
         "",
         "| B | Method | Policy | tok/s | vs native | vs AR | "
-        "Accept length | AR parity | Late JIT |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
+        "Accept length (+1) | Outer accepted | Outer submitted | "
+        "Accepted/submitted | AR parity | Late JIT |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: "
+        "| --- | --- |",
     ]
     for row in rows:
         length = (
@@ -135,11 +147,18 @@ def main():
             else "-"
         )
         parity = row["ar_parity"]
+        a = row["acceptance"]
+        outer = (
+            f"{a['accepted'] / a['steps']:.3f} | "
+            f"{a['drafted'] / a['steps']:.3f} | {a['acceptance_rate']:.2%}"
+            if a
+            else "- | - | -"
+        )
         parity = f"{parity['matched']}/{parity['total']}" if parity else "reference"
         text.append(
             f"| {row['batch']} | {row['method']} | {row['policy']} | "
             f"{row['throughput']:.2f} | {row['speedup_vs_native']:.3f}x | "
-            f"{row['speedup_vs_ar']:.3f}x | {length} | {parity} | "
+            f"{row['speedup_vs_ar']:.3f}x | {length} | {outer} | {parity} | "
             f"{row['late_jit']} |"
         )
     text += [

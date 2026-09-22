@@ -41,7 +41,15 @@ def main():
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-h", type=int, default=4)
-    parser.add_argument("--batch-policy", choices=("batch_top_half", "batch_max_gap"))
+    parser.add_argument(
+        "--batch-policy",
+        choices=(
+            "batch_top_half",
+            "batch_max_gap",
+            "batch_top_half_top1",
+            "batch_max_gap_top1",
+        ),
+    )
     parser.add_argument("--batch-size", type=int, choices=(1, 4), default=1)
     parser.add_argument("--draft-tokens", type=int)
     parser.add_argument("--inner-rounds", type=int, default=4)
@@ -54,6 +62,8 @@ def main():
     parser.add_argument("--batch-invariant", action="store_true")
     parser.add_argument("--trace-dir")
     parser.add_argument("--ssm-dtype", choices=("auto", "float32"), default="float32")
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.95)
+    parser.add_argument("--cpu-offload-gb", type=float, default=0)
     args = parser.parse_args()
     if args.gdn_mode != "none" and args.method != "hierarchical":
         parser.error("--gdn-mode requires --method hierarchical")
@@ -128,7 +138,8 @@ def main():
         max_model_len=1024,
         max_num_seqs=args.batch_size,
         max_num_batched_tokens=1024,
-        gpu_memory_utilization=0.95,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        cpu_offload_gb=args.cpu_offload_gb,
         enable_prefix_caching=False,
         mamba_ssm_cache_dtype=args.ssm_dtype,
         limit_mm_per_prompt={"image": 0, "video": 0},
@@ -236,6 +247,8 @@ def main():
             steps=steps,
             acceptance_rate=accepted / drafted if drafted else None,
             mean_acceptance_length=1 + accepted / steps if steps else None,
+            mean_outer_accepted=accepted / steps if steps else None,
+            mean_outer_submitted=drafted / steps if steps else None,
         )
     if args.ar_reference:
         ar = json.loads(args.ar_reference.read_text())

@@ -18,22 +18,35 @@ def main():
     parser.add_argument("--batch-size", type=int, choices=(1, 4), required=True)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--resume-after-fix", action="store_true")
+    parser.add_argument("--inner-rounds", type=int, default=1)
+    parser.add_argument("--hierarchical-only", action="store_true")
+    parser.add_argument("--include-top1", action="store_true")
+    parser.add_argument("--policy-family", choices=("half", "max_gap"))
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.95)
+    parser.add_argument("--cpu-offload-gb", type=float, default=0)
     args = parser.parse_args()
     if args.resume_after_fix and not args.resume:
         parser.error("--resume-after-fix requires --resume")
     args.output.mkdir(parents=True, exist_ok=args.resume)
     cells = [("ar", "native")]
-    cells += [
-        (method, policy)
-        for method in ("moe_skip", "hierarchical")
-        for policy in ("native", "batch_top_half", "batch_max_gap")
-    ]
+    methods = (
+        ("hierarchical",) if args.hierarchical_only else ("moe_skip", "hierarchical")
+    )
+    policies = ["native", "batch_top_half", "batch_max_gap"]
+    if args.include_top1:
+        policies += ["batch_top_half_top1", "batch_max_gap_top1"]
+    if args.policy_family:
+        prefix = "batch_top_half" if args.policy_family == "half" else "batch_max_gap"
+        policies = [p for p in policies if p == "native" or p.startswith(prefix)]
+    cells += [(method, policy) for method in methods for policy in policies]
     source_paths = subprocess.check_output(
         ["git", "diff", "HEAD", "--name-only", "--diff-filter=ACM"], text=True
     ).splitlines() + [
         "vllm/model_executor/layers/fused_moe/router/batch_expert_selection.py",
         "benchmarks/kernels/moe_batch_policy_reference.py",
         "benchmarks/moe_skip/run_batch_policy_matrix.py",
+        "benchmarks/hierarchical/run_cell.py",
+        "vllm/config/speculative.py",
     ]
     source_hashes = {
         p: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in source_paths
@@ -44,6 +57,9 @@ def main():
         device=args.device,
         batch_size=args.batch_size,
         cells=cells,
+        inner_rounds=args.inner_rounds,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        cpu_offload_gb=args.cpu_offload_gb,
     )
     request_path = args.output / "request.json"
     if args.resume and request_path.exists():
@@ -58,6 +74,12 @@ def main():
             )
         assert previous["device"] == args.device
         assert previous["batch_size"] == args.batch_size
+        assert previous["cells"] == [list(cell) for cell in cells]
+        assert previous.get("inner_rounds", 1) == args.inner_rounds
+        assert previous.get("cpu_offload_gb", 0) == args.cpu_offload_gb
+        assert (
+            previous.get("gpu_memory_utilization", 0.95) == args.gpu_memory_utilization
+        )
     request_path.write_text(json.dumps(manifest, indent=2) + "\n")
     summaries = []
     ar_path = args.output / "ar_native.json"
@@ -79,7 +101,11 @@ def main():
             "--num-samples",
             "4",
             "--inner-rounds",
-            "1",
+            str(args.inner_rounds),
+            "--gpu-memory-utilization",
+            str(args.gpu_memory_utilization),
+            "--cpu-offload-gb",
+            str(args.cpu_offload_gb),
             "--output",
             str(output),
         ]
