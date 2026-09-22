@@ -62,7 +62,7 @@ Both new four-cell matrices passed result hashes, prompt/seed pairing,
 per-step versus histogram counters, output length, configuration checks, and
 recomputed AR parity. Every recorded step satisfies 0 <= accepted <= submitted
 <= 20. All recorded source hashes match the tested files. The run used base
-commit `6694699e43` plus the recorded working-tree changes.
+commit `9b18ad27b0` plus the recorded working-tree changes.
 
 Canonical local results:
 
