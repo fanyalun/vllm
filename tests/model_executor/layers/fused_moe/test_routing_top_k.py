@@ -15,21 +15,27 @@ from vllm.model_executor.layers.fused_moe.router.fused_topk_router import (
 
 
 @pytest.mark.parametrize(
-    "policy, expected",
+    "policy, protected_top_k, expected",
     [
-        ("batch_top_half", [1, 3, 0, 2, -1, -1]),
-        ("batch_max_gap", [1, 3, 0, -1, -1, -1]),
+        ("batch_top_half", 2, [1, 3, 0, 2, -1, -1]),
+        ("batch_max_gap", 2, [1, 3, 0, -1, -1, -1]),
+        ("batch_top_half", 1, [1, 3, 0, 2, -1, -1]),
+        ("batch_max_gap", 1, [1, -1, 0, -1, -1, -1]),
     ],
 )
-def test_batch_reference_protects_union_and_sorts_unsorted_slots(policy, expected):
+def test_batch_reference_protects_union_and_sorts_unsorted_slots(
+    policy, protected_top_k, expected
+):
     from benchmarks.kernels.moe_batch_policy_reference import batch_policy_reference
 
     ids = torch.tensor([[1, 3, 0, 2, 4, 5]], dtype=torch.int32)
     weights = torch.tensor([[0.25, 0.125, 0.5, 0.0625, 0.03125, 0.03125]])
     logits = torch.zeros(1, 8).scatter_(1, ids.long(), weights.log())
-    w, actual, stats = batch_policy_reference(weights, ids, logits, policy)
+    w, actual, stats = batch_policy_reference(
+        weights, ids, logits, policy, protected_top_k=protected_top_k
+    )
     assert actual.tolist() == [expected]
-    assert stats["protected_unique"] == 2
+    assert stats["protected_unique"] == protected_top_k
     assert torch.equal(w, weights.masked_fill(actual < 0, 0))
 
 

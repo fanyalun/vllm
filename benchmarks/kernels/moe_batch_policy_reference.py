@@ -4,8 +4,12 @@
 import torch
 
 
-def batch_policy_reference(weights, ids, logits, policy, is_padding=None):
+def batch_policy_reference(
+    weights, ids, logits, policy, is_padding=None, *, protected_top_k=2
+):
     """Independent, untimed CPU oracle and diagnostics for batch routing."""
+    if not 1 <= protected_top_k <= ids.shape[1]:
+        raise ValueError("protected_top_k must be within the native top-k")
     device = weights.device
     w, routes, gate = weights.cpu(), ids.cpu(), logits.float().cpu()
     padding = (
@@ -29,7 +33,7 @@ def batch_policy_reference(weights, ids, logits, policy, is_padding=None):
         ordered = sorted(
             selected, key=lambda pair: (-float(gate[row, pair[0]]), pair[0])
         )
-        protected.update(expert for expert, _ in ordered[:2])
+        protected.update(expert for expert, _ in ordered[:protected_top_k])
     candidates = sorted(active - protected, key=lambda e: (-scores[e], e))
     n = len(candidates)
     if policy == "batch_top_half":
