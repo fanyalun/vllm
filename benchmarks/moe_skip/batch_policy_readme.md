@@ -135,6 +135,33 @@ identically to every cell and stored in the manifest. Such runs do not establish
 unloaded-GPU throughput. Summarize a B4-only matrix with
 `--batches 4` in `summarize_batch_policy_matrix`.
 
+For BS32, pass `--batch-size 32 --num-samples 32` and an explicit `--dataset`.
+The first 32 samples of `benchmarks/hierarchical/previous_config_20260909/samples_128.jsonl`
+contain eight distinct prompts from each of four categories. Generation remains
+128 tokens per prompt. `--routing-counts` adds a second, instrumented generation
+pass for each hierarchical batch policy. It requires exact token and per-step
+acceptance parity with that cell's uninstrumented pass before marking completion.
+
+The benchmark worker rebuilds only private Pre-Verify graphs. Inside each layer,
+integer scatter counts record native and retained active experts and connections,
+excluding padding. After each real `_verify` call, its latest layer counts are
+added once; internal graph warmups/capture and the excluded request warmup are
+not accumulated. Final Target and inner MTP routing are outside this scope.
+Whole-expert skip fraction is one minus summed retained expert invocations
+divided by summed native expert invocations across layers and calls. Connection
+skip fraction uses token-expert assignments instead. These are weighted ratios,
+not the union of experts across an entire generation or an unweighted mean of
+per-call percentages. Raw counts include per-layer and active-request breakdowns
+so full BS32 can be distinguished from the shrinking tail.
+
+`--eager` avoids private graph-capture state snapshots when shared-GPU memory
+is constrained. It is supported by both the cell and matrix runners and by the
+routing counter. `--ssm-dtype bfloat16` explicitly selects BF16 SSM storage;
+`auto` follows the model configuration and can resolve to FP32. Record this
+precision change when comparing against earlier FP32 runs. A fixed
+`--kv-cache-memory-bytes` allocation must accommodate the requested concurrency;
+setting `--batch-size 32` alone does not prove that 32 requests ran together.
+
 ## Tests
 
 ```bash

@@ -7,6 +7,97 @@ from pathlib import Path
 import pytest
 
 
+@pytest.mark.parametrize("all_padding", [False, True])
+def test_route_counts_exclude_padding_and_count_unique_experts(all_padding):
+    import torch
+
+    from benchmarks.hierarchical.routing_count_worker import route_counts
+
+    native = torch.tensor([[0, 1, 2], [0, 2, 3], [3, 4, 5]])
+    kept = torch.tensor([[0, -1, 2], [0, 2, -1], [3, 4, 5]])
+    padding = torch.tensor([all_padding, all_padding, True])
+    counts = route_counts(native, kept, padding, 6)
+    assert counts.tolist() == ([0, 0, 0, 0] if all_padding else [4, 6, 2, 4])
+
+
+def test_route_counts_update_on_graph_replay():
+    import torch
+
+    from benchmarks.hierarchical.routing_count_worker import route_counts
+
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required")
+    native = torch.tensor([[0, 1], [1, 2]], device="cuda")
+    kept = native.clone()
+    padding = torch.zeros(2, dtype=torch.bool, device="cuda")
+    route_counts(native, kept, padding, 4)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        counts = route_counts(native, kept, padding, 4)
+    kept[:, 1] = -1
+    padding[1] = True
+    graph.replay()
+    assert counts.tolist() == [2, 2, 1, 1]
+    padding.fill_(True)
+    graph.replay()
+    assert counts.tolist() == [0, 0, 0, 0]
+
+
+def test_route_counts_exclude_verify_graph_construction_and_warmup(monkeypatch):
+    from types import SimpleNamespace
+
+    import torch
+
+    from benchmarks.hierarchical.routing_count_worker import RoutingCountWorker
+    from vllm.model_executor.layers.fused_moe.router import batch_expert_selection
+
+    native = torch.tensor([[0, 1], [1, 2]])
+    kept = torch.tensor([[0, -1], [1, -1]])
+    monkeypatch.setattr(
+        batch_expert_selection, "select_batch_experts", lambda *args: (None, kept)
+    )
+    config = SimpleNamespace(preverify_gdn_mode="none", moe_skip_batch_policy="half")
+    spec = SimpleNamespace(
+        config=config,
+        device="cpu",
+        preverify_graphs={"old": None},
+        vllm_config=SimpleNamespace(
+            model_config=SimpleNamespace(
+                hf_text_config=SimpleNamespace(num_hidden_layers=1)
+            )
+        ),
+    )
+
+    def eager(*args):
+        batch_expert_selection.select_batch_experts(
+            None, native, torch.zeros(2, 3), "half", None
+        )
+
+    def verify(*args):
+        # Model private graph warmups, capture, and the actual forward.
+        for _ in range(5):
+            spec._verify_eager(*args)
+
+    spec._verify_eager = eager
+    spec._verify = verify
+    worker = RoutingCountWorker()
+    worker.model_runner = SimpleNamespace(speculator=spec)
+    worker.setup_routing_counts()
+    batch = SimpleNamespace(num_reqs=2, num_tokens=2)
+    spec._verify(batch, None, None)
+    worker.begin_routing_counts()
+    for _ in range(2):
+        spec._verify(batch, None, None)
+    measured = worker.collect_routing_counts()
+    assert measured["native_expert_invocations"] == 6
+    assert measured["retained_expert_invocations"] == 4
+    assert measured["native_connections"] == 8
+    assert measured["retained_connections"] == 4
+    assert measured["preverify_calls"] == [
+        dict(active_requests=2, token_rows=2, calls=2)
+    ]
+
+
 @pytest.fixture
 def scripts(monkeypatch):
     monkeypatch.syspath_prepend(

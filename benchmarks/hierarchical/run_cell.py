@@ -37,6 +37,7 @@ def main():
     )
     parser.add_argument("--output", required=True)
     parser.add_argument("--max-tokens", type=int, default=256)
+    parser.add_argument("--warmup-tokens", type=int)
     parser.add_argument("--num-samples", type=int, default=4)
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--temperature", type=float, default=0.0)
@@ -50,7 +51,7 @@ def main():
             "batch_max_gap_top1",
         ),
     )
-    parser.add_argument("--batch-size", type=int, choices=(1, 4), default=1)
+    parser.add_argument("--batch-size", type=int, choices=(1, 4, 32), default=1)
     parser.add_argument("--draft-tokens", type=int)
     parser.add_argument("--inner-rounds", type=int, default=4)
     parser.add_argument("--ar-reference", type=Path)
@@ -61,9 +62,14 @@ def main():
     parser.add_argument("--check-preverify", action="store_true")
     parser.add_argument("--batch-invariant", action="store_true")
     parser.add_argument("--trace-dir")
-    parser.add_argument("--ssm-dtype", choices=("auto", "float32"), default="float32")
+    parser.add_argument(
+        "--ssm-dtype", choices=("auto", "float32", "bfloat16"), default="float32"
+    )
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.95)
     parser.add_argument("--cpu-offload-gb", type=float, default=0)
+    parser.add_argument("--routing-counts", action="store_true")
+    parser.add_argument("--kv-cache-memory-bytes", type=int)
+    parser.add_argument("--capture-sizes", type=int, nargs="+")
     args = parser.parse_args()
     if args.gdn_mode != "none" and args.method != "hierarchical":
         parser.error("--gdn-mode requires --method hierarchical")
@@ -71,6 +77,8 @@ def main():
         parser.error("--batch-policy requires moe_skip or hierarchical")
     if args.num_samples % args.batch_size:
         parser.error("--num-samples must be divisible by --batch-size")
+    if args.routing_counts and (args.method != "hierarchical" or not args.batch_policy):
+        parser.error("--routing-counts requires hierarchical with a batch policy")
     if args.log:
         with open(args.log, "w") as log_file:
             os.dup2(log_file.fileno(), 1)
@@ -140,6 +148,12 @@ def main():
         max_num_batched_tokens=1024,
         gpu_memory_utilization=args.gpu_memory_utilization,
         cpu_offload_gb=args.cpu_offload_gb,
+        kv_cache_memory_bytes=args.kv_cache_memory_bytes,
+        compilation_config=(
+            {"cudagraph_capture_sizes": args.capture_sizes}
+            if args.capture_sizes
+            else None
+        ),
         enable_prefix_caching=False,
         mamba_ssm_cache_dtype=args.ssm_dtype,
         limit_mm_per_prompt={"image": 0, "video": 0},
@@ -149,6 +163,11 @@ def main():
         disable_log_stats=True,
         seed=20260908,
         kernel_config={"moe_backend": "triton"},
+        worker_extension_cls=(
+            "benchmarks.hierarchical.routing_count_worker.RoutingCountWorker"
+            if args.routing_counts
+            else ""
+        ),
     )
     result = {
         "args": vars(args),
@@ -160,7 +179,7 @@ def main():
     params = SamplingParams(
         temperature=args.temperature,
         top_p=0.95 if args.temperature else 1.0,
-        max_tokens=args.max_tokens,
+        max_tokens=args.warmup_tokens or args.max_tokens,
         ignore_eos=True,
         seed=20260908,
     )
@@ -262,6 +281,61 @@ def main():
             assert row["seed"] == ref["seed"]
             parity.append(row["token_ids"] == ref["token_ids"])
         result["ar_parity"] = dict(matched=sum(parity), total=len(parity))
+    if args.routing_counts:
+        llm.collective_rpc("setup_routing_counts")
+        llm.generate(
+            [s["prompt"] for s in samples[: args.batch_size]], params, use_tqdm=False
+        )
+        llm.collective_rpc("begin_routing_counts")
+        observed = []
+        for repeat in range(args.repeats):
+            for start in range(0, len(samples), args.batch_size):
+                group = samples[start : start + args.batch_size]
+                group_params = [
+                    SamplingParams(
+                        temperature=args.temperature,
+                        top_p=0.95 if args.temperature else 1.0,
+                        max_tokens=args.max_tokens,
+                        ignore_eos=True,
+                        seed=20260908 + start + i,
+                    )
+                    for i in range(len(group))
+                ]
+                requests = llm.generate(
+                    [s["prompt"] for s in group], group_params, use_tqdm=False
+                )
+                for offset, request in enumerate(requests):
+                    out = request.outputs[0]
+                    observed.append(
+                        dict(
+                            repeat=repeat,
+                            sample_index=start + offset,
+                            token_ids=list(out.token_ids),
+                            spec_decode_metrics=dataclasses.asdict(
+                                out.spec_decode_metrics
+                            ),
+                        )
+                    )
+        result["routing_counts"] = llm.collective_rpc("collect_routing_counts")[0]
+        assert any(
+            row["active_requests"] == args.batch_size
+            for row in result["routing_counts"]["preverify_calls"]
+        ), "Requested batch size was never reached"
+        result["instrumented_outputs"] = observed
+        result["instrumentation_parity"] = dict(
+            tokens=all(
+                a["token_ids"] == b["token_ids"]
+                for a, b in zip(result["outputs"], observed, strict=True)
+            ),
+            acceptance=all(
+                a["spec_decode_metrics"] == b["spec_decode_metrics"]
+                for a, b in zip(result["outputs"], observed, strict=True)
+            ),
+        )
+        output.write_text(json.dumps(result, indent=2, default=str) + "\n")
+        assert all(result["instrumentation_parity"].values()), (
+            "Instrumentation parity failed"
+        )
     result["complete"] = True
     output.write_text(json.dumps(result, indent=2, default=str) + "\n")
 
