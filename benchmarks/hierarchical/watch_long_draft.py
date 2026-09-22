@@ -26,12 +26,38 @@ def command_output(command):
 def fingerprint():
     digest = hashlib.sha256()
     for command in (
-        ["git", "rev-parse", "HEAD"],
-        ["git", "diff", "HEAD", "--", "vllm", "benchmarks/hierarchical"],
+        ["git", "rev-parse", "HEAD:vllm"],
+        ["git", "diff", "HEAD", "--", "vllm"],
     ):
         digest.update(command_output(command).encode())
     digest.update(DATASET.read_bytes())
+    for name in (
+        "watch_long_draft.py",
+        "run_long_draft.py",
+        "long_draft_worker.py",
+        "batch_worker.py",
+    ):
+        digest.update((ROOT / "benchmarks/hierarchical" / name).read_bytes())
     return digest.hexdigest()
+
+
+def refresh_source(output, request_path, source, current):
+    if current == source:
+        return source
+    if any(output.glob("*_command.json")) or any(output.glob("*_success.json")):
+        raise RuntimeError("Source changed after first launch; queue stopped")
+    request = json.loads(request_path.read_text())
+    request.setdefault("source_history", []).append(
+        dict(
+            previous=source,
+            current=current,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            reason="Rebased before any experiment launched",
+        )
+    )
+    request["fingerprint"] = current
+    write_json(request_path, request)
+    return current
 
 
 def gpu_snapshot():
@@ -117,8 +143,8 @@ def _run_queue(output, interval, handles):
     source = fingerprint()
     request_path = output / "request.json"
     if request_path.exists():
-        if json.loads(request_path.read_text())["fingerprint"] != source:
-            raise RuntimeError("Source changed; use a new output directory")
+        previous = json.loads(request_path.read_text())["fingerprint"]
+        source = refresh_source(output, request_path, previous, source)
     else:
         write_json(
             request_path,
@@ -160,8 +186,10 @@ def _run_queue(output, interval, handles):
             while True:
                 if (output / "STOP").exists():
                     raise InterruptedError("Stopped by STOP file")
-                if fingerprint() != source:
-                    raise RuntimeError("Source changed while waiting; queue stopped")
+                current = fingerprint()
+                if current != source:
+                    source = refresh_source(output, request_path, source, current)
+                    stable_uuid, count = None, 0
                 try:
                     snapshot = gpu_snapshot()
                     idle = [
@@ -222,6 +250,16 @@ def _run_queue(output, interval, handles):
                 "1" if phase == "smoke" else "2",
             ]
             write_json(output / f"{job}_command.json", command)
+            if fingerprint() != source:
+                raise RuntimeError("Source changed immediately before launch")
+            write_json(
+                output / f"{job}_source.json",
+                dict(
+                    fingerprint=source,
+                    commit=command_output(["git", "rev-parse", "HEAD"]).strip(),
+                    runtime_diff=command_output(["git", "diff", "HEAD", "--", "vllm"]),
+                ),
+            )
             with log_path.open("x") as log:
                 child = subprocess.Popen(
                     command,
@@ -254,6 +292,8 @@ def _run_queue(output, interval, handles):
                 raise RuntimeError(
                     f"{job} failed, exit={child.returncode}; see {log_path}"
                 )
+            if fingerprint() != source:
+                raise RuntimeError("Source changed before result validation")
             if not json.loads(complete.read_text()).get("completed"):
                 raise RuntimeError(f"Invalid completion marker for {job}")
             write_json(receipt, dict(completed=True, gpu=selected, exit_code=0))

@@ -26,6 +26,31 @@ from benchmarks.hierarchical.summarize_policy_matrix import summarize
 from benchmarks.hierarchical.summarize_replay_tail import summarize as summarize_replay
 
 
+def test_idle_queue_refreshes_source_before_first_experiment(tmp_path):
+    from benchmarks.hierarchical.watch_long_draft import refresh_source
+
+    request = tmp_path / "request.json"
+    request.write_text(json.dumps(dict(fingerprint="old")))
+    assert refresh_source(tmp_path, request, "old", "new") == "new"
+    updated = json.loads(request.read_text())
+    assert updated["fingerprint"] == "new"
+    assert updated["source_history"][0]["previous"] == "old"
+    assert refresh_source(tmp_path, request, "new", "new") == "new"
+    assert json.loads(request.read_text()) == updated
+
+
+@pytest.mark.parametrize("marker", ["smoke_command.json", "smoke_success.json"])
+def test_idle_queue_rejects_mixed_sources_after_first_launch(tmp_path, marker):
+    from benchmarks.hierarchical.watch_long_draft import refresh_source
+
+    request = tmp_path / "request.json"
+    request.write_text(json.dumps(dict(fingerprint="old")))
+    (tmp_path / marker).write_text("{}")
+    with pytest.raises(RuntimeError, match="after first launch"):
+        refresh_source(tmp_path, request, "old", "new")
+    assert json.loads(request.read_text()) == dict(fingerprint="old")
+
+
 def test_paired_ablation_weights_forward_cost_not_per_window_speedup():
     from benchmarks.hierarchical.summarize_moe_gdn_ablation import paired_effects
 
