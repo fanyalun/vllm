@@ -43,20 +43,35 @@ def test_route_counts_update_on_graph_replay():
     assert counts.tolist() == [0, 0, 0, 0]
 
 
-def test_route_counts_exclude_verify_graph_construction_and_warmup(monkeypatch):
+@pytest.mark.parametrize("batch_policy", [True, False])
+def test_route_counts_exclude_verify_graph_construction_and_warmup(
+    monkeypatch, batch_policy
+):
     from types import SimpleNamespace
 
     import torch
 
     from benchmarks.hierarchical.routing_count_worker import RoutingCountWorker
+    from vllm import forward_context
     from vllm.model_executor.layers.fused_moe.router import batch_expert_selection
+    from vllm.model_executor.layers.fused_moe.router.base_router import BaseRouter
 
     native = torch.tensor([[0, 1], [1, 2]])
-    kept = torch.tensor([[0, -1], [1, -1]])
+    kept = torch.tensor([[0, -1], [1, -1]]) if batch_policy else native[:, :1]
     monkeypatch.setattr(
         batch_expert_selection, "select_batch_experts", lambda *args: (None, kept)
     )
-    config = SimpleNamespace(preverify_gdn_mode="none", moe_skip_batch_policy="half")
+    monkeypatch.setattr(BaseRouter, "select_routing_top_k", lambda *args: (None, kept))
+    monkeypatch.setattr(
+        forward_context, "get_forward_context", lambda: SimpleNamespace(is_padding=None)
+    )
+    config = SimpleNamespace(
+        preverify_gdn_mode="none",
+        moe_skip_batch_policy="half" if batch_policy else None,
+        moe_skip_top_h=1,
+        moe_skip_weight_mode="preserve",
+        moe_skip_min_weight=None,
+    )
     spec = SimpleNamespace(
         config=config,
         device="cpu",
@@ -69,9 +84,14 @@ def test_route_counts_exclude_verify_graph_construction_and_warmup(monkeypatch):
     )
 
     def eager(*args):
-        batch_expert_selection.select_batch_experts(
-            None, native, torch.zeros(2, 3), "half", None
-        )
+        if batch_policy:
+            batch_expert_selection.select_batch_experts(
+                None, native, torch.zeros(2, 3), "half", None
+            )
+        else:
+            BaseRouter.select_routing_top_k(
+                SimpleNamespace(top_k=2), None, native, torch.zeros(2, 3)
+            )
 
     def verify(*args):
         # Model private graph warmups, capture, and the actual forward.

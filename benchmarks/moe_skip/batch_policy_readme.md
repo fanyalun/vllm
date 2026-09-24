@@ -142,7 +142,10 @@ For BS32, pass `--batch-size 32 --num-samples 32` and an explicit `--dataset`.
 The first 32 samples of `benchmarks/hierarchical/previous_config_20260909/samples_128.jsonl`
 contain eight distinct prompts from each of four categories. Generation remains
 128 tokens per prompt. `--routing-counts` adds a second, instrumented generation
-pass for each hierarchical batch policy. It requires exact token and per-step
+pass for hierarchical batch policies or fixed top-h with preserved weights.
+For fixed Top-4, use `run_cell --top-h 4` without `--batch-policy`; the counter
+compares native Top-8 IDs against the actual retained Top-4 IDs on each layer.
+It requires exact token and per-step
 acceptance parity with that cell's uninstrumented pass before marking completion.
 
 The benchmark worker rebuilds only private Pre-Verify graphs. Inside each layer,

@@ -24,12 +24,18 @@ def route_counts(native_ids, retained_ids, padding, num_experts):
 class RoutingCountWorker:
     def setup_routing_counts(self):
         from vllm.model_executor.layers.fused_moe.router import batch_expert_selection
+        from vllm.model_executor.layers.fused_moe.router.base_router import BaseRouter
 
         spec = self.model_runner.speculator
         if spec.config.preverify_gdn_mode != "none":
             raise ValueError("Routing probe currently requires exact GDN")
-        if spec.config.moe_skip_batch_policy is None:
-            raise ValueError("Routing probe requires a batch policy")
+        batch_policy = spec.config.moe_skip_batch_policy is not None
+        if not batch_policy and (
+            spec.config.moe_skip_top_h is None
+            or spec.config.moe_skip_weight_mode != "preserve"
+            or spec.config.moe_skip_min_weight is not None
+        ):
+            raise ValueError("Routing probe requires batch policy or preserved top-h")
         if getattr(self, "_routing_installed", False):
             raise RuntimeError("Routing probe already installed")
         self._routing_installed = True
@@ -43,6 +49,7 @@ class RoutingCountWorker:
         )
         self._routing_by_requests = {}
         select = batch_expert_selection.select_batch_experts
+        select_top_k = BaseRouter.select_routing_top_k
         eager = spec._verify_eager
         verify = spec._verify
 
@@ -51,6 +58,23 @@ class RoutingCountWorker:
             if self._routing_current is not None:
                 self._routing_current.append(
                     route_counts(ids, result[1], is_padding, logits.shape[1])
+                )
+            return result
+
+        def selected_top_k(router, weights, ids, logits):
+            result = select_top_k(router, weights, ids, logits)
+            if self._routing_current is not None:
+                from vllm.forward_context import get_forward_context
+
+                assert ids.shape[1] == router.top_k
+                padding = get_forward_context().is_padding
+                self._routing_current.append(
+                    route_counts(
+                        ids,
+                        result[1],
+                        None if padding is None else padding[: ids.shape[0]],
+                        logits.shape[1],
+                    )
                 )
             return result
 
@@ -82,7 +106,10 @@ class RoutingCountWorker:
 
         # Existing graphs predate instrumentation; rebuild only private verify graphs.
         spec.preverify_graphs.clear()
-        batch_expert_selection.select_batch_experts = selected
+        if batch_policy:
+            batch_expert_selection.select_batch_experts = selected
+        else:
+            BaseRouter.select_routing_top_k = selected_top_k
         spec._verify_eager = measured_eager
         spec._verify = measured_verify
 

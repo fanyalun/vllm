@@ -77,8 +77,8 @@ def main():
         parser.error("--batch-policy requires moe_skip or hierarchical")
     if args.num_samples % args.batch_size:
         parser.error("--num-samples must be divisible by --batch-size")
-    if args.routing_counts and (args.method != "hierarchical" or not args.batch_policy):
-        parser.error("--routing-counts requires hierarchical with a batch policy")
+    if args.routing_counts and args.method != "hierarchical":
+        parser.error("--routing-counts requires hierarchical")
     if args.log:
         with open(args.log, "w") as log_file:
             os.dup2(log_file.fileno(), 1)
