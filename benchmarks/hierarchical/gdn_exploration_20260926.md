@@ -1,9 +1,12 @@
 # GDN drafting follow-up experiments
 
 This continues [the initial feasibility study](gdn_feasibility_20260926.md).
-The full-model draft still does not beat AR on Qwen3.6-35B-A3B after reducing
-per-step host overhead. This is a result for the measured implementation and
-hardware, not a general impossibility claim for GDN speculative decoding.
+The V2 full-model draft does not beat AR in the completed Qwen3.6-35B-A3B or
+Qwen3.5-4B experiments below. Reducing dispatch overhead and implementing
+parallel target verification have not changed that result. The dense model's
+native MTP4 does beat AR by 1.66x, demonstrating useful speculative headroom
+with a much cheaper draft. These are results for the measured implementation
+and hardware, not a general impossibility claim for GDN speculative decoding.
 
 ## Implemented changes
 
@@ -33,7 +36,9 @@ or a measurement of recurrent-kernel-only cost.
 
 The summary pairs only matching models, sampling settings and diagnostic
 environments, in addition to the original execution and prompt contract.
-All new cells preserve copies of their driver and worker alongside source hashes.
+Formal cells preserve copies of their driver and worker alongside source hashes.
+The first two diagnostic B2 block-graph smokes predate source copying and
+retain hashes only; they are not formal performance evidence.
 
 ## Paired full-model results
 
@@ -151,13 +156,150 @@ These numerical checks are not strict bitwise equivalence or model-output
 quality evaluation. The chunk final-only column omits prefix recovery and
 must not be presented as the usable verifier speedup.
 
-This supplies a concrete next design: retain compact per-layer chunk
-intermediates until target rejection sampling decides the accepted prefix,
-then reconstruct only that prefix's state. Full-model integration must still
-connect request/slot mapping, convolution state, graph buffer lifetimes,
-rejection and compaction to canonical cache writeback. The current scheduler's
-per-token state reservation also remains unchanged; the kernel prototype
-does not by itself solve the observed B64 K16 allocation failure.
+The real-input integration below exposes a precision failure not caught by
+these synthetic BF16 checks. The 2.31x result therefore does not establish a
+usable exact verifier. The current scheduler's per-token state reservation
+also remains unchanged; this prototype does not solve B64 K16 allocation.
+
+## Dense-model control
+
+Qwen3.5-4B is a dense FFN model with 24 GDN and 8 attention layers. Its official
+checkpoint revision is `851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a`;
+both downloaded weight shards match the published SHA-256 hashes. Source and
+hash receipts are `dense_model_source.json` and `dense_weights_verified.json`.
+The model is stored outside Git at `/home/fanya/model_assets/qwen3_5_4b`.
+
+These cells use one A100, the same distinct GSM8K prompt selection, BF16
+weights, FP32 SSM, greedy sampling, 128 returned tokens, one warmup and three
+uninstrumented repetitions. All full-model drafts use block graphs.
+
+| Actual batch | Method | K | Tokens/s | Relative to paired AR | Acceptance |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 64 | AR | 0 | 2544.79 | 1.000 | N/A |
+| 64 | Native MTP | 4 | 4225.73 | 1.661 | 69.58% |
+| 64 | V2 | 1 | 2263.37 | 0.889 | 99.37% |
+| 64 | V2 | 3 | 2402.65 | 0.944 | 98.67% |
+| 64 | V2 | 7 | 2362.91 | 0.929 | 96.20% |
+| 32 | AR | 0 | 2064.24 | 1.000 | N/A |
+| 32 | V2 | 16 | 1354.58 | 0.656 | 90.77% |
+
+The full B64 K7 and B32 K16 cells use 36 GiB cache. Earlier requested-B64
+K7/28-GiB and K16/56-GiB cells reach only 58 and 52 concurrent decode requests,
+respectively; their 1695.74 and 1512.94 tokens/s are capacity-limited results,
+excluded from the full-B64 comparison. AR B64 uses 56 GiB and MTP4 uses 28 GiB;
+neither is capacity-limited. Cache reservation is reported rather than assumed
+to imply the requested active batch.
+
+At full B64 K7, native versus V2 complete draft forward is 14.801 versus
+14.428 ms, only 1.026x. Reusing all GDN layer outputs gives 8.384 ms, a 1.765x
+oracle. At B32 K16, native versus V2 is 12.071 versus 11.944 ms, only 1.011x;
+the all-GDN oracle is 7.898 ms, or 1.529x. The dense model has more GDN headroom
+than the MoE model, but V2 captures little of it in a one-position forward.
+
+Strict AR agreement is 48/64 requests for V2 K1, 49/64 for both V2 K3 and K7,
+25/32 for V2 K16 and 51/64 for native MTP4. Repeated outputs are deterministic
+and draft/canonical-state
+checks pass; this still does not certify lossless equivalence to AR. GSM8K
+answer accuracy and stochastic distribution equivalence were not evaluated.
+
+## Integrated parallel target and precision correction
+
+`gdn_chunk_target.py` intercepts only canonical target GDN calls. It gathers
+the prior accepted state, computes the block in parallel, retains compact
+intermediates until rejection sampling, then reconstructs and writes the
+selected prefix. Private draft state follows its existing path, and native
+convolution state handling is retained. This is an eager-target benchmark
+adapter; draft block graphs remain enabled. Target CUDA Graph integration
+and reduced scheduler state reservation are not implemented.
+
+The initial BF16 adapter passes B2 and B8 smokes but fails the full B32 K16
+real-input state check even at `atol=rtol=0.02`: 14 out of 8,388,608 elements
+fail on rank 0 and 3 on rank 1, with maximum absolute errors 0.08075 and
+0.04246. That run has no completion marker and is not a throughput result.
+
+`gdn_parallel_fp32.py` instead retains FP32 normalized keys, triangular
+coefficients and corrected values. It contains a PyTorch triangular-solve
+reference and Triton TF32x3 implementations. Splitting update and output
+computation, then using 16-value update tiles, removes the register spills
+seen in the initial implementation. The final inspected coefficient, update
+and output variants all have zero spills; register counts remain as high as
+255, so this is not an unconstrained compute path.
+
+The final synthetic matrix (`fp32_final_verify.json`) includes prefix recovery
+and checks every prefix against native FP32 state at `atol=rtol=0.001`.
+Maximum state error across its six cells is below 8.7e-7. Relative to the
+Triton all-snapshot reference, B32/B64 width 17 speedups are 1.05x/1.12x;
+B32/B64 width 8 are 0.71x/0.79x. It ran on GPU 1 while the separate dense
+experiment initialized on GPU 0; CUDA graph event measurements are GPU-local.
+Both source hashes and compiled resource counts are retained in the JSON.
+
+Paired Qwen3.6 B32 K16 integration results, with sharded sampling and block
+draft graphs, are:
+
+| Target implementation | Tokens/s | Relative to native graph target |
+| --- | ---: | ---: |
+| Native, CUDA Graph | 878.76 | 1.000 |
+| Native, eager | 814.37 | 0.927 |
+| FP32 parallel, eager | 711.11 | 0.809 |
+
+FP32 completes warmup, all three timings and audit. The first full B32
+canonical GDN layer on each rank passes its selected-prefix state check:
+maximum state errors are 1.526e-5 and 1.335e-5; output errors are 1.526e-5
+and 6.104e-5. This check covers one layer per rank, not every model layer.
+There are 1950 intercepted calls and matching writebacks per rank across the
+run. The native eager and graph controls return identical tokens on 32/32
+requests; FP32 parallel matches them on only 19/32. Local numerical agreement
+does not imply strict sequence equivalence after repeated model steps.
+
+The current integrated path is therefore slower and cannot be called strictly
+lossless. Its data gathering, padding, intermediate allocation and deferred
+writeback must be accounted for along with the recurrent kernel. The local
+1.12x FP32 speedup does not pay for this integration.
+
+## Measured conditions for viability
+
+For a stationary full-batch cycle with K proposed tokens and A accepted draft
+tokens, a useful necessary cost test is:
+
+```text
+K * T_draft + T_verify + T_state_and_other < (E[A] + 1) * T_AR
+```
+
+All terms must use a consistent wall-clock boundary; prefill, batch shrinkage,
+sampling and terminal truncation require the complete returned-token
+benchmark for the final decision. In particular, the report's instrumented
+`target_execute` GPU stage excludes sampling and host scheduling. Thresholds
+derived from that stage are conditional diagnostics, not exact E2E budgets.
+
+At unchanged output count, the full B64 dense K7 implementation must reduce
+its total wall time by more than 7.15% just to equal AR, and by 22.62% to reach
+1.2x AR. Dense B32 K16 needs more than 34.38% and 45.32%, respectively. A
+near-2x speedup of a small recurrent subkernel cannot establish those savings.
+The best measured V2 dense cell, B64 K3, still needs 5.59% less total wall time
+to equal AR and 21.32% less to reach 1.2x. Shortening the window improves the
+result but does not produce an E2E win in this sweep.
+
+The evidence favors making the complete draft substantially cheaper, as the
+MTP control demonstrates, before adding a long draft window. A deployable
+parallel verifier additionally needs native-state/sequence correctness,
+graph-compatible gather and prefix writeback, and state allocation that
+preserves full concurrency. Acceptance near 90% alone satisfies none of these
+cost, capacity or correctness requirements.
+
+For an illustrative K16 cycle with E[A]=14.4, define r as complete draft-step
+cost divided by AR-step cost, and v as all verification and other cycle costs
+in AR-step units. Then breakeven requires `r < (15.4 - v) / 16`. The following
+are conditional budgets, not additional measured speedups:
+
+| Verification and other cost, v | Maximum draft/AR cost, r | Required draft speedup |
+| ---: | ---: | ---: |
+| 0 | 0.9625 | greater than 1.039x |
+| 2 | 0.8375 | greater than 1.194x |
+| 4 | 0.7125 | greater than 1.404x |
+| 8 | 0.4625 | greater than 2.162x |
+
+These costs must refer to the entire model step. A 2x GDN subkernel only
+reduces total step cost by half that subkernel's fraction, before overhead.
 
 ## Evidence and reproduction
 
@@ -178,6 +320,20 @@ CUDA_VISIBLE_DEVICES=0,1 PYTHONPATH=/home/fanya/vllm \
   benchmark_results/gdn_exploration_20260926
 
 CUDA_VISIBLE_DEVICES=0 PYTHONPATH=/home/fanya/vllm \
+  .venv/bin/python benchmarks/hierarchical/run_gdn_feasibility.py \
+  --output benchmark_results/my_dense_b64_k3 \
+  --model /home/fanya/model_assets/qwen3_5_4b \
+  --tp 1 --batch 64 --length 3 --tokens 128 --repeats 3 \
+  --kv-gib 36 --draft-block-graph --quality
+
+CUDA_VISIBLE_DEVICES=0,1 PYTHONPATH=/home/fanya/vllm \
+  .venv/bin/python benchmarks/hierarchical/run_gdn_feasibility.py \
+  --output benchmark_results/my_fp32_target_b32_k16 \
+  --tp 2 --batch 32 --length 16 --tokens 128 --repeats 3 --kv-gib 28 \
+  --draft-block-graph --batch-sharded-sampling --target-eager \
+  --target-chunk-verify --target-chunk-precision fp32 --quality
+
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH=/home/fanya/vllm \
   .venv/bin/python benchmarks/kernels/benchmark_gdn_chunk_verify.py \
   --output benchmark_results/my_chunk_verify.json \
   --batches 1 32 64 --lengths 8 17 --heads 16 --repeats 30
@@ -188,8 +344,9 @@ runtime diff SHA-256
 `e37ac0ae21723294e8733300b776155a4089caa26ee5f8438c50eb4feb6de407`.
 Unrelated runtime edits are not part of the benchmark publication.
 
-Validation: 41 measurement tests pass, including rejection of
-cross-model, differently sharded and diagnostic-timing baseline comparisons.
-Applicable pre-commit hooks pass for the six changed files. The final
-short-chunk kernel matrix is retained as `chunk_short_prefix_verify_r2.json`
-with all six cells complete, boundary checks and compiled-kernel resource data.
+All 41 measurement tests and applicable pre-commit checks pass. Validation
+logs and publication hashes are retained alongside the local artifacts.
+The measurement tests include rejection of cross-model, differently
+sharded and diagnostic-timing baseline comparisons. Both BF16 and FP32 kernel
+matrices, real-input failures, completed controls and source copies are kept;
+failed attempts are not silently replaced by later successes.

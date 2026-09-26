@@ -193,6 +193,9 @@ class GdnFeasibilityWorker(BatchWorker):
         capture_state_on_cpu=False,
         draft_block_graph=False,
         release_mtp_bootstrap=False,
+        target_chunk_verify=False,
+        target_eager=False,
+        target_chunk_precision="bf16",
     ):
         self.feasibility_rows = []
         self.feasibility_events = []
@@ -203,7 +206,11 @@ class GdnFeasibilityWorker(BatchWorker):
         self.feasibility_checks = []
         self.block_graph_checks = []
         self.released_mtp_bytes = 0
+        self.chunk_target = None
         runner = self.model_runner
+        self.target_eager = target_eager or not graphs
+        if target_eager:
+            runner.cudagraph_manager._graphs_captured = False
         if (
             runner.parallel_config.enable_batch_sharded_sampling
             and runner.batch_sharder is None
@@ -273,11 +280,25 @@ class GdnFeasibilityWorker(BatchWorker):
                 (spec.state, "advance", "conv_advance"),
             ):
                 self._time_method(owner, name, label)
+            if target_chunk_verify:
+                from benchmarks.hierarchical.gdn_chunk_target import ChunkTargetVerifier
+
+                if graphs and not target_eager:
+                    raise ValueError("Target chunk prototype requires eager execution")
+                self.chunk_target = ChunkTargetVerifier(
+                    spec.state.layers,
+                    length + 1,
+                    lambda: self.feasibility_quality,
+                    spec.max_num_reqs,
+                    target_chunk_precision,
+                )
         self._time_method(runner, "execute_model", "target_execute")
         original_sample = runner.sample
 
         def sample(hidden_states, batch, grammar_output):
             result = original_sample(hidden_states, batch, grammar_output)
+            if self.chunk_target is not None:
+                self.chunk_target.finish(batch, result[1])
             if self.feasibility_audit:
                 sampled = result[1][: batch.num_reqs].detach().clone()
                 self.feasibility_rows.append(
@@ -689,6 +710,15 @@ class GdnFeasibilityWorker(BatchWorker):
             "draft_block_graph": getattr(spec, "draft_block_graph", False),
             "block_graph_count": len(getattr(spec, "block_graphs", {})),
             "released_mtp_bytes": self.released_mtp_bytes,
+            "target_eager": self.target_eager,
+            "target_chunk": {
+                "precision": self.chunk_target.precision,
+                "calls": self.chunk_target.calls,
+                "writebacks": self.chunk_target.writebacks,
+                "checks": self.chunk_target.checks,
+            }
+            if self.chunk_target is not None
+            else None,
             "private_bytes": sum(
                 x.numel() * x.element_size()
                 for pair in spec.state.caches.values()

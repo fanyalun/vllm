@@ -59,6 +59,9 @@ def summarize_cell(path):
             "enable_batch_sharded_sampling", False
         ),
         "draft_block_graph": args.get("draft_block_graph", False),
+        "target_eager": args.get("target_eager", False) or args["eager"],
+        "target_chunk_verify": args.get("target_chunk_verify", False),
+        "target_chunk_precision": args.get("target_chunk_precision", "bf16"),
         "launch_blocking": manifest.get("diagnostic_environment", {}).get(
             "CUDA_LAUNCH_BLOCKING"
         ),
@@ -168,6 +171,7 @@ def summarize_cell(path):
     result["block_graph_checks_per_rank"] = [
         w.get("block_graph_checks", []) for w in audit["workers"]
     ]
+    result["target_chunk_per_rank"] = [w.get("target_chunk") for w in audit["workers"]]
     if worker["paired_forward"]:
         probe = worker["paired_forward"]
         result["paired_forward_median_ms"] = {
@@ -280,6 +284,9 @@ def main():
             if ref["completed"]
             and ref["variant"] == "native_draft"
             and same_contract(ref, row, native_spec=True)
+            and ref["target_eager"] == row["target_eager"]
+            and ref["target_chunk_verify"] == row["target_chunk_verify"]
+            and ref["target_chunk_precision"] == row["target_chunk_precision"]
         ]
         if controls:
             control = controls[-1]

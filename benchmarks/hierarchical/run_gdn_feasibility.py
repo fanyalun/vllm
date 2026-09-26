@@ -40,11 +40,22 @@ def main():
     parser.add_argument("--draft-block-graph", action="store_true")
     parser.add_argument("--batch-sharded-sampling", action="store_true")
     parser.add_argument("--release-mtp-bootstrap", action="store_true")
+    parser.add_argument("--target-chunk-verify", action="store_true")
+    parser.add_argument("--target-eager", action="store_true")
+    parser.add_argument(
+        "--target-chunk-precision", choices=("bf16", "fp32"), default="bf16"
+    )
     args = parser.parse_args()
     if args.draft_block_graph and (args.eager or args.variant in ("ar", "mtp")):
         parser.error("--draft-block-graph requires graph-mode full-model drafting")
     if args.release_mtp_bootstrap and args.variant in ("ar", "mtp"):
         parser.error("--release-mtp-bootstrap requires full-model drafting")
+    if args.target_chunk_verify and (
+        not (args.eager or args.target_eager)
+        or args.variant in ("ar", "mtp")
+        or not 8 <= args.length <= 63
+    ):
+        parser.error("--target-chunk-verify requires eager full-model draft K=8..63")
     args.output.mkdir(parents=True, exist_ok=False)
     os.environ["VLLM_USE_V2_MODEL_RUNNER"] = "1"
     os.environ["HF_HUB_OFFLINE"] = "1"
@@ -141,6 +152,16 @@ def main():
                 for p in (
                     Path(__file__),
                     Path(__file__).with_name("gdn_feasibility_worker.py"),
+                    *(
+                        [
+                            Path(__file__).with_name("gdn_chunk_target.py"),
+                            Path(__file__).parents[1]
+                            / "kernels/benchmark_gdn_chunk_verify.py",
+                            Path(__file__).parents[1] / "kernels/gdn_parallel_fp32.py",
+                        ]
+                        if args.target_chunk_verify
+                        else []
+                    ),
                 )
             },
             "gpu": subprocess.check_output(
@@ -164,7 +185,7 @@ def main():
             else "Native MTP four-candidate baseline"
             if args.variant == "mtp"
             else (
-                "Native MoE; fixed autoregressive V2 draft; exact native full-model "
+                "Unmodified FFN/MoE; fixed autoregressive V2 draft; full-model "
                 "verification; TP extension is benchmark-only local-head projection "
                 "adapter; no inner MTP proposals"
             ),
@@ -173,6 +194,15 @@ def main():
     for source in (
         Path(__file__),
         Path(__file__).with_name("gdn_feasibility_worker.py"),
+        *(
+            [
+                Path(__file__).with_name("gdn_chunk_target.py"),
+                Path(__file__).parents[1] / "kernels/benchmark_gdn_chunk_verify.py",
+                Path(__file__).parents[1] / "kernels/gdn_parallel_fp32.py",
+            ]
+            if args.target_chunk_verify
+            else []
+        ),
     ):
         (args.output / source.name).write_bytes(source.read_bytes())
     llm = LLM(**config)
@@ -185,6 +215,9 @@ def main():
             args.capture_state_on_cpu,
             args.draft_block_graph,
             args.release_mtp_bootstrap,
+            args.target_chunk_verify,
+            args.target_eager,
+            args.target_chunk_precision,
         ),
     )
     save("initialization.json", info)

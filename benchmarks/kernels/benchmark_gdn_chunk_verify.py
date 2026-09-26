@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Bound short-block parallel verification without claiming prefix recovery."""
+"""Measure short-block GDN verification including accepted-prefix recovery."""
 
 import argparse
 import hashlib
@@ -12,6 +12,13 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
+from benchmarks.kernels.gdn_parallel_fp32 import (
+    _parallel_output,
+    _parallel_updates,
+    _triangular_coefficients,
+    parallel_gdn_fp32,
+    parallel_gdn_fp32_fused,
+)
 from vllm.third_party.flash_linear_attention.ops.chunk import chunk_gated_delta_rule
 from vllm.third_party.flash_linear_attention.ops.chunk_delta_h import (
     chunk_gated_delta_rule_fwd_h,
@@ -228,6 +235,22 @@ def probe(batch, length, heads, repeats):
         state = recover(initial, normalized_k, updates, cumulative_g, prefix_lengths)
         return output, state
 
+    def fp32_prefix(fused=False):
+        g = -a_log.exp() * F.softplus(a.float() + dt)
+        forward = parallel_gdn_fp32_fused if fused else parallel_gdn_fp32
+        output, normalized_k, updates, cumulative = forward(
+            q.repeat_interleave(2, dim=2),
+            k.repeat_interleave(2, dim=2),
+            v,
+            g,
+            b.float().sigmoid(),
+            initial,
+        )
+        state = recover_prefix_fused(
+            initial, normalized_k, updates, cumulative, prefix_lengths
+        )
+        return output, state
+
     reset()
     expected = recurrent().clone()
     expected_state = states[indices[:, -1].long()].clone()
@@ -247,6 +270,8 @@ def probe(batch, length, heads, repeats):
     if not all(x["close"] for x in errors.values()):
         return dict(batch=batch, length=length, errors=errors, timed=False)
     prefix_max_abs = 0.0
+    fp32_prefix_max_abs = 0.0
+    fp32_fused_prefix_max_abs = 0.0
     for prefix in range(length + 1):
         prefix_lengths.fill_(prefix)
         output, recovered = chunk_prefix()
@@ -259,6 +284,18 @@ def probe(batch, length, heads, repeats):
         short_output, short_state = chunk_prefix(fused=True, short_tile=True)
         torch.testing.assert_close(short_output, expected, atol=0.01, rtol=0.01)
         torch.testing.assert_close(short_state, reference, atol=0.01, rtol=0.01)
+        fp32_output, fp32_state = fp32_prefix()
+        fp32_prefix_max_abs = max(
+            fp32_prefix_max_abs, (fp32_state - reference).abs().max().item()
+        )
+        torch.testing.assert_close(fp32_output, expected, atol=1e-3, rtol=1e-3)
+        torch.testing.assert_close(fp32_state, reference, atol=1e-3, rtol=1e-3)
+        fused_output, fused_state = fp32_prefix(fused=True)
+        fp32_fused_prefix_max_abs = max(
+            fp32_fused_prefix_max_abs, (fused_state - reference).abs().max().item()
+        )
+        torch.testing.assert_close(fused_output, expected, atol=1e-3, rtol=1e-3)
+        torch.testing.assert_close(fused_state, reference, atol=1e-3, rtol=1e-3)
     prefix_lengths.copy_(torch.arange(batch, device="cuda") % (length + 1))
     _, mixed_state = chunk_prefix(fused=True)
     selected = indices.gather(1, (prefix_lengths - 1).clamp_min(0)[:, None])[:, 0]
@@ -267,6 +304,11 @@ def probe(batch, length, heads, repeats):
     )
     torch.testing.assert_close(mixed_state, reference, atol=0.01, rtol=0.01)
     errors["all_prefix_states"] = {"close": True, "max_abs": prefix_max_abs}
+    errors["fp32_all_prefix_states"] = {"close": True, "max_abs": fp32_prefix_max_abs}
+    errors["fp32_fused_all_prefix_states"] = {
+        "close": True,
+        "max_abs": fp32_fused_prefix_max_abs,
+    }
     graphs = {}
     for name, fn in (
         ("all_snapshots", recurrent),
@@ -274,6 +316,8 @@ def probe(batch, length, heads, repeats):
         ("chunk_with_prefix_recovery", chunk_prefix),
         ("chunk_with_fused_recovery", lambda: chunk_prefix(fused=True)),
         ("short_chunk_with_fused_recovery", lambda: chunk_prefix(True, True)),
+        ("fp32_parallel_with_fused_recovery", fp32_prefix),
+        ("fp32_fused_parallel_with_recovery", lambda: fp32_prefix(True)),
     ):
         for _ in range(5):
             reset()
@@ -313,6 +357,12 @@ def probe(batch, length, heads, repeats):
         short_chunk_fused_prefix_speedup=(
             median["all_snapshots"] / median["short_chunk_with_fused_recovery"]
         ),
+        fp32_parallel_prefix_speedup=(
+            median["all_snapshots"] / median["fp32_parallel_with_fused_recovery"]
+        ),
+        fp32_fused_parallel_prefix_speedup=(
+            median["all_snapshots"] / median["fp32_fused_parallel_with_recovery"]
+        ),
         snapshot_state_bytes=(length + 1) * initial.numel() * 4,
         final_only_state_bytes=2 * initial.numel() * 4,
     )
@@ -348,6 +398,9 @@ def main():
             ["git", "rev-parse", "HEAD"], text=True
         ).strip(),
         source_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        helper_sha256=hashlib.sha256(
+            Path(__file__).with_name("gdn_parallel_fp32.py").read_bytes()
+        ).hexdigest(),
         recovery_boundary_checks=True,
         torch_allow_tf32=torch.backends.cuda.matmul.allow_tf32,
         rows=[],
@@ -371,6 +424,22 @@ def main():
         for cache in _recover_prefix.device_caches.values()
         for kernel in cache[0].values()
     ]
+    result["compiled_fp32"] = {
+        name: [
+            {
+                "registers": kernel.n_regs,
+                "spills": kernel.n_spills,
+                "shared_bytes": kernel.metadata.shared,
+            }
+            for cache in function.device_caches.values()
+            for kernel in cache[0].values()
+        ]
+        for name, function in (
+            ("coefficients", _triangular_coefficients),
+            ("updates", _parallel_updates),
+            ("output", _parallel_output),
+        )
+    }
     result["complete"] = all(row["timed"] for row in result["rows"])
     args.output.write_text(json.dumps(result, indent=2) + "\n")
 
