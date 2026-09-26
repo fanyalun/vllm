@@ -89,6 +89,34 @@ def test_gdn_feasibility_excludes_bonus_and_separates_shrinking_batches(tmp_path
     assert result["mean_decode_batch"] == 1.5
 
 
+@pytest.mark.parametrize(
+    "changed", ["model", "batch_sharded_sampling", "launch_blocking"]
+)
+def test_gdn_speedup_rejects_incompatible_baselines(changed):
+    from benchmarks.hierarchical.summarize_gdn_feasibility import same_contract
+
+    reference = dict(
+        batch=32,
+        tp=2,
+        eager=False,
+        tokens=128,
+        cpu_offload_gb=0,
+        prompt_sha256="prompts",
+        runtime_diff_sha256="runtime",
+        token_budget=4096,
+        cuda_visible_devices="0,1",
+        model="dense",
+        batch_sharded_sampling=False,
+        launch_blocking=None,
+        length=0,
+    )
+    candidate = dict(reference, length=16, draft_block_graph=True)
+    assert same_contract(reference, candidate)
+    assert not same_contract(reference, candidate, native_spec=True)
+    candidate[changed] = "different"
+    assert not same_contract(reference, candidate)
+
+
 def test_idle_queue_refreshes_source_before_first_experiment(tmp_path):
     from benchmarks.hierarchical.watch_long_draft import refresh_source
 

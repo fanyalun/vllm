@@ -37,7 +37,14 @@ def main():
     parser.add_argument("--kv-gib", type=float)
     parser.add_argument("--token-budget", type=int, default=4096)
     parser.add_argument("--capture-state-on-cpu", action="store_true")
+    parser.add_argument("--draft-block-graph", action="store_true")
+    parser.add_argument("--batch-sharded-sampling", action="store_true")
+    parser.add_argument("--release-mtp-bootstrap", action="store_true")
     args = parser.parse_args()
+    if args.draft_block_graph and (args.eager or args.variant in ("ar", "mtp")):
+        parser.error("--draft-block-graph requires graph-mode full-model drafting")
+    if args.release_mtp_bootstrap and args.variant in ("ar", "mtp"):
+        parser.error("--release-mtp-bootstrap requires full-model drafting")
     args.output.mkdir(parents=True, exist_ok=False)
     os.environ["VLLM_USE_V2_MODEL_RUNNER"] = "1"
     os.environ["HF_HUB_OFFLINE"] = "1"
@@ -86,6 +93,7 @@ def main():
         seed=42,
         disable_log_stats=True,
         speculative_config=spec,
+        enable_batch_sharded_sampling=args.batch_sharded_sampling,
         worker_extension_cls="benchmarks.hierarchical.gdn_feasibility_worker.GdnFeasibilityWorker",
     )
     if args.kv_gib:
@@ -144,6 +152,13 @@ def main():
                 text=True,
             ),
             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+            "diagnostic_environment": {
+                name: os.environ.get(name)
+                for name in (
+                    "CUDA_LAUNCH_BLOCKING",
+                    "CUDA_ENABLE_COREDUMP_ON_EXCEPTION",
+                )
+            },
             "scope": "Native autoregressive baseline"
             if args.variant == "ar"
             else "Native MTP four-candidate baseline"
@@ -155,10 +170,22 @@ def main():
             ),
         },
     )
+    for source in (
+        Path(__file__),
+        Path(__file__).with_name("gdn_feasibility_worker.py"),
+    ):
+        (args.output / source.name).write_bytes(source.read_bytes())
     llm = LLM(**config)
     info = llm.collective_rpc(
         "setup_feasibility",
-        args=(args.variant, args.length, not args.eager, args.capture_state_on_cpu),
+        args=(
+            args.variant,
+            args.length,
+            not args.eager,
+            args.capture_state_on_cpu,
+            args.draft_block_graph,
+            args.release_mtp_bootstrap,
+        ),
     )
     save("initialization.json", info)
     params = SamplingParams(

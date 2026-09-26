@@ -13,6 +13,26 @@ def read(path):
     return json.loads(path.read_text())
 
 
+def same_contract(reference, candidate, *, native_spec=False):
+    keys = (
+        "batch",
+        "tp",
+        "eager",
+        "tokens",
+        "cpu_offload_gb",
+        "prompt_sha256",
+        "runtime_diff_sha256",
+        "token_budget",
+        "cuda_visible_devices",
+        "model",
+        "batch_sharded_sampling",
+        "launch_blocking",
+    )
+    if native_spec:
+        keys += ("length",)
+    return all(reference[key] == candidate[key] for key in keys)
+
+
 def summarize_cell(path):
     manifest = read(path / "manifest.json")
     args = manifest["args"]
@@ -34,6 +54,14 @@ def summarize_cell(path):
         "runtime_diff_sha256": manifest["runtime_diff_sha256"],
         "token_budget": manifest["config"]["max_num_batched_tokens"],
         "cuda_visible_devices": manifest["cuda_visible_devices"],
+        "model": manifest["config"].get("model"),
+        "batch_sharded_sampling": manifest["config"].get(
+            "enable_batch_sharded_sampling", False
+        ),
+        "draft_block_graph": args.get("draft_block_graph", False),
+        "launch_blocking": manifest.get("diagnostic_environment", {}).get(
+            "CUDA_LAUNCH_BLOCKING"
+        ),
         "completed": (path / "complete.json").exists(),
     }
     if not result["completed"]:
@@ -137,6 +165,9 @@ def summarize_cell(path):
         w["peak_allocated_bytes"] / 2**30 for w in audit["workers"]
     ]
     result["checks_per_rank"] = [w["checks"] for w in audit["workers"]]
+    result["block_graph_checks_per_rank"] = [
+        w.get("block_graph_checks", []) for w in audit["workers"]
+    ]
     if worker["paired_forward"]:
         probe = worker["paired_forward"]
         result["paired_forward_median_ms"] = {
@@ -147,6 +178,10 @@ def summarize_cell(path):
         approximate = result["paired_forward_median_ms"]["v2"]
         result["paired_r"] = approximate / native
         result["paired_full_forward_speedup"] = native / approximate
+        if "oracle_gdn_reuse" in probe:
+            oracle = statistics.median(probe["oracle_gdn_reuse"]["full_forward_gpu_ms"])
+            result["oracle_gdn_reuse_median_ms"] = oracle
+            result["oracle_gdn_reuse_speedup"] = native / oracle
         result["forced_full_checks_per_rank"] = [
             w["paired_forward"]["forced_full_check"] for w in audit["workers"]
         ]
@@ -175,22 +210,7 @@ def main():
         references = [
             ref
             for ref in rows
-            if ref["completed"]
-            and ref["variant"] == "ar"
-            and all(
-                ref[key] == row[key]
-                for key in (
-                    "batch",
-                    "tp",
-                    "eager",
-                    "tokens",
-                    "cpu_offload_gb",
-                    "prompt_sha256",
-                    "runtime_diff_sha256",
-                    "token_budget",
-                    "cuda_visible_devices",
-                )
-            )
+            if ref["completed"] and ref["variant"] == "ar" and same_contract(ref, row)
         ]
         if references:
             reference = references[-1]
@@ -259,21 +279,7 @@ def main():
             for ref in rows
             if ref["completed"]
             and ref["variant"] == "native_draft"
-            and all(
-                ref[key] == row[key]
-                for key in (
-                    "batch",
-                    "tp",
-                    "length",
-                    "tokens",
-                    "eager",
-                    "cpu_offload_gb",
-                    "prompt_sha256",
-                    "runtime_diff_sha256",
-                    "token_budget",
-                    "cuda_visible_devices",
-                )
-            )
+            and same_contract(ref, row, native_spec=True)
         ]
         if controls:
             control = controls[-1]

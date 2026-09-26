@@ -3,6 +3,7 @@
 """Fixed-length GDN-only drafting and paired full-forward measurements."""
 
 import copy
+import gc
 import inspect
 from dataclasses import replace
 
@@ -63,6 +64,73 @@ class _GdnDraftAdapter:
         self.grouped_gdn = None
         self.preverify_graph_replays = 0
         self.capture_state_on_cpu = False
+        self.draft_block_graph = False
+        self.block_graphs = {}
+
+    def _verify_block(self, batch, metadata, slots, length):
+        key = (batch.num_reqs, length)
+        if key not in self.block_graphs:
+            before = {
+                name: tuple(x.cpu() for x in cache)
+                for name, cache in self.state.caches.items()
+            }
+            inputs = (batch.input_ids, batch.positions, batch.seq_lens)
+            initial_inputs = tuple(x.clone() for x in inputs)
+            output = torch.empty(
+                (batch.num_reqs, length), dtype=torch.int64, device=self.device
+            )
+            zero = torch.zeros(batch.num_reqs, dtype=torch.int64, device=self.device)
+
+            def restore():
+                self.state.restore(before)
+                for destination, source in zip(inputs, initial_inputs, strict=True):
+                    destination.copy_(source)
+
+            def body():
+                for offset in range(length):
+                    self.block_tables.compute_slot_mappings(
+                        batch.idx_mapping,
+                        batch.query_start_loc,
+                        batch.positions,
+                        batch.num_tokens,
+                    )
+                    prediction, _, _ = self._verify_eager(batch, metadata, slots)
+                    output[:, offset].copy_(prediction)
+                    if offset + 1 < length:
+                        batch.input_ids.copy_(prediction)
+                        batch.positions.add_(1)
+                        batch.seq_lens.add_(1)
+                        BatchedPreverifyState.advance(self.state, zero)
+
+            for _ in range(3):
+                body()
+                restore()
+            graph = torch.cuda.CUDAGraph()
+            with (
+                graph_capture(self.device) as capture,
+                torch.cuda.graph(graph, stream=capture.stream),
+            ):
+                body()
+            restore()
+            self.block_graphs[key] = (
+                graph,
+                output,
+                batch,
+                metadata,
+                slots,
+                self.last_logits,
+                self.last_margins,
+                zero,
+            )
+        graph, output, old_batch, old_metadata, old_slots, logits, margins, _zero = (
+            self.block_graphs[key]
+        )
+        old_batch.idx_mapping.copy_(batch.idx_mapping)
+        refresh_graph_metadata(old_metadata, metadata)
+        refresh_graph_metadata(old_slots, slots)
+        graph.replay()
+        self.last_logits, self.last_margins = logits, margins
+        return output
 
     def _verify(self, batch, metadata, slots):
         if not self.use_preverify_graphs:
@@ -118,7 +186,13 @@ class _LocalHeads:
 
 class GdnFeasibilityWorker(BatchWorker):
     def setup_feasibility(
-        self, variant="v2", length=16, graphs=False, capture_state_on_cpu=False
+        self,
+        variant="v2",
+        length=16,
+        graphs=False,
+        capture_state_on_cpu=False,
+        draft_block_graph=False,
+        release_mtp_bootstrap=False,
     ):
         self.feasibility_rows = []
         self.feasibility_events = []
@@ -127,7 +201,22 @@ class GdnFeasibilityWorker(BatchWorker):
         self.feasibility_probe_result = None
         self.feasibility_quality = False
         self.feasibility_checks = []
+        self.block_graph_checks = []
+        self.released_mtp_bytes = 0
         runner = self.model_runner
+        if (
+            runner.parallel_config.enable_batch_sharded_sampling
+            and runner.batch_sharder is None
+        ):
+            from vllm.v1.worker.gpu.sample.batch_shard import BatchSharder
+
+            language_model = getattr(runner.model, "language_model", runner.model)
+            runner.model.compute_logits_local = language_model.compute_logits_local
+            runner.batch_sharder = BatchSharder(
+                max_num_reqs=runner.max_num_reqs,
+                max_num_logits_per_req=runner.decode_query_len,
+                device=runner.device,
+            )
         spec = runner.speculator
         self.feasibility_variant = variant
         if variant in ("v2", "full", "native_draft"):
@@ -143,6 +232,9 @@ class GdnFeasibilityWorker(BatchWorker):
             original = spec.propose
             spec = _GdnDraftAdapter(runner)
             spec.capture_state_on_cpu = capture_state_on_cpu
+            spec.draft_block_graph = draft_block_graph
+            if draft_block_graph and not graphs:
+                raise ValueError("Block drafting requires CUDA Graphs")
             self._select_state(spec, variant)
             runner.speculator = spec
             for layer in spec.state.layers.values():
@@ -159,13 +251,24 @@ class GdnFeasibilityWorker(BatchWorker):
                     values[k]
                     for k in ("dummy_run", "is_profile", "skip_attn_for_dummy_run")
                 ) or any(req.startswith("_warmup_") for req in batch.req_ids):
+                    if original is None:
+                        raise RuntimeError("MTP fallback requested after releasing it")
                     return original(*args, **kwargs)
                 return self._fixed_propose(spec, values, length)
 
             spec.propose = propose
+            if release_mtp_bootstrap:
+                before_release = torch.accelerator.memory_allocated()
+                original = None
+                gc.collect()
+                torch.accelerator.empty_cache()
+                self.released_mtp_bytes = (
+                    before_release - torch.accelerator.memory_allocated()
+                )
             for owner, name, label in (
                 (spec, "propose", "proposal"),
                 (spec, "_verify", "draft_forward"),
+                (spec, "_verify_block", "draft_block"),
                 (spec.state, "begin", "state_initialize"),
                 (spec.state, "advance", "conv_advance"),
             ):
@@ -275,7 +378,8 @@ class GdnFeasibilityWorker(BatchWorker):
         if check_cases:
             canonical = self._committed_batch(checked_batch)
         counts = [0] * n
-        for offset in range(min(length, limit - max(active_positions))):
+        effective_length = min(length, limit - max(active_positions))
+        for offset in range(effective_length):
             batch, metadata, slots = make_batch(
                 spec,
                 original,
@@ -295,6 +399,38 @@ class GdnFeasibilityWorker(BatchWorker):
                 batch, metadata, slots = make_batch(
                     spec, original, rows, active_positions, anchors[:, None]
                 )
+            if spec.draft_block_graph:
+                check_block = (
+                    self.feasibility_quality
+                    and not self.block_graph_checks
+                    and not original.has_prefill
+                    and len(rows) == spec.max_num_reqs
+                )
+                before_block = (
+                    {
+                        name: tuple(x.cpu() for x in cache)
+                        for name, cache in spec.state.caches.items()
+                    }
+                    if check_block
+                    else None
+                )
+                predictions = spec._verify_block(
+                    batch, metadata, slots, effective_length
+                )
+                if check_block:
+                    self._check_block(
+                        spec,
+                        original,
+                        rows,
+                        active_positions,
+                        anchors,
+                        predictions,
+                        before_block,
+                    )
+                spec.draft_tokens[rows, :effective_length] = predictions
+                for row in rows:
+                    counts[row] = effective_length
+                break
             predictions, _, _ = spec._verify(batch, metadata, slots)
             anchors = predictions.clone()
             spec.draft_tokens[rows, offset] = anchors
@@ -324,6 +460,39 @@ class GdnFeasibilityWorker(BatchWorker):
             assert equal, "Private drafting changed the committed prefix"
         spec.state.invalidate()
         return spec.draft_tokens[:n]
+
+    def _check_block(self, spec, template, rows, positions, anchors, actual, before):
+        expected = torch.empty_like(actual)
+        actual = actual.clone()
+        after = {
+            name: tuple(x.cpu() for x in cache)
+            for name, cache in spec.state.caches.items()
+        }
+        spec.state.restore(before)
+        for offset in range(actual.shape[1]):
+            batch, metadata, slots = make_batch(
+                spec, template, rows, [p + offset for p in positions], anchors[:, None]
+            )
+            prediction, _, _ = spec._verify_eager(batch, metadata, slots)
+            anchors = prediction.clone()
+            expected[:, offset] = anchors
+            if offset + 1 < actual.shape[1]:
+                spec.state.advance(torch.zeros_like(anchors))
+        torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+        for name, cache in spec.state.caches.items():
+            for result, reference in zip(cache, after[name], strict=True):
+                torch.testing.assert_close(
+                    result.cpu(), reference, atol=1e-3, rtol=1e-3
+                )
+        spec.state.restore(after)
+        self.block_graph_checks.append(
+            {
+                "batch": len(rows),
+                "length": actual.shape[1],
+                "stepwise_candidates_equal": True,
+                "stepwise_states_close": True,
+            }
+        )
 
     @torch.inference_mode()
     def _paired_probe(
@@ -399,6 +568,10 @@ class GdnFeasibilityWorker(BatchWorker):
                     "width": 1,
                     "graph_eager_logits_close": True,
                 }
+                if variant == "native_draft":
+                    results["oracle_gdn_reuse"] = self._oracle_gdn_probe(
+                        spec, batch, metadata, slots, before, references[variant]
+                    )
                 del graph, graph_output
             full = references["full"]
             native = references["native_draft"]
@@ -413,6 +586,64 @@ class GdnFeasibilityWorker(BatchWorker):
             spec.state, spec.config = saved_state, saved_config
             spec.preverify_graphs = saved_graphs
         self.feasibility_probe_result = results
+
+    def _oracle_gdn_probe(self, spec, batch, metadata, slots, before, native_logits):
+        layers = spec.state.layers
+        forwards = {name: layer.forward for name, layer in layers.items()}
+        cached = {}
+        try:
+            for name, layer in layers.items():
+
+                def record(hidden_states, name=name):
+                    output = forwards[name](hidden_states)
+                    cached[name] = output.clone()
+                    return output
+
+                layer.forward = record
+            spec.state.restore(before)
+            spec._verify_eager(batch, metadata, slots)
+            for name, layer in layers.items():
+
+                def reuse(hidden_states, name=name):
+                    return cached[name].clone()
+
+                layer.forward = reuse
+            for _ in range(3):
+                spec._verify_eager(batch, metadata, slots)
+            torch.testing.assert_close(
+                spec.last_logits, native_logits, atol=1e-3, rtol=1e-3
+            )
+            graph = torch.cuda.CUDAGraph()
+            with (
+                graph_capture(spec.device) as capture,
+                torch.cuda.graph(graph, stream=capture.stream),
+            ):
+                output = spec._verify_eager(batch, metadata, slots)
+            times = []
+            for _ in range(20):
+                start, end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
+                start.record()
+                graph.replay()
+                end.record()
+                end.synchronize()
+                times.append(start.elapsed_time(end))
+            torch.testing.assert_close(
+                spec.last_logits, native_logits, atol=1e-3, rtol=1e-3
+            )
+            del graph, output
+            return {
+                "full_forward_gpu_ms": times,
+                "batch": batch.num_reqs,
+                "same_logits": True,
+                "scope": (
+                    "Fixed-input oracle reusing exact GDN outputs; "
+                    "not a deployable draft"
+                ),
+            }
+        finally:
+            for name, layer in layers.items():
+                layer.forward = forwards[name]
+            spec.state.restore(before)
 
     def feasibility_measure(self, audit=False, probe=False, quality=False):
         torch.accelerator.synchronize()
@@ -443,6 +674,7 @@ class GdnFeasibilityWorker(BatchWorker):
             ],
             "paired_forward": self.feasibility_probe_result,
             "checks": self.feasibility_checks,
+            "block_graph_checks": self.block_graph_checks,
             **self.feasibility_info(),
         }
 
@@ -453,6 +685,10 @@ class GdnFeasibilityWorker(BatchWorker):
             "peak_allocated_bytes": torch.accelerator.max_memory_allocated(),
             "allocated_bytes": torch.accelerator.memory_allocated(),
             "num_cache_blocks": runner.kv_cache_config.num_blocks,
+            "batch_sharded_sampling": runner.batch_sharder is not None,
+            "draft_block_graph": getattr(spec, "draft_block_graph", False),
+            "block_graph_count": len(getattr(spec, "block_graphs", {})),
+            "released_mtp_bytes": self.released_mtp_bytes,
             "private_bytes": sum(
                 x.numel() * x.element_size()
                 for pair in spec.state.caches.values()
