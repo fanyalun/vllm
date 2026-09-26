@@ -26,6 +26,69 @@ from benchmarks.hierarchical.summarize_policy_matrix import summarize
 from benchmarks.hierarchical.summarize_replay_tail import summarize as summarize_replay
 
 
+def test_gdn_feasibility_excludes_bonus_and_separates_shrinking_batches(tmp_path):
+    from benchmarks.hierarchical.summarize_gdn_feasibility import summarize_cell
+
+    def save(name, data):
+        (tmp_path / name).write_text(json.dumps(data))
+
+    save(
+        "manifest.json",
+        {
+            "args": dict(
+                variant="v2",
+                batch=2,
+                tp=1,
+                length=4,
+                eager=False,
+                tokens=8,
+                cpu_offload_gb=0,
+            ),
+            "config": {"max_num_batched_tokens": 512},
+            "prompt_sha256": "prompts",
+            "runtime_diff_sha256": "runtime",
+            "cuda_visible_devices": "0",
+        },
+    )
+    assert not summarize_cell(tmp_path)["completed"]
+    save("complete.json", {"completed": True, "tokens_per_second": 8})
+    save("timings.json", [{"tokens_per_second": 8}])
+    steps = [
+        dict(request_ids=["a", "b"], proposed=[0, 0], sampled=[1, 1], has_prefill=True),
+        dict(
+            request_ids=["a", "b"], proposed=[4, 4], sampled=[1, 5], has_prefill=False
+        ),
+        dict(request_ids=["b"], proposed=[4], sampled=[3], has_prefill=False),
+    ]
+    save(
+        "audit.json",
+        {
+            "workers": [
+                {
+                    "steps": steps,
+                    "stages": [
+                        dict(stage="target_execute", gpu_ms=t)
+                        for t in (100, 10, 8, 0.1)
+                    ],
+                    "peak_allocated_bytes": 0,
+                    "checks": [],
+                    "paired_forward": None,
+                }
+            ]
+        },
+    )
+    result = summarize_cell(tmp_path)
+    assert result["candidate_acceptance"] == 0.5
+    assert result["accepted_histogram"] == {0: 1, 2: 1, 4: 1}
+    assert result["full_width_survival"] == pytest.approx(
+        [1, 2 / 3, 2 / 3, 1 / 3, 1 / 3]
+    )
+    assert result["full_batch_full_width_mean_accepted"] == 2
+    assert result["full_batch_decode_steps"] == 1
+    assert result["full_batch_target_median_ms"] == 10
+    assert result["mean_decode_batch"] == 1.5
+
+
 def test_idle_queue_refreshes_source_before_first_experiment(tmp_path):
     from benchmarks.hierarchical.watch_long_draft import refresh_source
 
