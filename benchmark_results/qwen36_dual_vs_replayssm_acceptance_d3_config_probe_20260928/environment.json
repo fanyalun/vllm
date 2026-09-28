@@ -1,0 +1,28 @@
+{
+  "source_sha256": "7ee6b76c20ddff671d3ac6137c201b6bffc34bbd4f93c174762f1fd77cb2cc82",
+  "dependency_sha256": {
+    "benchmarks/replayssm/dual_checkpoint_acceptance_d3.py": "4bf8a0e937d1bc1a849a7c94b08e519d11ccdd357edacfb462af43e7fa0b071d",
+    "vllm/model_executor/layers/fla/ops/gdn_replayssm_spec_decode.py": "c81a493c39b52e460fa03635d45e55e7aecfff041e4c653a85d9f3942b6a55be"
+  },
+  "batches": [
+    1,
+    8,
+    64
+  ],
+  "accepted_drafts": [
+    3,
+    2
+  ],
+  "warps": [
+    1,
+    4
+  ],
+  "repeats": 21,
+  "timing_scope": "direct GDN verify kernel after previous verify and commit",
+  "head": "da6fc4840fcb60bb751d2e6f74b2badf40075065",
+  "torch": "2.11.0+cu130",
+  "gpu": "index, name, uuid, driver_version\n0, NVIDIA A100 80GB PCIe, GPU-92c316af-729a-d2b2-87e6-f49f1ee62b4a, 580.95.05\n1, NVIDIA A100 80GB PCIe, GPU-c7954c39-6588-4e28-8636-b460b8346ef8, 580.95.05\n",
+  "cuda_graph": true,
+  "ssm_state_dtype": "float32",
+  "qkv_dtype": "bfloat16"
+}

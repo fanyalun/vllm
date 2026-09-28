@@ -82,6 +82,11 @@ ring 容量及 flush 行为，**不能解释为单独的 State 写入时间**。
 verify kernel 使用各自当前的配置；没有强制相同 tile。这组结果也不说明完整
 模型的 speculative decoding 延迟或端到端吞吐。
 
+[固定 verify 配置的补充实验](../qwen36_dual_vs_replayssm_acceptance_d3_config_probe_20260928/readme.md)
+将两种方法都设为 `block_v=64, nk=2, num_stages=2, num_warps=4`；全接受
+时 bs=8/64 的 Dual 仍分别多用 16.384/95.232 µs，说明原生 warp 配置
+并非这两组退化的主因。
+
 ## 文件与复现
 
 - [延迟图 PNG](acceptance_latency/acceptance_latency.png)、[PDF](acceptance_latency/acceptance_latency.pdf)、[图说明](acceptance_latency/acceptance_latency.md)
