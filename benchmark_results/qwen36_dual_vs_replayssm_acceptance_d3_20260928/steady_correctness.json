@@ -1,0 +1,74 @@
+[
+  {
+    "batch": 1,
+    "accepted_drafts": 3,
+    "num_accepted_including_bonus": 4,
+    "rounds": 32,
+    "max_abs_output_error": 6.103515625e-05,
+    "flush_counts": {
+      "replayssm": 8,
+      "dual": 0
+    },
+    "correctness": true
+  },
+  {
+    "batch": 1,
+    "accepted_drafts": 2,
+    "num_accepted_including_bonus": 3,
+    "rounds": 32,
+    "max_abs_output_error": 3.0517578125e-05,
+    "flush_counts": {
+      "replayssm": 6,
+      "dual": 6
+    },
+    "correctness": true
+  },
+  {
+    "batch": 8,
+    "accepted_drafts": 3,
+    "num_accepted_including_bonus": 4,
+    "rounds": 32,
+    "max_abs_output_error": 6.103515625e-05,
+    "flush_counts": {
+      "replayssm": 64,
+      "dual": 0
+    },
+    "correctness": true
+  },
+  {
+    "batch": 8,
+    "accepted_drafts": 2,
+    "num_accepted_including_bonus": 3,
+    "rounds": 32,
+    "max_abs_output_error": 3.0517578125e-05,
+    "flush_counts": {
+      "replayssm": 48,
+      "dual": 48
+    },
+    "correctness": true
+  },
+  {
+    "batch": 64,
+    "accepted_drafts": 3,
+    "num_accepted_including_bonus": 4,
+    "rounds": 32,
+    "max_abs_output_error": 0.0001220703125,
+    "flush_counts": {
+      "replayssm": 512,
+      "dual": 0
+    },
+    "correctness": true
+  },
+  {
+    "batch": 64,
+    "accepted_drafts": 2,
+    "num_accepted_including_bonus": 3,
+    "rounds": 32,
+    "max_abs_output_error": 3.0517578125e-05,
+    "flush_counts": {
+      "replayssm": 384,
+      "dual": 384
+    },
+    "correctness": true
+  }
+]

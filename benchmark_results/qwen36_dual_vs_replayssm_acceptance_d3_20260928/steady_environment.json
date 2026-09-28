@@ -1,0 +1,19 @@
+{
+  "head": "03e0065f73ce00b06f1df4a2aaec6bd93e249416",
+  "source_sha256": "d405a4618fb2fbc74ef7413e51122b23039f9aa24474cde97003ed5cb8f941ff",
+  "correctness_source_sha256": "e15f73ee8d0a7ce203b02b6f8bf5825f5944a86b4e7ef8d02d415000d7991204",
+  "batches": [
+    1,
+    8,
+    64
+  ],
+  "draft": 3,
+  "trajectories": {
+    "all": 4,
+    "penultimate": 3
+  },
+  "repeats": 3,
+  "cycles_per_repeat": 640,
+  "graph": true,
+  "cap": 16
+}

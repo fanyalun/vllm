@@ -1,0 +1,8 @@
+{
+  "rows": 36,
+  "expected_rows": 36,
+  "per_cell_repeats": 3,
+  "cycles_per_repeat": 640,
+  "correctness_rows": 6,
+  "correctness_rounds_per_row": 32
+}

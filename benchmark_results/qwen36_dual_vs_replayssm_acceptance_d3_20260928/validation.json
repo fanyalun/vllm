@@ -1,0 +1,30 @@
+{
+  "status": "passed",
+  "transition_rows": 12,
+  "transition_samples": 1260,
+  "steady_rows": 36,
+  "steady_cycles_per_repeat": 640,
+  "steady_repeats_per_cell": 3,
+  "correctness_rows": 6,
+  "correctness_rounds_per_row": 32,
+  "checked_relative_links": 17,
+  "source_and_dependency_sha256_match": true,
+  "files_sha256": {
+    "acceptance_latency/acceptance_latency.md": "0b8306576d1548c71265e52a3704fb1c0122ddd7a7d422559685ab5107f050d7",
+    "acceptance_latency/acceptance_latency.pdf": "d5f216695f736023ffec0de44c282ee7a14b57fd41567b337ed7c45ece9e4b7b",
+    "acceptance_latency/acceptance_latency.png": "f21b4dfe99486e494cb89f8c0d8acb2ea704acb3733436115c9cb381aaf569e0",
+    "environment.json": "023aefc382d08f13821fe3a96f0c93413c8d0ddb02227d1de00a26bb9eba8517",
+    "measurement_complete.json": "86b9cd333ca4c8902f30d402bdb92a2edae9ba979869cb4a17a49bdc1d171c07",
+    "raw.json": "4f236637c5c4d4b61445b988b4b926c38a285759c7d193537d6d90cd3558bfca",
+    "readme.md": "7fecdbe31e7062aad69efff3eb870d08396cf22d9a1a204f6a281ceb20c3bdde",
+    "source.py.txt": "4bf8a0e937d1bc1a849a7c94b08e519d11ccdd357edacfb462af43e7fa0b071d",
+    "steady_complete.json": "cee198ad9e906ad969ac9b57ddd84b7ccca376d01c53bf9f75a0de93a150a7f1",
+    "steady_correctness.json": "6d5275305cea479ac70e1070644cee0c1fd8e6fd79280e35511dd084f7d3781d",
+    "steady_correctness_source.py.txt": "e15f73ee8d0a7ce203b02b6f8bf5825f5944a86b4e7ef8d02d415000d7991204",
+    "steady_environment.json": "9a3366eaf71b7d4a3caf2354954a92787e0c5fc2935a16626682c0a3f1957235",
+    "steady_raw.json": "8cf8c5d7bce95aed910f1a28dc4a5d086fd062e70ddf4faea34260125fb815a8",
+    "steady_source.py.txt": "d405a4618fb2fbc74ef7413e51122b23039f9aa24474cde97003ed5cb8f941ff",
+    "steady_summary.csv": "d7f574dd586852eb4946415c37e15941422e291b2621e2c1e3a548a3ee980fea",
+    "summary.csv": "a25a389f08e68ced02a3e1cd60cfc18a4695edf55efcb6257fbf3d96e3932b38"
+  }
+}
