@@ -1,0 +1,48 @@
+{
+  "status": "PASS",
+  "raw_points": 24,
+  "timed_samples": 1008,
+  "correctness_points": 24,
+  "max_abs_error": 9.561688003867364e-09,
+  "source_sha256_verified": true,
+  "summary_medians_verified": true,
+  "markdown_links_checked": 8,
+  "files": {
+    "environment.json": {
+      "bytes": 897,
+      "sha256": "a95a07573e1e539f5876ef11f77404e66b1b995c14f21339451270247b89794d"
+    },
+    "summary.csv": {
+      "bytes": 1794,
+      "sha256": "58eb27694f9fa9a7ab6774b426c9da95ad3edbe4dc028fb4f887df970e0e35b7"
+    },
+    "raw.json": {
+      "bytes": 33135,
+      "sha256": "3afe99dbb65bdf686a78d701e4ad32585767409cfe0fca321e1fdc32e3ac68e4"
+    },
+    "measurement_complete.json": {
+      "bytes": 67,
+      "sha256": "8b3e19891d502b6581423f35a86f9b05120571e15ba5360de55d0e490a527ff7"
+    },
+    "readme.md": {
+      "bytes": 3848,
+      "sha256": "649454a61f5c26a5ce25d87cf2b00d9269b4c640cfef7e5d17354e0e5d9d5ac6"
+    },
+    "source.py.txt": {
+      "bytes": 8509,
+      "sha256": "ef92d65da6813eb53f242127935a75a64711bd595704ca705adf8bd76bcc3691"
+    },
+    "state_recompute_cost/state_recompute_cost.md": {
+      "bytes": 842,
+      "sha256": "ad3ec3dfd83f11647ae7381b09e941fefb5548ccbcbb4eedc0c17c0ded3ed03e"
+    },
+    "state_recompute_cost/state_recompute_cost.pdf": {
+      "bytes": 10964,
+      "sha256": "6edc0e6be4f199d04b572473c694d283640438b1fa6425763b8cc9e946e3775f"
+    },
+    "state_recompute_cost/state_recompute_cost.png": {
+      "bytes": 135145,
+      "sha256": "bf634eddc33f9b047494920e324d8160d409fa8c77b9a0c1f1c9bf76e4fb464c"
+    }
+  }
+}

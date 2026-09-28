@@ -1,0 +1,35 @@
+{
+  "gpu": "index, name, uuid, driver_version\n0, NVIDIA A100 80GB PCIe, GPU-92c316af-729a-d2b2-87e6-f49f1ee62b4a, 580.95.05\n1, NVIDIA A100 80GB PCIe, GPU-c7954c39-6588-4e28-8636-b460b8346ef8, 580.95.05\n",
+  "head": "fd798f781b7fdb442008e68e843f04030174e4f9",
+  "source_sha256": "ef92d65da6813eb53f242127935a75a64711bd595704ca705adf8bd76bcc3691",
+  "torch": "2.11.0+cu130",
+  "triton": "3.6.0",
+  "batches": [
+    1,
+    8,
+    64
+  ],
+  "histories": [
+    1,
+    4,
+    8,
+    16
+  ],
+  "repeats": 21,
+  "cuda_graph": true,
+  "state_shape_per_request": [
+    32,
+    128,
+    128
+  ],
+  "state_dtype": "float32",
+  "history_dk_dtype": "float16",
+  "history_g_dtype": "float32",
+  "dot_precision": "tf32x3",
+  "history_tile": 16,
+  "state_read_timed": false,
+  "full_state_result_write_timed": false,
+  "history_read_timed": true,
+  "checksum_write_timed": true,
+  "eviction_bytes": 268435456
+}
