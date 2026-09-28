@@ -1,0 +1,26 @@
+import torch
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def probe(a, b, out, K: tl.constexpr):
+    m = tl.arange(0, 32)
+    n = tl.arange(0, 32)
+    k = tl.arange(0, K)
+    lhs = tl.load(a + m[:, None] * K + k[None, :])
+    rhs = tl.load(b + k[:, None] * 32 + n[None, :])
+    result = tl.dot(lhs, rhs, input_precision="tf32x3")
+    tl.store(out + m[:, None] * 32 + n[None, :], result)
+
+
+for width in (1, 4, 8, 16):
+    a = torch.randn((32, width), device="cuda")
+    b = torch.randn((width, 32), device="cuda")
+    out = torch.empty((32, 32), device="cuda")
+    try:
+        probe[(1,)](a, b, out, width, num_warps=4)
+        torch.cuda.synchronize()
+        print(width, "PASS", float(out.abs().max()))
+    except Exception as exc:
+        print(width, "FAIL", type(exc).__name__, str(exc).splitlines()[-1])

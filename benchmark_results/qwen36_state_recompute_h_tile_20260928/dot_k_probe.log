@@ -1,0 +1,4 @@
+1 FAIL CompilationError Input shapes should have M >= 1, N >= 1 and K >= 16
+4 FAIL CompilationError Input shapes should have M >= 1, N >= 1 and K >= 16
+8 FAIL CompilationError Input shapes should have M >= 1, N >= 1 and K >= 16
+16 PASS 15.259464263916016

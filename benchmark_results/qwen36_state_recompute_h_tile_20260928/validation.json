@@ -1,0 +1,64 @@
+{
+  "status": "PASS",
+  "raw_points": 24,
+  "timed_samples": 2016,
+  "correctness_points": 24,
+  "tile_max_abs_error": 1.7603336288640747e-08,
+  "exact_max_abs_error": 3.618539622107786e-08,
+  "fixed_max_abs_error": 9.561688003867364e-09,
+  "source_sha256_verified": true,
+  "summary_medians_verified": true,
+  "report_tables_verified": true,
+  "dot_k_probe_verified": true,
+  "markdown_links_checked": 12,
+  "files": {
+    "environment.json": {
+      "bytes": 1171,
+      "sha256": "979a7b50c7d56b43b3e76402b20387a1490712b4c6afd5de6513f6662961409c"
+    },
+    "summary.csv": {
+      "bytes": 3115,
+      "sha256": "fc137bd929e9df93f7ab66bcf05d1b1f1198842f22c29a1309b08c988be2ce98"
+    },
+    "fixed16_source.py.txt": {
+      "bytes": 8509,
+      "sha256": "ef92d65da6813eb53f242127935a75a64711bd595704ca705adf8bd76bcc3691"
+    },
+    "dot_k_probe_source.py.txt": {
+      "bytes": 823,
+      "sha256": "0928feedb8735654f882a0c1932b0667eb19d9867610548c444de8491f0144ce"
+    },
+    "raw.json": {
+      "bytes": 64569,
+      "sha256": "6a79a7cd2451e2a265841845af1b008411ca07a44db472ead91f316dce68e344"
+    },
+    "measurement_complete.json": {
+      "bytes": 67,
+      "sha256": "8b3e19891d502b6581423f35a86f9b05120571e15ba5360de55d0e490a527ff7"
+    },
+    "readme.md": {
+      "bytes": 5062,
+      "sha256": "29cd866b2473283a7b0a683e2a7a68dd1dc3a878e7a6f159863b7d585ee4b990"
+    },
+    "source.py.txt": {
+      "bytes": 11346,
+      "sha256": "403b9cdda43596384511cff7b7f285b4dd08332a8830697d596dc85e8d22cedd"
+    },
+    "dot_k_probe.log": {
+      "bytes": 255,
+      "sha256": "c2a0c2d7026c41c54190c5e5b41da76d0ab514e6241a79af00f9a2acd89ba238"
+    },
+    "h_tile_latency/h_tile_latency.png": {
+      "bytes": 456216,
+      "sha256": "17386b3e3a137fdb7734e2027b4d451e5277f38931958b47e23d1374d72c3d37"
+    },
+    "h_tile_latency/h_tile_latency.md": {
+      "bytes": 906,
+      "sha256": "454fc50e205bb4be7ab7f0dc87ed0de183af8f6f93a2a4ab6eb00f88280f0e89"
+    },
+    "h_tile_latency/h_tile_latency.pdf": {
+      "bytes": 18529,
+      "sha256": "afda397ee5b1776852a20cb818d9b3ec93684c50c1a1349c7a3acdea7fafbe82"
+    }
+  }
+}
