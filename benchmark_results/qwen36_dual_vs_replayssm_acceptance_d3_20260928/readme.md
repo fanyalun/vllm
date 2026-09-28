@@ -87,6 +87,11 @@ verify kernel 使用各自当前的配置；没有强制相同 tile。这组结�
 时 bs=8/64 的 Dual 仍分别多用 16.384/95.232 µs，说明原生 warp 配置
 并非这两组退化的主因。
 
+[生产 verify 历史长度扫描](../qwen36_dual_vs_replayssm_d3_history_sweep_20260928/readme.md)
+显示 ReplaySSM 在 bs=64、h=4/8/12 时分别为
+153.600/154.624/156.672 µs；当前融合 verify 的历史成本与独立的
+完整 State 重建微基准不等价。
+
 ## 文件与复现
 
 - [延迟图 PNG](acceptance_latency/acceptance_latency.png)、[PDF](acceptance_latency/acceptance_latency.pdf)、[图说明](acceptance_latency/acceptance_latency.md)

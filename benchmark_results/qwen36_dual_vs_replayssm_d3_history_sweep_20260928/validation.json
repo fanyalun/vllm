@@ -1,0 +1,15 @@
+{
+  "status": "passed",
+  "rows": 15,
+  "samples": 315,
+  "checked_links": 8,
+  "source_and_dependency_sha256_match": true,
+  "files_sha256": {
+    "environment.json": "4cc612540657c7007bb5d3afd5e842e9fece39c138859434cf6c591104162816",
+    "measurement_complete.json": "6d5a8f11ee3eb3a599f66bde40fba91fdd173762f8dac4ae0f42613c6a24b7a9",
+    "raw.json": "9acf6a208f5cf342d3c523ebdd2299dc58465a2cd4919fdc1a69697c3781ea2a",
+    "readme.md": "59e6caa99075e0422fc743c6997980011b424fb0f8067487be35419a93dcf9ce",
+    "source.py.txt": "57d7b1a5fabe9b7c91b288d54f9004770ea03d097fa438420fbd15724069e526",
+    "summary.csv": "c87d4696c8a8bda5e5d129d73f02c43c98d50b41053c3ba2281602325fe5acee"
+  }
+}
